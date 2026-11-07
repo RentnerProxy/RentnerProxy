@@ -41,7 +41,7 @@ describe('production smokes workflow triggers and gate', () => {
                 string,
                 {
                     name?: string
-                    needs?: string
+                    needs?: string | string[]
                     if?: string
                     steps: { env?: Record<string, string>; run?: string }[]
                 }
@@ -49,12 +49,13 @@ describe('production smokes workflow triggers and gate', () => {
         }
         const gate = document.jobs['production-smokes']!
         expect(gate.name).toBe('Production Smokes')
-        expect(gate.needs).toBe('build-runtime-images')
+        expect(gate.needs).toEqual(['changes', 'build-runtime-images'])
         expect(gate.if).toBe('${{ !cancelled() }}')
         expect(gate.steps[0]?.env?.IMAGE_BUILD_RESULT).toBe(
             '${{ needs.build-runtime-images.result }}',
         )
-        expect(gate.steps[0]?.run).toBe('test "$IMAGE_BUILD_RESULT" = success')
+        expect(gate.steps[0]?.run).toContain('true) test "$IMAGE_BUILD_RESULT" = success')
+        expect(gate.steps[0]?.run).toContain('test "$SELECTION_RESULT" = success')
         expect(document.concurrency.group).toBe(
             'production-smokes-${{ github.event.pull_request.number || github.ref }}',
         )
@@ -292,7 +293,7 @@ describe('production smokes workflow execution contract', () => {
         ).toBe('true')
         expect(
             Object.values(document.jobs)
-                .flatMap((job) => job.steps)
+                .flatMap((job) => job.steps ?? [])
                 .filter((step) => step.uses === './.github/actions/runtime-images'),
         ).toHaveLength(1)
         for (const name of ['production-smokes', 'runtime-reliability', 'release-compatibility']) {
@@ -492,4 +493,72 @@ describe('production smokes resource safety', () => {
         expect(runner).not.toMatch(/docker\s+volume\s+prune/u)
         expect(runner).toContain('GITHUB_STEP_SUMMARY')
     })
+})
+
+test.skipIf(process.platform === 'win32').each([
+    { selected: 'true', selection: 'success', producer: 'success', exit: 0 },
+    { selected: 'false', selection: 'success', producer: 'skipped', exit: 0 },
+    { selected: 'true', selection: 'success', producer: 'failure', exit: 1 },
+    { selected: 'true', selection: 'success', producer: 'skipped', exit: 1 },
+    { selected: 'false', selection: 'failure', producer: 'skipped', exit: 1 },
+    { selected: '', selection: 'success', producer: 'skipped', exit: 1 },
+])('stable runtime checks fail closed for selection and producer %j', async (scenario) => {
+    const document = Bun.YAML.parse(await workflow()) as {
+        jobs: Record<string, { steps: { run?: string; if?: string }[] }>
+    }
+    for (const name of ['production-smokes', 'production-candidate', 'runtime-reliability']) {
+        const job = document.jobs[name]!
+        const result = Bun.spawnSync(['bash', '-e', '-c', job.steps[0]!.run!], {
+            env: {
+                ...process.env,
+                SELECTION_RESULT: scenario.selection,
+                RUNTIME_SELECTED: scenario.selected,
+                IMAGE_BUILD_RESULT: scenario.producer,
+            },
+            stdout: 'pipe',
+            stderr: 'pipe',
+        })
+        expect(result.exitCode).toBe(scenario.exit)
+        for (const step of job.steps.slice(1)) {
+            expect(step.if).toBeDefined()
+            if (!step.run?.endsWith('production-smoke-ci.ts cleanup'))
+                expect(step.if).toContain("needs.changes.outputs.runtime == 'true'")
+        }
+    }
+})
+
+test('main and manual consumers reuse one runtime producer and expose honest full-run evidence', async () => {
+    const document = Bun.YAML.parse(await workflow()) as {
+        jobs: Record<
+            string,
+            { uses?: string; needs?: string | string[]; if?: string; steps?: { run?: string }[] }
+        >
+    }
+    expect(document.jobs.changes?.uses).toBe('./.github/workflows/detect-changes.yml')
+    expect(document.jobs['build-runtime-images']?.if).toContain(
+        "needs.changes.outputs.runtime == 'true'",
+    )
+    for (const name of [
+        'production-candidate',
+        'runtime-reliability',
+        'select-compatibility-sources',
+        'release-compatibility',
+    ])
+        expect(document.jobs[name]?.if).not.toContain('pull_request')
+    const marker = document.jobs['full-runtime-verification']!
+    expect(marker.if).toContain("needs.changes.outputs.runtime == 'true'")
+    expect(marker.needs).toEqual([
+        'changes',
+        'build-runtime-images',
+        'production-smokes',
+        'production-candidate',
+        'runtime-reliability',
+        'select-compatibility-sources',
+        'release-compatibility',
+        'compatibility-verified',
+    ])
+    expect(marker.steps?.[0]?.run).toContain('test "$COMPLETE" = true')
+    expect(marker.steps?.[0]?.run).toContain(
+        'success,success,success,success,success,success,success,success',
+    )
 })

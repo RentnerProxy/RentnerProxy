@@ -5,7 +5,7 @@ import { createInterface } from 'node:readline'
 import { waitForBeta2 } from './wait.ts'
 import type { Beta2ControllerInput } from './Types/journeys.types.ts'
 
-export function shouldPrintControllerLine(line: string): boolean {
+function shouldPrintControllerLine(line: string): boolean {
     try {
         const value: unknown = JSON.parse(line)
         return !(

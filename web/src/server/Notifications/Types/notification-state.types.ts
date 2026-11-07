@@ -39,7 +39,7 @@ export interface NotificationIncident {
     host?: HostAvailabilityNotificationContext | undefined
 }
 
-export interface HostAvailabilityNotificationContext extends HostAvailabilityNotification {
+interface HostAvailabilityNotificationContext extends HostAvailabilityNotification {
     readonly policyId: string
     readonly policyVersion: string
     readonly contextProof: string

@@ -13,13 +13,17 @@ export const REQUIRED_CI_JOBS = [
     'Build',
     'Caddy Response Cache',
     'Coverage',
+    'Full verification',
 ] as const
 const REPOSITORY = 'rentnerproxy/platform'
 const API_PATH = `/repos/${REPOSITORY}/actions`
-export const REQUIRED_COMPATIBILITY_JOBS = ['Compatibility verified'] as const
+export const REQUIRED_COMPATIBILITY_JOBS = [
+    'Compatibility verified',
+    'Full runtime verification',
+] as const
 const REQUIRED_WORKFLOWS = [
     { filename: 'ci.yml', jobs: REQUIRED_CI_JOBS },
-    { filename: 'release-compatibility.yml', jobs: REQUIRED_COMPATIBILITY_JOBS },
+    { filename: 'production-smokes.yml', jobs: REQUIRED_COMPATIBILITY_JOBS },
 ] as const
 const MAX_PAGES = 10
 const MAX_ITEMS = 1_000

@@ -5,6 +5,7 @@
         "scripts/assets/{download-geoip,generate-accent-art-masks}.ts",
         "scripts/coverage/{run,summary,preload,child-preload}.ts",
         "scripts/development/seed-crowdsec-dashboard-demo.ts",
+        "scripts/development/seed-backups-demo.ts",
         "scripts/smoke/proxy/{upstream,upstream-tls}.ts",
         "scripts/runtime-{reliability,scale}/{run,fixture,fixture-beta,fixture-transport}.ts",
         ".github/scripts/ci/{production-smoke-ci,appliance-compose-smoke,proxy-smoke}.ts",
@@ -17,7 +18,14 @@
         "docker/production/backups/{agent,export,build-identity}.ts",
         "web/src/server/WebSockets/realtimeWebSocket.ts",
         "web/src/tests/server/Auth/Access/Fixtures/sessions-maintenance.fixture.ts",
-        "drizzle.config.ts"
+        "drizzle.config.ts",
+        ".github/scripts/ci/distribution/native-probe.ts",
+        ".github/scripts/ci/platform-backup.ts",
+        ".github/scripts/release/{candidate-runtime,portability-runtime,generate-building-release-notes}.ts",
+        "web/src/tests/Helpers/backupOrchestrationFixture.ts",
+        "web/src/db/schema.ts",
+        "docker/production/backups/off-host.ts",
+        "web/src/server/RuntimeDiagnostics/domain-diagnostics-data.ts"
     ],
     "project": [
         "web/src/**/*.{ts,tsx,css}",
@@ -37,7 +45,9 @@
         "!tmp/**",
         "!temp/**"
     ],
-    "bun": { "entry": ["web/src/tests/**/*.test.{ts,tsx}"] },
+    "bun": {
+        "entry": ["web/src/tests/**/*.test.{ts,tsx}"]
+    },
     "tanstack-router": {
         "entry": ["web/src/{router,start,client,server}.{ts,tsx}", "web/src/routes/**/*.{ts,tsx}"]
     },

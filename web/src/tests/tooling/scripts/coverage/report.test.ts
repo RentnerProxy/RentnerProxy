@@ -8,7 +8,11 @@ import {
     mergeTypescriptCoverage,
     typescriptCoverageResults,
 } from '../../../../../../scripts/coverage/report.ts'
-import { parseCoverageSummary } from '../../../../../../scripts/coverage/summary.ts'
+import {
+    combineSelectedCoverage,
+    selectedCoverageProducers,
+    parseCoverageSummary,
+} from '../../../../../../scripts/coverage/summary.ts'
 import {
     goCoverageGroupNames,
     rustCoverageGroupNames,
@@ -194,4 +198,18 @@ describe('combined coverage requires successful complete producer reports', () =
             parseCoverageSummary({ ...valid, testExitCode: undefined }, 'typescript'),
         ).toThrow('tests failed')
     })
+})
+
+test('selected coverage includes only measured producers and rejects missing selected reports', () => {
+    expect(selectedCoverageProducers([])).toEqual(['typescript', 'go', 'rust'])
+    expect(selectedCoverageProducers(['--producers', 'rust'])).toEqual(['rust'])
+    for (const value of ['', 'rust,rust', 'unknown'])
+        expect(() => selectedCoverageProducers(['--producers', value])).toThrow()
+    const groups = combineSelectedCoverage(['go'], { go: summary('go') })
+    expect(groups[0]?.name).toBe('Go overall')
+    expect(groups.some((group) => group.name.startsWith('Rust'))).toBe(false)
+    expect(() => combineSelectedCoverage(['rust'], { go: summary('go') })).toThrow(
+        'Missing coverage',
+    )
+    expect(() => combineSelectedCoverage([], {})).toThrow()
 })

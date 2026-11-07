@@ -13,60 +13,18 @@ async function workflow(name: string): Promise<Workflow> {
     ) as Workflow
 }
 
-const buildInputs = [
-    '.github/scripts/ci/fixtures/upgrade-state.ts',
-    '.github/scripts/security/dependency-policy.ts',
-    'core/Cargo.toml',
-    'core/Cargo.lock',
-    'core/src/main.rs',
-    'core/tests/private/server_management.rs',
-    'core/caddy-modules/responsecache/go.sum',
-    'web/src/server.ts',
-    'web/src/db/migrate.ts',
-    'web/drizzle/0000_fixture.sql',
-    'web/public/favicon.svg',
-    'docker/production/Dockerfile',
-    'docker/tooling/buildinfo/verify.go',
-    'docker/tooling/buildinfo/verify_test.go',
-    'docker/production/Dockerfile.dockerignore',
-    'docker-compose.yml',
-    'scripts/build.ts',
-    'scripts/lib/command-runner.ts',
-    'scripts/backup/maintenance-commands.ts',
-    'scripts/smoke/images.ts',
-    '.dockerignore',
-    'package.json',
-    'bun.lock',
-    'bunfig.toml',
-    'drizzle.config.ts',
-    'vite.config.ts',
-    'tsconfig.json',
-    'tsconfig.scripts.json',
-]
-
 test.each(['release-compatibility', 'runtime-reliability'])(
-    '%s retains main/manual coverage while central PR checks cover all production inputs',
+    '%s retains manual diagnostics while central main and PR checks cover runtime inputs',
     async (name) => {
         const triggers = (await workflow(name)).on
         expect(triggers).not.toHaveProperty('pull_request')
-        expect(triggers).toHaveProperty('push')
+        expect(triggers).not.toHaveProperty('push')
         expect(triggers).toHaveProperty('workflow_dispatch')
         const central = (await workflow('production-smokes')).on
-        expect(central).toHaveProperty('pull_request')
-        expect(central.pull_request?.paths).toBeUndefined()
-        expect(central.pull_request?.['paths-ignore']).toBeUndefined()
-        const paths = triggers.push?.paths ?? []
-        const matches = (path: string) => paths.some((pattern) => new Bun.Glob(pattern).match(path))
-        if (name === 'runtime-reliability') {
-            for (const path of [...buildInputs, `.github/workflows/${name}.yml`]) {
-                expect({ path, included: matches(path) }).toEqual({ path, included: true })
-            }
-            for (const path of ['README.md', 'docs/operations.md', '.github/WORKFLOWS.md']) {
-                expect({ path, included: matches(path) }).toEqual({ path, included: false })
-            }
-        } else {
-            expect(triggers.push?.paths).toBeUndefined()
-            expect(triggers.push?.['paths-ignore']).toBeUndefined()
+        for (const event of ['pull_request', 'push']) {
+            expect(central).toHaveProperty(event)
+            expect(central[event]?.paths).toBeUndefined()
+            expect(central[event]?.['paths-ignore']).toBeUndefined()
         }
     },
 )

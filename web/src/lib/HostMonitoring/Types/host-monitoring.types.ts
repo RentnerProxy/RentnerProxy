@@ -27,7 +27,7 @@ export interface HostMonitoringStateSnapshot {
     readonly recoveryStartedAt: Date | null
 }
 
-export interface HostMonitoringTransition {
+interface HostMonitoringTransition {
     readonly kind: 'outage' | 'recovery'
     readonly firstObservedAt: Date
     readonly confirmedAt: Date

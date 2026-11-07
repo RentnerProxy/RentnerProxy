@@ -7,11 +7,6 @@ import type {
     PackageVersion,
 } from './Types/distribution.types.ts'
 
-export const distributionTargets: readonly DistributionTarget[] = [
-    { id: 'debian-13', format: 'deb', podmanMinimum: '5.4', systemdMinimum: 252 },
-    { id: 'fedora-44', format: 'rpm', podmanMinimum: '5.4', systemdMinimum: 252 },
-]
-
 export function parseDistributionRelease(raw: unknown): DistributionRelease {
     const value = ociRecord(raw)
     const version = typeof value.version === 'string' && parseReleaseVersion(value.version)

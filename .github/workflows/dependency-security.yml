@@ -16,42 +16,62 @@ concurrency:
     cancel-in-progress: true
 
 jobs:
+    changes:
+        uses: ./.github/workflows/detect-changes.yml
+
     locked-source:
+        needs: changes
+        if: ${{ !cancelled() }}
         name: Own dependency audit
         runs-on: ubuntu-latest
         timeout-minutes: 20
         steps:
+            - name: Require successful dependency selection
+              env:
+                  SELECTION_RESULT: ${{ needs.changes.result }}
+                  DEPENDENCIES_SELECTED: ${{ needs.changes.outputs.dependencies }}
+              run: |
+                  test "$SELECTION_RESULT" = success
+                  case "$DEPENDENCIES_SELECTED" in
+                    true) echo 'Audit selected locked dependency graphs.' ;;
+                    false) echo 'Dependency inputs unchanged; no source audit required.' ;;
+                    *) exit 1 ;;
+                  esac
             - name: Check out trusted audit automation
+              if: needs.changes.outputs.dependencies == 'true'
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   persist-credentials: false
                   path: automation
                   ref: ${{ github.event.pull_request.base.sha || github.workflow_sha }}
             - name: Check out exact audited source
+              if: needs.changes.outputs.dependencies == 'true'
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   persist-credentials: false
                   path: source
                   ref: ${{ github.sha }}
             - name: Set up Bun
+              if: needs.changes.outputs.dependencies == 'true'
               uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
               with:
                   bun-version: 1.4.4
             - name: Audit complete locked Cargo graph
+              if: needs.changes.outputs.dependencies == 'true'
               env:
                   AUTOMATION_DIRECTORY: automation
                   SOURCE_DIRECTORY: source
                   REPORT_DIRECTORY: ${{ runner.temp }}/dependency-source-report
               run: REVISION="$(git -C source rev-parse HEAD)" bash automation/.github/scripts/security/audit-cargo.sh
             - name: Audit complete locked Bun graph
-              if: ${{ !cancelled() }}
+              if: ${{ !cancelled() && needs.changes.outputs.dependencies == 'true' }}
               env:
                   AUTOMATION_DIRECTORY: automation
                   SOURCE_DIRECTORY: source
                   REPORT_DIRECTORY: ${{ runner.temp }}/dependency-source-report
               run: bash automation/.github/scripts/security/audit-bun.sh
             - name: Store exact-source advisory evidence
-              if: always()
+              if: always() && needs.changes.outputs.dependencies == 'true'
               uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
               with:
                   if-no-files-found: error
@@ -60,8 +80,8 @@ jobs:
                   retention-days: 30
 
     production-candidate:
-        name: ${{ github.event_name == 'pull_request' && 'Standalone image audit (inactive)' || 'Production image dependency audit' }}
-        if: github.event_name != 'schedule' && github.event_name != 'pull_request'
+        name: ${{ github.event_name == 'workflow_dispatch' && 'Production image dependency audit' || 'Standalone image audit (inactive)' }}
+        if: github.event_name == 'workflow_dispatch'
         runs-on: ubuntu-latest
         timeout-minutes: 60
         steps:

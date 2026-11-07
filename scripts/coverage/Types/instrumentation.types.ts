@@ -14,7 +14,7 @@ export type CoverageManifest = {
     files: string[]
 }
 
-export type CoverageCollectorState = {
+type CoverageCollectorState = {
     manifest: CoverageManifest
 }
 

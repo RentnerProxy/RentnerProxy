@@ -141,12 +141,21 @@ export async function verifyWorkflowRunIdentity(
     workflowRun: WorkflowRun,
     expectation: WorkflowRunExpectation,
 ): Promise<string> {
+    return verifyWorkflowRunResult(api, workflowRun, expectation, 'success')
+}
+
+async function verifyWorkflowRunResult(
+    api: GitHubApi,
+    workflowRun: WorkflowRun,
+    expectation: WorkflowRunExpectation,
+    conclusion: 'success' | 'skipped',
+): Promise<string> {
     const path = normalizeWorkflowPath(workflowRun.path)
     if (
         workflowRun.repository !== api.repository ||
         workflowRun.event !== expectation.event ||
         workflowRun.status !== 'completed' ||
-        workflowRun.conclusion !== 'success' ||
+        workflowRun.conclusion !== conclusion ||
         (expectation.name !== undefined && workflowRun.name !== expectation.name) ||
         (expectation.path !== undefined && path !== expectation.path) ||
         (expectation.headRepository !== undefined &&
@@ -295,6 +304,49 @@ async function verifyRequiredCheckProvenance(
     await Promise.all([...paths].map((path) => verifyWorkflowFileUnchanged(api, path, expected)))
 }
 
+async function checksWithoutSupersededSourceSkips(
+    api: GitHubApi,
+    requiredChecks: readonly RequiredCheck[],
+    checkRuns: readonly CheckRun[],
+    expected: ExpectedPullRequest,
+): Promise<readonly CheckRun[]> {
+    if (!requiredChecks.some((check) => check.context === 'PR Preview Source')) return checkRuns
+    const sourceChecks = checkRuns
+        .filter((run) => run.name === 'PR Preview Source' && run.appId === 15_368)
+        .toSorted((left, right) => right.id - left.id)
+    const producerIndex = sourceChecks.findIndex(
+        (check) => check.status !== 'completed' || check.conclusion !== 'skipped',
+    )
+    const producer = sourceChecks[producerIndex]
+    if (producerIndex <= 0 || producer?.status !== 'completed' || producer.conclusion !== 'success')
+        return checkRuns
+    await Promise.all(
+        sourceChecks.slice(0, producerIndex + 1).map(async (check) => {
+            const runId = actionsRunIdFromDetailsUrl(check.detailsUrl, api.repository)
+            const workflowRun = parseWorkflowRun(
+                await api.request(`/repos/${api.repository}/actions/runs/${runId}`),
+            )
+            if (workflowRun.id !== runId) throw new Error('Source check run identity is invalid.')
+            await verifyWorkflowRunResult(
+                api,
+                workflowRun,
+                {
+                    event: 'pull_request',
+                    headRepository: expected.headRepository,
+                    headSha: expected.headSha,
+                    name: 'PR Preview Source',
+                    path: '.github/workflows/pr-preview-source.yml',
+                },
+                check.conclusion === 'skipped' ? 'skipped' : 'success',
+            )
+            assertWorkflowRunPullRequest(workflowRun.pullRequests, expected)
+        }),
+    )
+    await verifyWorkflowFileUnchanged(api, '.github/workflows/pr-preview-source.yml', expected)
+    const skippedIds = new Set(sourceChecks.slice(0, producerIndex).map((run) => run.id))
+    return checkRuns.filter((run) => !skippedIds.has(run.id))
+}
+
 function checkSummary(evaluation: CheckEvaluation): string {
     return JSON.stringify({
         failed: evaluation.failed,
@@ -384,7 +436,14 @@ export async function verifyGate(
 
         if (pullRequestEvaluation.state === 'success') {
             // eslint-disable-next-line no-await-in-loop -- checks must be refreshed for every poll
-            const checkRuns = await fetchCheckRuns(api, expected.headSha)
+            const fetchedCheckRuns = await fetchCheckRuns(api, expected.headSha)
+            // oxlint-disable-next-line no-await-in-loop -- Only verified metadata-only source skips may supersede their successful producer.
+            const checkRuns = await checksWithoutSupersededSourceSkips(
+                api,
+                requiredChecks,
+                fetchedCheckRuns,
+                expected,
+            )
             const checkEvaluation = evaluateRequiredChecks(requiredChecks, checkRuns)
             const summary = checkSummary(checkEvaluation)
             if (summary !== previousSummary) {

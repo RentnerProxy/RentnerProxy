@@ -174,9 +174,7 @@ export async function lockOidcProviderInTransaction(
 }
 
 /** Reads internal provider policy without opening its encrypted credential. */
-export async function readOidcProviderService(
-    providerId: string,
-): Promise<StoredOidcProvider | null> {
+async function readOidcProviderService(providerId: string): Promise<StoredOidcProvider | null> {
     return getAuthDatabase().transaction(async (transaction) => {
         const settings = await readStoredOidcSettings(transaction)
         return settings.providers.find((provider) => provider.id === providerId) ?? null
