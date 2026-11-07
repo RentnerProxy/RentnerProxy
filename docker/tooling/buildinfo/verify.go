@@ -37,7 +37,7 @@ func validate(profile string, info *debug.BuildInfo) error {
 	switch profile {
 	case "caddy":
 		expected = map[string]string{
-			caddyModule:                                  "v2.11.7",
+			caddyModule:                                  "v2.11.9",
 			"github.com/go-jose/go-jose/v4":              "v4.1.9",
 			"golang.org/x/net":                           "v0.62.0",
 			"github.com/crowdsecurity/crowdsec":          "v1.8.2",

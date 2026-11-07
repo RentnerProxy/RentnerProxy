@@ -2521,7 +2521,7 @@ index 2734b54..565c33d 100644
  	return &defaultCustomLog{
  		CustomLog: cl,
  		logger:    logger,
-@@ -793,14 +805,18 @@ func BufferedLog() (*zap.Logger, *zap.Logger, *internal.LogBufferCore) {
+@@ -798,6 +810,8 @@ func BufferedLog() (*zap.Logger, *zap.Logger, *internal.LogBufferCore) {
  	defer defaultLoggerMu.Unlock()
  	origLogger := defaultLogger.logger
  	bufferCore := internal.NewLogBufferCore(zap.InfoLevel)
@@ -2531,6 +2531,7 @@ index 2734b54..565c33d 100644
 +	defaultLogger = &buffered
  	return defaultLogger.logger, origLogger, bufferCore
  }
+@@ -817,8 +831,10 @@ func UnbufferDefaultLogger(orig *zap.Logger) {
  
  var (
 -	coloringEnabled  = os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "xterm-mono"

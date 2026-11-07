@@ -2,6 +2,31 @@ import { describe, expect, test } from 'bun:test'
 
 import { smokeProgress } from '../../../../../.github/scripts/ci/production-smoke-ci.ts'
 
+test('backup health diagnostics reject incidental private output and invalid process facts', () => {
+    for (const line of [
+        'Managed backup health: interrupted-backup-restart running=false exitCode=1 health=unhealthy',
+        'Managed backup health: fixture running=true exitCode=0 health=starting',
+    ]) {
+        const progress = smokeProgress('backups')
+        expect(progress.consume(line)).toBe(line)
+        expect(progress.result(1).diagnostic).toBe(line)
+        expect(smokeProgress('production').consume(line)).toBeUndefined()
+        for (const unsafe of [
+            `${line} private-token`,
+            `private-token ${line}`,
+            `${line}\nprivate-token`,
+            `${line}\n`,
+            line.replace('exitCode=1', 'exitCode=256').replace('exitCode=0', 'exitCode=-1'),
+            line.replace(/health=\w+$/u, 'health=private-token'),
+            line.replace(/: [a-z-]+ running/u, ': private-token running'),
+        ]) {
+            const rejected = smokeProgress('backups')
+            expect(rejected.consume(unsafe)).toBeUndefined()
+            expect(rejected.result(1).diagnostic).toBe('')
+        }
+    }
+})
+
 test('managed backup completion must match the observed checks before CI reports success', () => {
     const progress = smokeProgress('backups')
     expect(progress.consume('PASS authenticated backup download')).toBe(
