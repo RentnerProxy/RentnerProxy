@@ -84,8 +84,6 @@ services:
             # Older Compose versions eagerly expand required-value fallbacks; startup validates the origin.
             PUBLIC_ORIGIN: ${PUBLIC_ORIGIN-${RENTNERPROXY_PUBLIC_ORIGIN-}}
             PROXY_TRUSTED_PROXY_CIDRS: ${PROXY_TRUSTED_PROXY_CIDRS-${RENTNERPROXY_PROXY_TRUSTED_PROXY_CIDRS:-}}
-            RENTNERPROXY_PUBLIC_ORIGIN:
-            RENTNERPROXY_PROXY_TRUSTED_PROXY_CIDRS:
             SMTP_FROM: ${SMTP_FROM:?Set SMTP_FROM}
             SMTP_HOST: ${SMTP_HOST:?Set SMTP_HOST}
             SMTP_PASSWORD: ${SMTP_PASSWORD:?Set SMTP_PASSWORD}
