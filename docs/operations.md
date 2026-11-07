@@ -4,19 +4,21 @@
 
 The web runtime stages remove build tools and their native platform packages after
 the frozen production install. Application runtime packages remain installed.
-Both custom Caddy builds use the pinned 2.11.7 builder, Go 1.27.2 and CrowdSec SDK v1.8.1,
+Both custom Caddy builds use the pinned 2.11.9 builder, Go 1.27.3 and CrowdSec SDK v1.8.2,
 while retaining the verified HTTP-only community bouncer source revision.
 The source transform also adapts its live decision IP filter to the SDK's string
 field without changing exact-match filtering.
 The appliance updates its inherited PCRE2 package from the configured Debian
 repositories and rejects builds below `10.46-1~deb13u3`.
-CrowdSec and cscli are rebuilt from the pinned upstream 1.8.1 source archive
-using the full upstream static feature profile and RE2 2023-03-01. Reviewed,
-read-only module locks update gRPC to 1.84.0 and `golang.org/x/crypto` to 0.58.0;
+CrowdSec and cscli are rebuilt from the pinned upstream 1.8.2 source archive
+as static binaries with the managed SQLite backend and RE2 2023-03-01. The unused
+PostgreSQL backend is excluded. Reviewed, read-only module locks pin gRPC to 1.85.0
+and `golang.org/x/crypto` to 0.58.0;
 the build verifies both binaries' embedded dependency versions. The official
 image continues to supply configuration and the pinned Hub assets.
-The [engine build notes](../docker/crowdsec/tooling/engine-build/README.md)
-explain the remaining RE2 and Kubernetes compatibility pins. Axum 0.8.9 also
+The [engine build script](../docker/crowdsec/tooling/engine-build/build.sh) and
+[locked modules](../docker/crowdsec/tooling/engine-build/go.mod) record the exact
+source and dependency versions. Axum 0.8.9 also
 requires its exact matchit 0.8.4 dependency; the current stable dependency
 refresh retains these upstream constraints.
 These updates do not establish that an image passes the complete dependency
@@ -33,7 +35,7 @@ assessment; unresolved findings continue to block publication.
 
 ## DNS-01 certificates
 
-Manual and delegated DNS-01 are available in the `main` development line for Beta 3.
+Manual and delegated DNS-01 are available since Beta 3.
 The published `v1.0.0-beta.2` release supports HTTP-01 and direct Cloudflare DNS-01;
 it does not contain these new modes or the guided DNS setup. Use instructions matching
 your installed version. The examples below use reserved example domains; substitute
