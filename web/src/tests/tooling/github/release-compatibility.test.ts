@@ -734,7 +734,7 @@ describe('historical backup dependency closure', () => {
         }
         const gate = workflow.jobs['compatibility-verified']!
         expect(gate.name).toBe('Compatibility verified')
-        expect(gate.if).toContain('always()')
+        expect(gate.if).toBe('${{ !cancelled() }}')
         expect(gate.needs).toEqual([
             'select-sources',
             'build-runtime-images',

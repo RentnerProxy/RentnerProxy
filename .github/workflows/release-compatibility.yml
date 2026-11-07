@@ -128,7 +128,7 @@ jobs:
     compatibility-verified:
         name: Compatibility verified
         needs: [select-sources, build-runtime-images, release-compatibility]
-        if: ${{ always() }}
+        if: ${{ !cancelled() }}
         runs-on: ubuntu-latest
         timeout-minutes: 1
         steps:
