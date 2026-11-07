@@ -24,9 +24,19 @@ jobs:
         runs-on: ubuntu-latest
         timeout-minutes: 5
         outputs:
+            web: '${{ steps.changes.outputs.web }}'
+            scripts: '${{ steps.changes.outputs.scripts }}'
+            rust: '${{ steps.changes.outputs.rust }}'
+            go: '${{ steps.changes.outputs.go }}'
             caddy: ${{ steps.changes.outputs.caddy }}
+            build_web: '${{ steps.changes.outputs.build_web }}'
+            build_core: '${{ steps.changes.outputs.build_core }}'
+            runtime: '${{ steps.changes.outputs.runtime }}'
+            dependencies: '${{ steps.changes.outputs.dependencies }}'
+            actions: '${{ steps.changes.outputs.actions }}'
+            full: '${{ steps.changes.outputs.full }}'
         steps:
-            - name: Check out repository
+            - name: 'Check out complete comparison history'
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   persist-credentials: false
@@ -35,14 +45,14 @@ jobs:
             - name: Set up Bun
               uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
               with:
-                  bun-version: ${{ env.BUN_VERSION }}
+                  bun-version: '1.4.4'
 
-            - name: Detect Caddy inputs
+            - name: 'Select affected verification'
               id: changes
               env:
-                  CADDY_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-                  CADDY_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-              run: bun --no-env-file .github/scripts/ci/caddy-changes.ts
+                  CI_BASE_SHA: '${{ github.event.pull_request.base.sha || github.event.before }}'
+                  CI_HEAD_SHA: '${{ github.event.pull_request.head.sha || github.sha }}'
+              run: 'bun --no-env-file .github/scripts/ci/changes.ts'
 
     format:
         name: Format
@@ -72,15 +82,24 @@ jobs:
         runs-on: ubuntu-latest
         timeout-minutes: 15
         steps:
+            - name: 'Require successful change selection'
+              env:
+                  DETECTION_RESULT: '${{ needs.changes.result }}'
+              run: 'test "$DETECTION_RESULT" = success'
+            - name: 'Explain unaffected check'
+              if: "${{ !(needs.changes.outputs.web == 'true') }}"
+              run: 'echo ''Lint: no affected inputs; expensive verification omitted.'' >> "$GITHUB_STEP_SUMMARY"'
             - name: Check out repository
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   persist-credentials: false
+              if: "${{ needs.changes.outputs.web == 'true' }}"
 
             - name: Set up Bun
               uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
               with:
                   bun-version: ${{ env.BUN_VERSION }}
+              if: "${{ needs.changes.outputs.web == 'true' }}"
 
             - name: Restore Bun dependency cache
               id: bun-cache
@@ -88,49 +107,69 @@ jobs:
               with:
                   path: ~/.bun/install/cache
                   key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock') }}
+              if: "${{ needs.changes.outputs.web == 'true' }}"
 
             - name: Install dependencies
               run: bun install --frozen-lockfile
+              if: "${{ needs.changes.outputs.web == 'true' }}"
 
             - name: Check dependency declarations
               run: bun --no-env-file run dependencies:check
+              if: "${{ needs.changes.outputs.web == 'true' }}"
 
             - name: Run Oxlint
               run: bun --no-env-file run lint
+              if: "${{ needs.changes.outputs.web == 'true' }}"
 
             - name: Save Bun dependency cache
-              if: github.event_name != 'pull_request' && steps.bun-cache.outputs.cache-hit != 'true'
+              if: "${{ needs.changes.outputs.web == 'true' && (github.event_name != 'pull_request' && steps.bun-cache.outputs.cache-hit != 'true') }}"
               uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
               with:
                   path: ~/.bun/install/cache
                   key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock') }}
+        needs: 'changes'
+        if: '${{ !cancelled() }}'
 
     typecheck:
         name: Script Typecheck
         runs-on: ubuntu-latest
         timeout-minutes: 15
         steps:
+            - name: 'Require successful change selection'
+              env:
+                  DETECTION_RESULT: '${{ needs.changes.result }}'
+              run: 'test "$DETECTION_RESULT" = success'
+            - name: 'Explain unaffected check'
+              if: "${{ !(needs.changes.outputs.scripts == 'true') }}"
+              run: 'echo ''Script Typecheck: no affected inputs; expensive verification omitted.'' >> "$GITHUB_STEP_SUMMARY"'
             - name: Check out repository
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   persist-credentials: false
+              if: "${{ needs.changes.outputs.scripts == 'true' }}"
 
             - name: Set up Bun
               uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
               with:
                   bun-version: ${{ env.BUN_VERSION }}
+              if: "${{ needs.changes.outputs.scripts == 'true' }}"
 
             - name: Restore Bun dependency cache
               uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
               with:
                   path: ~/.bun/install/cache
                   key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock') }}
+              if: "${{ needs.changes.outputs.scripts == 'true' }}"
 
             - name: Install dependencies
               run: bun install --frozen-lockfile
+              if: "${{ needs.changes.outputs.scripts == 'true' }}"
 
             - name: Check script TypeScript
               run: bun --no-env-file run typecheck:scripts
+              if: "${{ needs.changes.outputs.scripts == 'true' }}"
+        needs: 'changes'
+        if: '${{ !cancelled() }}'
 
     web-tests:
         name: Web Tests
@@ -138,7 +177,7 @@ jobs:
         timeout-minutes: 15
         services:
             postgres:
-                image: mirror.gcr.io/library/postgres:18.6@sha256:3a4264520e121176619f54ff867d12774bc81e95e7b84db58d63bccdb6144b81
+                image: ${{ needs.changes.outputs.web == 'true' && 'mirror.gcr.io/library/postgres:18.6@sha256:3a4264520e121176619f54ff867d12774bc81e95e7b84db58d63bccdb6144b81' || '' }}
                 env:
                     POSTGRES_USER: rentnerproxy
                     POSTGRES_PASSWORD: rentnerproxy
@@ -146,47 +185,53 @@ jobs:
                 ports:
                     - 5432:5432
                 options: >-
-                    --health-cmd "pg_isready -U rentnerproxy -d rentnerproxy_upstream_test"
-                    --health-interval 5s
-                    --health-timeout 5s
-                    --health-retries 10
+                    --health-cmd "pg_isready -U rentnerproxy -d rentnerproxy_upstream_test" --health-interval 5s --health-timeout 5s --health-retries 10
             valkey:
-                image: mirror.gcr.io/valkey/valkey:9.1.3-alpine@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b
+                image: ${{ needs.changes.outputs.web == 'true' && 'mirror.gcr.io/valkey/valkey:9.1.3-alpine@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b' || '' }}
                 ports:
                     - 6379:6379
                 options: >-
-                    --health-cmd "valkey-cli ping"
-                    --health-interval 5s
-                    --health-timeout 5s
-                    --health-retries 10
+                    --health-cmd "valkey-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10
         env:
             DATABASE_URL: postgresql://rentnerproxy:rentnerproxy@127.0.0.1:5432/rentnerproxy_upstream_test
             VALKEY_URL: redis://127.0.0.1:6379
             RENTNERPROXY_DATABASE_INTEGRATION: '1'
             RENTNERPROXY_VALKEY_INTEGRATION: '1'
         steps:
+            - name: 'Require successful change selection'
+              env:
+                  DETECTION_RESULT: '${{ needs.changes.result }}'
+              run: 'test "$DETECTION_RESULT" = success'
+            - name: 'Explain unaffected check'
+              if: "${{ !(needs.changes.outputs.web == 'true') }}"
+              run: 'echo ''Web Tests: no affected inputs; expensive verification omitted.'' >> "$GITHUB_STEP_SUMMARY"'
             - name: Check out repository
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   persist-credentials: false
                   fetch-depth: 0
+              if: "${{ needs.changes.outputs.web == 'true' }}"
 
             - name: Set up Bun
               uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
               with:
                   bun-version: ${{ env.BUN_VERSION }}
+              if: "${{ needs.changes.outputs.web == 'true' }}"
 
             - name: Restore Bun dependency cache
               uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
               with:
                   path: ~/.bun/install/cache
                   key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock') }}
+              if: "${{ needs.changes.outputs.web == 'true' }}"
 
             - name: Install dependencies
               run: bun install --frozen-lockfile
+              if: "${{ needs.changes.outputs.web == 'true' }}"
 
             - name: Check database migrations
               run: bun --no-env-file run db:check
+              if: "${{ needs.changes.outputs.web == 'true' }}"
 
             - name: Check schema migration coverage
               run: |
@@ -195,12 +240,15 @@ jobs:
                       echo '::error::The database schema has uncommitted migration changes. Generate, review and commit the migration files.'
                       exit 1
                   fi
+              if: "${{ needs.changes.outputs.web == 'true' }}"
 
             - name: Apply database migrations
               run: bun --no-env-file run db:migrate
+              if: "${{ needs.changes.outputs.web == 'true' }}"
 
             - name: Build isolated TypeScript coverage environment
               run: docker build -f docker/tooling/coverage/Dockerfile -t rentnerproxy-ts-coverage:test .
+              if: "${{ needs.changes.outputs.web == 'true' }}"
 
             - name: Run web, database and property tests with complete coverage
               run: |
@@ -210,9 +258,10 @@ jobs:
                     --env DATABASE_URL --env VALKEY_URL \
                     --env RENTNERPROXY_DATABASE_INTEGRATION --env RENTNERPROXY_VALKEY_INTEGRATION \
                     rentnerproxy-ts-coverage:test run coverage:ts --database
+              if: "${{ needs.changes.outputs.web == 'true' }}"
 
             - name: Store TypeScript coverage and source inventory
-              if: ${{ !cancelled() }}
+              if: "${{ needs.changes.outputs.web == 'true' && (!cancelled()) }}"
               uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
               with:
                   name: typescript-coverage-linux
@@ -226,54 +275,57 @@ jobs:
 
             - name: Create isolated host page fixture database
               run: psql "$DATABASE_URL" --no-psqlrc -v ON_ERROR_STOP=1 -c 'CREATE DATABASE host_page_fixture;'
+              if: "${{ needs.changes.outputs.web == 'true' }}"
 
             - name: Run host page storage integration tests
               env:
                   DATABASE_URL: postgresql://rentnerproxy:rentnerproxy@127.0.0.1:5432/host_page_fixture
                   RENTNERPROXY_HOST_PAGE_FIXTURE: '1'
               run: bun --no-env-file test --isolate ./web/src/tests/server/Admin/HostTags/host-page-storage.db.test.ts
+              if: "${{ needs.changes.outputs.web == 'true' }}"
+        needs: 'changes'
+        if: '${{ !cancelled() }}'
 
     fuzz:
         name: Fuzz Tests
+        needs:
+            - 'changes'
+            - 'web-tests'
+        if: '${{ !cancelled() }}'
         runs-on: ubuntu-latest
-        timeout-minutes: 15
+        timeout-minutes: 1
         steps:
-            - name: Check out repository
-              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-              with:
-                  persist-credentials: false
-
-            - name: Set up Bun
-              uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-              with:
-                  bun-version: ${{ env.BUN_VERSION }}
-
-            - name: Restore Bun dependency cache
-              uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-              with:
-                  path: ~/.bun/install/cache
-                  key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock') }}
-
-            - name: Install dependencies
-              run: bun install --frozen-lockfile
-
-            - name: Run fuzz and property-based tests
-              run: bun --no-env-file run test:fuzz
+            - name: 'Require successful web coverage including every fuzz test'
+              env:
+                  DETECTION_RESULT: '${{ needs.changes.result }}'
+                  WEB_RESULT: '${{ needs.web-tests.result }}'
+              run: |
+                  test "$DETECTION_RESULT" = success && test "$WEB_RESULT" = success
+                  echo "Fuzz tests run within Web Tests when TypeScript inputs are affected." >> "$GITHUB_STEP_SUMMARY"
 
     rust:
         name: Rust
         runs-on: ubuntu-latest
         timeout-minutes: 20
         steps:
+            - name: 'Require successful change selection'
+              env:
+                  DETECTION_RESULT: '${{ needs.changes.result }}'
+              run: 'test "$DETECTION_RESULT" = success'
+            - name: 'Explain unaffected check'
+              if: "${{ !(needs.changes.outputs.rust == 'true') }}"
+              run: 'echo ''Rust: no affected inputs; expensive verification omitted.'' >> "$GITHUB_STEP_SUMMARY"'
             - name: Check out repository
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   persist-credentials: false
+              if: "${{ needs.changes.outputs.rust == 'true' }}"
 
             - name: Set up Rust
               run: |
                   rustup toolchain install "$RUST_VERSION" --profile minimal --component clippy --component llvm-tools-preview
                   rustup override set "$RUST_VERSION"
+              if: "${{ needs.changes.outputs.rust == 'true' }}"
 
             - name: Restore Cargo dependency cache
               id: cargo-cache
@@ -285,6 +337,7 @@ jobs:
                       ~/.cargo/registry/src
                       ~/.cargo/git/db
                   key: ${{ runner.os }}-cargo-${{ env.RUST_VERSION }}-${{ hashFiles('core/Cargo.lock') }}
+              if: "${{ needs.changes.outputs.rust == 'true' }}"
 
             - name: Restore Rust coverage build outputs
               id: rust-build-cache
@@ -299,9 +352,11 @@ jobs:
                   key: ${{ runner.os }}-${{ runner.arch }}-cargo-coverage-v1-${{ env.RUST_VERSION }}-llvm-cov-0.9.1-${{ hashFiles('core/Cargo.lock', 'core/Cargo.toml', 'rust-toolchain*', '.cargo/**', 'core/.cargo/**', '.github/workflows/ci.yml') }}-${{ hashFiles('core/src/**', 'core/tests/**', 'core/build.rs') }}
                   restore-keys: |
                       ${{ runner.os }}-${{ runner.arch }}-cargo-coverage-v1-${{ env.RUST_VERSION }}-llvm-cov-0.9.1-${{ hashFiles('core/Cargo.lock', 'core/Cargo.toml', 'rust-toolchain*', '.cargo/**', 'core/.cargo/**', '.github/workflows/ci.yml') }}-
+              if: "${{ needs.changes.outputs.rust == 'true' }}"
 
             - name: Run Clippy
               run: cargo clippy --locked --manifest-path core/Cargo.toml --all-targets --all-features -- -D warnings
+              if: "${{ needs.changes.outputs.rust == 'true' }}"
 
             - name: Restore Rust coverage tool
               id: llvm-cov-cache
@@ -309,16 +364,18 @@ jobs:
               with:
                   path: ${{ runner.temp }}/cargo-llvm-cov/bin/cargo-llvm-cov
                   key: ${{ runner.os }}-${{ runner.arch }}-cargo-llvm-cov-0.9.1-${{ env.RUST_VERSION }}-v1
+              if: "${{ needs.changes.outputs.rust == 'true' }}"
 
             - name: Add Rust coverage tool to PATH
               run: echo "$RUNNER_TEMP/cargo-llvm-cov/bin" >> "$GITHUB_PATH"
+              if: "${{ needs.changes.outputs.rust == 'true' }}"
 
             - name: Install Rust coverage tool
-              if: steps.llvm-cov-cache.outputs.cache-hit != 'true'
+              if: "${{ needs.changes.outputs.rust == 'true' && (steps.llvm-cov-cache.outputs.cache-hit != 'true') }}"
               run: cargo install cargo-llvm-cov --locked --version 0.9.1 --root "$RUNNER_TEMP/cargo-llvm-cov"
 
             - name: Save Rust coverage tool
-              if: github.event_name != 'pull_request' && steps.llvm-cov-cache.outputs.cache-hit != 'true'
+              if: "${{ needs.changes.outputs.rust == 'true' && (github.event_name != 'pull_request' && steps.llvm-cov-cache.outputs.cache-hit != 'true') }}"
               uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
               with:
                   path: ${{ runner.temp }}/cargo-llvm-cov/bin/cargo-llvm-cov
@@ -327,17 +384,19 @@ jobs:
             - name: Run Rust tests with coverage
               id: rust-tests
               run: cargo llvm-cov --locked --manifest-path core/Cargo.toml --all-features --no-report
+              if: "${{ needs.changes.outputs.rust == 'true' }}"
 
             - name: Run Rust documentation tests
               run: cargo test --locked --manifest-path core/Cargo.toml --doc
+              if: "${{ needs.changes.outputs.rust == 'true' }}"
 
             - name: Report and check Rust coverage
               id: rust-coverage
-              if: ${{ !cancelled() && steps.rust-tests.outcome != 'skipped' }}
+              if: "${{ needs.changes.outputs.rust == 'true' && (!cancelled() && steps.rust-tests.outcome != 'skipped') }}"
               run: bash .github/scripts/ci/rust-coverage.sh
 
             - name: Store Linux Rust coverage
-              if: ${{ !cancelled() && steps.rust-coverage.outcome != 'skipped' }}
+              if: "${{ needs.changes.outputs.rust == 'true' && (!cancelled() && steps.rust-coverage.outcome != 'skipped') }}"
               uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
               with:
                   name: rust-coverage-linux
@@ -346,7 +405,7 @@ jobs:
                   retention-days: 14
 
             - name: Save Rust coverage build outputs
-              if: github.event_name != 'pull_request' && steps.rust-build-cache.outputs.cache-hit != 'true'
+              if: "${{ needs.changes.outputs.rust == 'true' && (github.event_name != 'pull_request' && steps.rust-build-cache.outputs.cache-hit != 'true') }}"
               uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
               with:
                   path: |
@@ -358,7 +417,7 @@ jobs:
                   key: ${{ runner.os }}-${{ runner.arch }}-cargo-coverage-v1-${{ env.RUST_VERSION }}-llvm-cov-0.9.1-${{ hashFiles('core/Cargo.lock', 'core/Cargo.toml', 'rust-toolchain*', '.cargo/**', 'core/.cargo/**', '.github/workflows/ci.yml') }}-${{ hashFiles('core/src/**', 'core/tests/**', 'core/build.rs') }}
 
             - name: Save Cargo dependency cache
-              if: github.event_name != 'pull_request' && steps.cargo-cache.outputs.cache-hit != 'true'
+              if: "${{ needs.changes.outputs.rust == 'true' && (github.event_name != 'pull_request' && steps.cargo-cache.outputs.cache-hit != 'true') }}"
               uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
               with:
                   path: |
@@ -367,32 +426,45 @@ jobs:
                       ~/.cargo/registry/src
                       ~/.cargo/git/db
                   key: ${{ runner.os }}-cargo-${{ env.RUST_VERSION }}-${{ hashFiles('core/Cargo.lock') }}
+        needs: 'changes'
+        if: '${{ !cancelled() }}'
 
     build:
         name: Build
         runs-on: ubuntu-latest
         timeout-minutes: 20
         steps:
+            - name: 'Require successful change selection'
+              env:
+                  DETECTION_RESULT: '${{ needs.changes.result }}'
+              run: 'test "$DETECTION_RESULT" = success'
+            - name: 'Explain unaffected check'
+              if: "${{ !((needs.changes.outputs.build_web == 'true' || needs.changes.outputs.build_core == 'true')) }}"
+              run: 'echo ''Build: no affected inputs; expensive verification omitted.'' >> "$GITHUB_STEP_SUMMARY"'
             - name: Check out repository
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   persist-credentials: false
+              if: "${{ (needs.changes.outputs.build_web == 'true' || needs.changes.outputs.build_core == 'true') }}"
 
             - name: Set up Bun
               uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
               with:
                   bun-version: ${{ env.BUN_VERSION }}
+              if: "${{ needs.changes.outputs.build_web == 'true' || needs.changes.outputs.build_core == 'true' }}"
 
             - name: Set up Rust
               run: |
                   rustup toolchain install "$RUST_VERSION" --profile minimal
                   rustup override set "$RUST_VERSION"
+              if: "${{ needs.changes.outputs.build_core == 'true' }}"
 
             - name: Restore Bun dependency cache
               uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
               with:
                   path: ~/.bun/install/cache
                   key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock') }}
+              if: "${{ needs.changes.outputs.build_web == 'true' }}"
 
             - name: Restore Cargo dependency cache
               uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -403,6 +475,7 @@ jobs:
                       ~/.cargo/registry/src
                       ~/.cargo/git/db
                   key: ${{ runner.os }}-cargo-${{ env.RUST_VERSION }}-${{ hashFiles('core/Cargo.lock') }}
+              if: "${{ needs.changes.outputs.build_core == 'true' }}"
 
             - name: Restore Rust release build outputs
               id: rust-release-cache
@@ -413,20 +486,27 @@ jobs:
                   key: ${{ runner.os }}-${{ runner.arch }}-cargo-release-v1-${{ env.RUST_VERSION }}-${{ hashFiles('core/Cargo.lock', 'core/Cargo.toml', 'rust-toolchain*', '.cargo/**', 'core/.cargo/**', '.github/workflows/ci.yml') }}-${{ hashFiles('core/src/**', 'core/tests/**', 'core/build.rs') }}
                   restore-keys: |
                       ${{ runner.os }}-${{ runner.arch }}-cargo-release-v1-${{ env.RUST_VERSION }}-${{ hashFiles('core/Cargo.lock', 'core/Cargo.toml', 'rust-toolchain*', '.cargo/**', 'core/.cargo/**', '.github/workflows/ci.yml') }}-
+              if: "${{ needs.changes.outputs.build_core == 'true' }}"
 
             - name: Install dependencies
               run: bun install --frozen-lockfile
-
-            - name: Build production artifacts
-              run: bun --no-env-file run build
+              if: "${{ needs.changes.outputs.build_web == 'true' }}"
+            - name: 'Build affected web artifacts and check web types'
+              if: "${{ needs.changes.outputs.build_web == 'true' }}"
+              run: 'bun --no-env-file run build:web'
+            - name: 'Build affected controller artifacts'
+              if: "${{ needs.changes.outputs.build_core == 'true' }}"
+              run: 'bun --no-env-file run build:core'
 
             - name: Save Rust release build outputs
-              if: github.event_name != 'pull_request' && steps.rust-release-cache.outputs.cache-hit != 'true'
+              if: "${{ needs.changes.outputs.build_core == 'true' && (github.event_name != 'pull_request' && steps.rust-release-cache.outputs.cache-hit != 'true') }}"
               uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
               with:
                   path: |
                       core/target/release
                   key: ${{ runner.os }}-${{ runner.arch }}-cargo-release-v1-${{ env.RUST_VERSION }}-${{ hashFiles('core/Cargo.lock', 'core/Cargo.toml', 'rust-toolchain*', '.cargo/**', 'core/.cargo/**', '.github/workflows/ci.yml') }}-${{ hashFiles('core/src/**', 'core/tests/**', 'core/build.rs') }}
+        needs: 'changes'
+        if: '${{ !cancelled() }}'
 
     caddy-response-cache:
         name: Caddy Response Cache
@@ -435,10 +515,18 @@ jobs:
         runs-on: ubuntu-latest
         timeout-minutes: 20
         steps:
+            - name: 'Require successful change selection'
+              env:
+                  DETECTION_RESULT: '${{ needs.changes.result }}'
+              run: 'test "$DETECTION_RESULT" = success'
+            - name: 'Explain unaffected check'
+              if: "${{ !((needs.changes.outputs.go == 'true' || needs.changes.outputs.caddy == 'true')) }}"
+              run: 'echo ''Caddy Response Cache: no affected inputs; expensive verification omitted.'' >> "$GITHUB_STEP_SUMMARY"'
             - name: Check out repository
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   persist-credentials: false
+              if: "${{ needs.changes.outputs.go == 'true' || needs.changes.outputs.caddy == 'true' }}"
 
             - name: Restore Caddy Go caches
               id: caddy-go-cache
@@ -450,9 +538,11 @@ jobs:
                   key: ${{ runner.os }}-${{ runner.arch }}-caddy-go-race-v1-${{ hashFiles('core/caddy-modules/responsecache/go.mod', 'core/caddy-modules/responsecache/go.sum', 'docker/proxy-runtime/Dockerfile', '.github/workflows/ci.yml') }}-${{ hashFiles('core/caddy-modules/responsecache/**') }}
                   restore-keys: |
                       ${{ runner.os }}-${{ runner.arch }}-caddy-go-race-v1-${{ hashFiles('core/caddy-modules/responsecache/go.mod', 'core/caddy-modules/responsecache/go.sum', 'docker/proxy-runtime/Dockerfile', '.github/workflows/ci.yml') }}-
+              if: "${{ needs.changes.outputs.go == 'true' }}"
 
             - name: Prepare isolated Caddy Go cache mounts
               run: mkdir -p .cache/caddy-go/mod .cache/caddy-go/build coverage/go
+              if: "${{ needs.changes.outputs.go == 'true' }}"
 
             - name: Verify all owned Go packages, race safety and coverage
               run: |
@@ -465,9 +555,10 @@ jobs:
                     --env GOTOOLCHAIN=local --env CGO_ENABLED=1 \
                     mirror.gcr.io/library/golang:1.27.3-trixie@sha256:c65ecfe613b539ac74c62a4c3b2c27e8f8a6076384c8f27e8a3c0f3be17cc385 \
                     /bin/sh /workspace/.github/scripts/ci/go-coverage.sh
+              if: "${{ needs.changes.outputs.go == 'true' }}"
 
             - name: Store Go coverage profiles and complete package inventory
-              if: ${{ !cancelled() }}
+              if: "${{ needs.changes.outputs.go == 'true' && (!cancelled()) }}"
               uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
               with:
                   name: go-coverage-linux
@@ -476,7 +567,7 @@ jobs:
                   retention-days: 7
 
             - name: Save Caddy Go caches
-              if: github.event_name != 'pull_request' && steps.caddy-go-cache.outputs.cache-hit != 'true'
+              if: "${{ needs.changes.outputs.go == 'true' && (github.event_name != 'pull_request' && steps.caddy-go-cache.outputs.cache-hit != 'true') }}"
               uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
               with:
                   path: |
@@ -485,11 +576,11 @@ jobs:
                   key: ${{ runner.os }}-${{ runner.arch }}-caddy-go-race-v1-${{ hashFiles('core/caddy-modules/responsecache/go.mod', 'core/caddy-modules/responsecache/go.sum', 'docker/proxy-runtime/Dockerfile', '.github/workflows/ci.yml') }}-${{ hashFiles('core/caddy-modules/responsecache/**') }}
 
             - name: Set up Docker Buildx
-              if: ${{ github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.caddy != 'false' }}
+              if: "${{ needs.changes.outputs.caddy == 'true' }}"
               uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
             - name: Build actual custom Caddy
-              if: ${{ github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.caddy != 'false' }}
+              if: "${{ needs.changes.outputs.caddy == 'true' }}"
               uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
               env:
                   DOCKER_BUILD_RECORD_UPLOAD: 'false'
@@ -506,7 +597,7 @@ jobs:
                   cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,version=2,scope=ci-caddy-build-v1,mode=max,timeout=2m,ignore-error=true' || '' }}
 
             - name: Verify counting upstream, security ordering, variants and ephemeral lifecycle
-              if: ${{ github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.caddy != 'false' }}
+              if: "${{ needs.changes.outputs.caddy == 'true' }}"
               run: |
                   docker run --rm --entrypoint /bin/sh --workdir /src \
                     --mount "type=bind,source=$GITHUB_WORKSPACE/core/caddy-modules/responsecache,target=/src,readonly" \
@@ -516,55 +607,72 @@ jobs:
 
     coverage:
         name: Coverage
-        needs: [web-tests, rust, caddy-response-cache]
+        needs: ['changes', web-tests, rust, caddy-response-cache]
         if: ${{ !cancelled() }}
         runs-on: ubuntu-latest
         timeout-minutes: 10
         steps:
+            - name: 'Require successful selected producers'
+              env:
+                  DETECTION_RESULT: '${{ needs.changes.result }}'
+                  TYPESCRIPT_RESULT: '${{ needs.web-tests.result }}'
+                  RUST_RESULT: '${{ needs.rust.result }}'
+                  GO_RESULT: '${{ needs.caddy-response-cache.result }}'
+              run: 'test "$DETECTION_RESULT" = success && test "$TYPESCRIPT_RESULT" = success && test "$RUST_RESULT" = success && test "$GO_RESULT" = success'
+            - name: 'Explain unaffected coverage'
+              if: "${{ needs.changes.outputs.web != 'true' && needs.changes.outputs.go != 'true' && needs.changes.outputs.rust != 'true' }}"
+              run: 'echo "Coverage: no affected producers; no measurements generated." >> "$GITHUB_STEP_SUMMARY"'
             - name: Check out repository
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   persist-credentials: false
+              if: "${{ (needs.changes.outputs.web == 'true' || needs.changes.outputs.go == 'true' || needs.changes.outputs.rust == 'true') }}"
 
             - name: Set up Bun
               uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
               with:
                   bun-version: ${{ env.BUN_VERSION }}
+              if: "${{ (needs.changes.outputs.web == 'true' || needs.changes.outputs.go == 'true' || needs.changes.outputs.rust == 'true') }}"
 
             - name: Install dependencies
               run: bun install --frozen-lockfile
+              if: "${{ (needs.changes.outputs.web == 'true' || needs.changes.outputs.go == 'true' || needs.changes.outputs.rust == 'true') }}"
 
             - name: Download TypeScript coverage
               uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
               with:
                   name: typescript-coverage-linux
                   path: coverage/typescript
+              if: "${{ needs.changes.outputs.web == 'true' }}"
 
             - name: Download Go coverage
               uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
               with:
                   name: go-coverage-linux
                   path: coverage/go
+              if: "${{ needs.changes.outputs.go == 'true' }}"
 
             - name: Download Rust coverage
               uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
               with:
                   name: rust-coverage-linux
                   path: core/target/coverage
-
-            - name: Verify and summarize every coverage target
+              if: "${{ needs.changes.outputs.rust == 'true' }}"
+            - name: 'Verify and summarize selected coverage targets'
               env:
-                  TYPESCRIPT_RESULT: ${{ needs.web-tests.result }}
-                  RUST_RESULT: ${{ needs.rust.result }}
-                  GO_RESULT: ${{ needs.caddy-response-cache.result }}
+                  SELECT_TYPESCRIPT: '${{ needs.changes.outputs.web }}'
+                  SELECT_GO: '${{ needs.changes.outputs.go }}'
+                  SELECT_RUST: '${{ needs.changes.outputs.rust }}'
               run: |
-                  bun --no-env-file run coverage:report
-                  test "$TYPESCRIPT_RESULT" = success
-                  test "$RUST_RESULT" = success
-                  test "$GO_RESULT" = success
+                  producers=()
+                  if [ "$SELECT_TYPESCRIPT" = true ]; then producers+=(typescript); fi
+                  if [ "$SELECT_GO" = true ]; then producers+=(go); fi
+                  if [ "$SELECT_RUST" = true ]; then producers+=(rust); fi
+                  bun --no-env-file run coverage:report --producers "$(IFS=,; echo "${producers[*]}")"
+              if: "${{ (needs.changes.outputs.web == 'true' || needs.changes.outputs.go == 'true' || needs.changes.outputs.rust == 'true') }}"
 
             - name: Store combined coverage report
-              if: ${{ !cancelled() }}
+              if: "${{ (needs.changes.outputs.web == 'true' || needs.changes.outputs.go == 'true' || needs.changes.outputs.rust == 'true') }}"
               uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
               with:
                   name: coverage-summary
@@ -573,3 +681,24 @@ jobs:
                       coverage/summary.md
                   if-no-files-found: error
                   retention-days: 7
+    full-verification:
+        name: 'Full verification'
+        needs:
+            - 'changes'
+            - 'format'
+            - 'lint'
+            - 'typecheck'
+            - 'web-tests'
+            - 'fuzz'
+            - 'rust'
+            - 'build'
+            - 'caddy-response-cache'
+            - 'coverage'
+        if: "${{ !cancelled() && needs.changes.outputs.full == 'true' }}"
+        runs-on: 'ubuntu-latest'
+        timeout-minutes: 1
+        steps:
+            - name: 'Require every full-suite producer'
+              env:
+                  RESULTS: '${{ toJSON(needs) }}'
+              run: 'printf ''%s'' "$RESULTS" | jq -e ''all(.[]; .result == "success")'' > /dev/null'

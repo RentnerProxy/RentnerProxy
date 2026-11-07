@@ -77,7 +77,7 @@ function deployment() {
     })
 }
 
-export async function offlineBackup() {
+async function offlineBackup() {
     const staging = '/backup/.staging'
     await mkdir(staging, { mode: 0o700 })
     await command(['bun', '--no-env-file', bootstrap, 'export-app-key'])
@@ -140,7 +140,7 @@ export async function offlineBackup() {
     await publishProductionBackup(staging, '/backup/complete', metadata)
 }
 
-export async function offlineValidate() {
+async function offlineValidate() {
     const snapshot = '/tmp/rentnerproxy-validated'
     const output = await lstat(snapshot)
     if (!output.isDirectory() || output.isSymbolicLink() || output.uid !== 0)
@@ -194,7 +194,7 @@ export async function readIsolatedValidationProof(path = '/backup/isolated-valid
     }
 }
 
-export async function offlineRestore(options: readonly string[]) {
+async function offlineRestore(options: readonly string[]) {
     if (
         !options.includes('--confirm-replace') ||
         options.some(

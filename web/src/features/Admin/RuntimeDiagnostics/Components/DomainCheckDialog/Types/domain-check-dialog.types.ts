@@ -25,7 +25,7 @@ export interface DomainCheckAttempt {
     readonly signal: AbortSignal
 }
 
-export interface DomainCheckStageView {
+interface DomainCheckStageView {
     readonly name: DomainCheckStageName
     readonly title: string
     readonly description: string

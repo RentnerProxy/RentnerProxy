@@ -14,7 +14,7 @@ export interface DnsProviderDescriptor {
     }
 }
 
-export interface DnsProviderBinding {
+interface DnsProviderBinding {
     readonly connectionId: string
     readonly provider: DnsProviderId
 }

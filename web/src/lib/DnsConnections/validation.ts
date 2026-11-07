@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { DNS_PROVIDER_IDS, MAX_DNS_PROVIDERS } from '@/config/dns-connections.config.ts'
 
 export const dnsProviderIdSchema = z.enum(DNS_PROVIDER_IDS)
-export const dnsProviderDescriptorSchema = z.strictObject({
+const dnsProviderDescriptorSchema = z.strictObject({
     id: dnsProviderIdSchema,
     capabilities: z.strictObject({
         zoneDiscovery: z.boolean(),
@@ -27,7 +27,7 @@ export const dnsProviderCatalogSchema = z.strictObject({
         ),
 })
 
-export const cloudflareZoneIdSchema = z.string().regex(/^[a-f0-9]{32}$/u)
+const cloudflareZoneIdSchema = z.string().regex(/^[a-f0-9]{32}$/u)
 /** Canonical ASCII DNS zone names may contain underscores (unlike certificate SANs). */
 export const dnsZoneNameSchema = z
     .string()

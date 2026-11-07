@@ -41,10 +41,10 @@ function isOidcEndpointOrigin(value: string): boolean {
     }
 }
 
-export const oidcHttpsUrlSchema = z.string().max(OIDC_LIMITS.urlLength).refine(isOidcHttpsUrl)
+const oidcHttpsUrlSchema = z.string().max(OIDC_LIMITS.urlLength).refine(isOidcHttpsUrl)
 
-export const oidcEndpointOriginSchema = oidcHttpsUrlSchema.refine(isOidcEndpointOrigin)
-export const oidcBindingSchema = z
+const oidcEndpointOriginSchema = oidcHttpsUrlSchema.refine(isOidcEndpointOrigin)
+const oidcBindingSchema = z
     .object({
         subject: z.string().regex(/^[\x21-\x7e]{1,255}$/u),
         userId: z.uuid(),

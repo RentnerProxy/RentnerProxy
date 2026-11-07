@@ -3,8 +3,8 @@ import type { HostMonitoringSettings } from '@/lib/HostMonitoring/Types/host-mon
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
 
 export type HostMonitoringPolicy = typeof hostCheckPolicies.$inferSelect
-export type HostMonitoringObservation = typeof hostCheckObservations.$inferSelect
-export type HostMonitoringIncident = typeof hostCheckIncidents.$inferSelect
+type HostMonitoringObservation = typeof hostCheckObservations.$inferSelect
+type HostMonitoringIncident = typeof hostCheckIncidents.$inferSelect
 
 export interface HostMonitoringClaim {
     readonly policy: HostMonitoringPolicy

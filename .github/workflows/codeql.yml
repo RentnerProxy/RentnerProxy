@@ -17,8 +17,15 @@ concurrency:
     cancel-in-progress: true
 
 jobs:
+    changes:
+        uses: ./.github/workflows/detect-changes.yml
+
     analyze:
         name: CodeQL (${{ matrix.display-name }})
+        needs: changes
+        if: ${{ !cancelled() }}
+        env:
+            RUN_CHECK: ${{ needs.changes.outputs[matrix.scope] != 'false' }}
         runs-on: ubuntu-latest
         timeout-minutes: 30
         permissions:
@@ -30,29 +37,44 @@ jobs:
                 include:
                     - language: javascript-typescript
                       display-name: JavaScript / TypeScript
+                      scope: web
                     - language: rust
                       display-name: Rust
+                      scope: rust
                     - language: actions
                       display-name: GitHub Actions
+                      scope: actions
         steps:
+            - name: Require successful change detection
+              env:
+                  CHANGE_RESULT: ${{ needs.changes.result }}
+              run: test "$CHANGE_RESULT" = success
+
+            - name: Report unaffected check
+              if: env.RUN_CHECK != 'true'
+              run: echo 'No relevant inputs changed; this check does not need to run.'
+
             - name: Check out repository
+              if: env.RUN_CHECK == 'true'
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   persist-credentials: false
 
             - name: Set up Rust
-              if: matrix.language == 'rust'
+              if: ${{ env.RUN_CHECK == 'true' && (matrix.language == 'rust') }}
               run: |
                   rustup toolchain install 1.99.1 --profile minimal
                   rustup override set 1.99.1
 
             - name: Initialize CodeQL
+              if: env.RUN_CHECK == 'true'
               uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
               with:
                   languages: ${{ matrix.language }}
                   build-mode: none
 
             - name: Analyze
+              if: env.RUN_CHECK == 'true'
               uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
               with:
                   category: /language:${{ matrix.language }}

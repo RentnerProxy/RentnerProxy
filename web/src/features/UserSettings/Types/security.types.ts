@@ -1,4 +1,4 @@
-import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server'
+import type { RegistrationResponseJSON } from '@simplewebauthn/server'
 
 interface SecurityPasskey {
     readonly id: string
@@ -22,5 +22,4 @@ export interface TotpSetupFormValues {
     readonly code: string
 }
 
-export type SerializedAuthenticationResponse = AuthenticationResponseJSON
 export type SerializedRegistrationResponse = RegistrationResponseJSON

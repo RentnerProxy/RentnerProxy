@@ -29,7 +29,7 @@ export interface DiscoveryConnectionContext {
     readonly endpoint: string
     readonly restorePaused: boolean
 }
-export interface DiscoveryConnectionRuntime {
+interface DiscoveryConnectionRuntime {
     readonly status: DockerDiscoverySnapshot['status']
     readonly endpoint: string
     readonly locked: boolean

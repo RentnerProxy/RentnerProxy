@@ -68,36 +68,61 @@ export function parseCoverageSummary(value: unknown, producer: CoverageProducer)
     return results
 }
 
-export async function writeCombinedCoverage(): Promise<number> {
+export function selectedCoverageProducers(args: readonly string[]): CoverageProducer[] {
+    if (args.length === 0) return ['typescript', 'go', 'rust']
+    if (args.length !== 2 || args[0] !== '--producers')
+        throw new Error('Expected --producers typescript,go,rust.')
+    const names = args[1]!.split(',')
+    if (
+        names.length === 0 ||
+        new Set(names).size !== names.length ||
+        names.some((name) => !['typescript', 'go', 'rust'].includes(name))
+    )
+        throw new Error('Invalid selected coverage producers.')
+    return names as CoverageProducer[]
+}
+
+export function combineSelectedCoverage(
+    producers: readonly CoverageProducer[],
+    summaries: Partial<Record<CoverageProducer, unknown>>,
+): CoverageResult[] {
+    if (producers.length === 0 || new Set(producers).size !== producers.length)
+        throw new Error('Invalid selected coverage producers.')
+    return producers.flatMap((producer) =>
+        parseCoverageSummary(summaries[producer], producer).map((group) =>
+            producer === 'go'
+                ? Object.assign(group, {
+                      name: group.name === 'all' ? 'Go overall' : 'Go ' + group.name,
+                  })
+                : group,
+        ),
+    )
+}
+
+export async function writeCombinedCoverage(args: readonly string[] = []): Promise<number> {
     const root = fileURLToPath(new URL('../..', import.meta.url))
     const output = resolve(root, 'coverage')
     await clearPublishedCoverage(output)
-    const summaries = await Promise.all(
-        (
-            [
-                ['typescript', 'coverage/typescript/summary.json'],
-                ['go', 'coverage/go/summary.json'],
-                ['rust', 'core/target/coverage/groups.json'],
-            ] as const
-        ).map(async ([producer, path]) =>
-            parseCoverageSummary(
-                JSON.parse(await readFile(resolve(root, path), 'utf8')) as unknown,
-                producer,
-            ),
+    const producers = selectedCoverageProducers(args)
+    const paths: Record<CoverageProducer, string> = {
+        typescript: 'coverage/typescript/summary.json',
+        go: 'coverage/go/summary.json',
+        rust: 'core/target/coverage/groups.json',
+    }
+    const entries = await Promise.all(
+        producers.map(
+            async (producer) =>
+                [
+                    producer,
+                    JSON.parse(await readFile(resolve(root, paths[producer]), 'utf8')) as unknown,
+                ] as const,
         ),
     )
-    const groups = summaries.flatMap((producerGroups, index) =>
-        index === 1
-            ? producerGroups.map((group) => ({
-                  ...group,
-                  name: group.name === 'all' ? 'Go overall' : 'Go ' + group.name,
-              }))
-            : producerGroups,
-    )
+    const groups = combineSelectedCoverage(producers, Object.fromEntries(entries))
     const report = formatCoverageResults(groups)
     await writeFile(
         resolve(output, 'summary.json'),
-        JSON.stringify({ version: 1, minimum: coverageThreshold, groups }, null, 2),
+        JSON.stringify({ version: 1, minimum: coverageThreshold, producers, groups }, null, 2),
     )
     await writeFile(resolve(output, 'summary.md'), report)
     if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY, report)
@@ -107,4 +132,4 @@ export async function writeCombinedCoverage(): Promise<number> {
     return failures.length === 0 ? 0 : 1
 }
 
-if (import.meta.main) process.exitCode = await writeCombinedCoverage()
+if (import.meta.main) process.exitCode = await writeCombinedCoverage(process.argv.slice(2))

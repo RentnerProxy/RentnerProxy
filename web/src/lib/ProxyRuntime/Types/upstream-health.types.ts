@@ -1,4 +1,4 @@
-export type ProxyUpstreamMemberHealthState = 'available' | 'unavailable' | 'unknown'
+type ProxyUpstreamMemberHealthState = 'available' | 'unavailable' | 'unknown'
 export interface ProxyHostUpstreamHealth {
     readonly hostId: string
     readonly revision: string | null

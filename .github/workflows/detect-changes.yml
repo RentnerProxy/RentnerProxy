@@ -1,0 +1,72 @@
+name: 'Detect affected checks'
+'on':
+    workflow_call:
+        outputs:
+            web:
+                description: 'web checks are affected'
+                value: '${{ jobs.detect.outputs.web }}'
+            scripts:
+                description: 'scripts checks are affected'
+                value: '${{ jobs.detect.outputs.scripts }}'
+            rust:
+                description: 'rust checks are affected'
+                value: '${{ jobs.detect.outputs.rust }}'
+            go:
+                description: 'go checks are affected'
+                value: '${{ jobs.detect.outputs.go }}'
+            caddy:
+                description: 'caddy checks are affected'
+                value: '${{ jobs.detect.outputs.caddy }}'
+            build_web:
+                description: 'build_web checks are affected'
+                value: '${{ jobs.detect.outputs.build_web }}'
+            build_core:
+                description: 'build_core checks are affected'
+                value: '${{ jobs.detect.outputs.build_core }}'
+            runtime:
+                description: 'runtime checks are affected'
+                value: '${{ jobs.detect.outputs.runtime }}'
+            dependencies:
+                description: 'dependencies checks are affected'
+                value: '${{ jobs.detect.outputs.dependencies }}'
+            actions:
+                description: 'actions checks are affected'
+                value: '${{ jobs.detect.outputs.actions }}'
+            full:
+                description: 'full checks are affected'
+                value: '${{ jobs.detect.outputs.full }}'
+permissions:
+    contents: 'read'
+jobs:
+    detect:
+        name: 'Detect affected checks'
+        runs-on: 'ubuntu-latest'
+        timeout-minutes: 5
+        outputs:
+            web: '${{ steps.changes.outputs.web }}'
+            scripts: '${{ steps.changes.outputs.scripts }}'
+            rust: '${{ steps.changes.outputs.rust }}'
+            go: '${{ steps.changes.outputs.go }}'
+            caddy: '${{ steps.changes.outputs.caddy }}'
+            build_web: '${{ steps.changes.outputs.build_web }}'
+            build_core: '${{ steps.changes.outputs.build_core }}'
+            runtime: '${{ steps.changes.outputs.runtime }}'
+            dependencies: '${{ steps.changes.outputs.dependencies }}'
+            actions: '${{ steps.changes.outputs.actions }}'
+            full: '${{ steps.changes.outputs.full }}'
+        steps:
+            - name: 'Check out complete comparison history'
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  persist-credentials: false
+                  fetch-depth: 0
+            - name: 'Set up Bun'
+              uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+              with:
+                  bun-version: '1.4.4'
+            - name: 'Select affected verification'
+              id: 'changes'
+              env:
+                  CI_BASE_SHA: '${{ github.event.pull_request.base.sha || github.event.before }}'
+                  CI_HEAD_SHA: '${{ github.event.pull_request.head.sha || github.sha }}'
+              run: 'bun --no-env-file .github/scripts/ci/changes.ts'

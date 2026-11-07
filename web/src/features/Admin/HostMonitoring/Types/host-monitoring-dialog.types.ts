@@ -32,7 +32,7 @@ export interface MonitoringHistoryPageParam {
 export interface MonitoringHistoryPage extends HostMonitoringHistoryView {
     readonly windowSince: string | undefined
 }
-export type NumericMonitoringSetting = Exclude<keyof HostMonitoringSettings, 'domain' | 'enabled'>
+type NumericMonitoringSetting = Exclude<keyof HostMonitoringSettings, 'domain' | 'enabled'>
 export interface MonitoringDialogState {
     readonly canView: boolean
     readonly canUpdate: boolean

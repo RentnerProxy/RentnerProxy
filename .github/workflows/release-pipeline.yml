@@ -100,6 +100,7 @@ jobs:
         runs-on: ubuntu-latest
         timeout-minutes: 10
         permissions:
+            actions: read
             contents: read
         outputs:
             channel_tag: ${{ steps.release.outputs.channel_tag }}
@@ -151,6 +152,21 @@ jobs:
                   RELEASE_TAG: ${{ inputs.release_tag }}
               shell: bash
               run: bash automation/.github/scripts/release/prepare-release-source.sh
+
+            - name: Set up Bun for release verification
+              uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+              with:
+                  bun-version: ${{ env.BUN_VERSION }}
+
+            - name: Require full verification before release builds
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  RELEASE_REVISION: ${{ steps.release.outputs.revision }}
+              run: |
+                  bun --no-env-file automation/.github/scripts/release/verify-exact-revision-ci.ts || {
+                      echo '::error::Run CI and Production Smokes manually on the exact main revision before preparing this release.'
+                      exit 1
+                  }
 
             - name: Store prepared release assets
               uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

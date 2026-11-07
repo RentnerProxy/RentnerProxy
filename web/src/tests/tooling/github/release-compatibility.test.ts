@@ -36,9 +36,7 @@ test('collects main publication evidence and routes PR compatibility through pro
             workflow_dispatch: { inputs: { source: { options: string[] } } }
         }
     }
-    expect(workflow.on.push.branches).toContain('main')
-    expect(workflow.on.push).not.toHaveProperty('paths')
-    expect(workflow.on.push).not.toHaveProperty('paths-ignore')
+    expect(workflow.on).not.toHaveProperty('push')
     expect(workflow.on).not.toHaveProperty('pull_request')
     expect(workflow.on.workflow_dispatch.inputs.source.options).toEqual([
         'all',

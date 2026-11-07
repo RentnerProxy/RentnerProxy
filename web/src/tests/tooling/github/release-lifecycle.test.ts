@@ -124,7 +124,7 @@ test('isolates the immediate building write and generates final notes after all 
     )
     const prepare = pipeline.jobs.prepare!
     expect(prepare.needs).toBe('building')
-    expect(prepare.permissions).toEqual({ contents: 'read' })
+    expect(prepare.permissions).toEqual({ actions: 'read', contents: 'read' })
     expect(
         prepare.steps?.some((step) => step.run?.includes('prepare-release-notes.sh')),
     ).toBeFalse()

@@ -17,7 +17,6 @@ import {
     validatePoolRetries,
 } from '@/lib/ProxyRuntime/upstreamPool.ts'
 import type { ProxyUpstreamPool } from '@/lib/ProxyRuntime/Types/upstream-pool.types.ts'
-export { proxyUpstreamPoolSchema } from '@/lib/ProxyRuntime/upstreamPool.ts'
 import { browserCacheSettingsSchema } from './config-validation.ts'
 import { responseCacheSchema } from '@/lib/ResponseCache/responseCache.ts'
 import { hostTagIdsSchema } from '@/lib/HostTags/hostTags.ts'

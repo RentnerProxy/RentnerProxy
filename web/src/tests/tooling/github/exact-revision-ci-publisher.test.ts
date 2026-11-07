@@ -32,10 +32,10 @@ test('both reusable workflow permission boundaries grant actions read and match 
     expect(pipeline.slice(pipeline.indexOf('    publish:\n'))).toMatch(
         /permissions:\s+actions: read\s+contents: write/,
     )
-    const ci = await readFile(join(root, '.github/workflows/ci.yml'), 'utf8')
-    expect([...ci.matchAll(/^ {8}name: (.+)\r?$/gm)].map((match) => match[1]?.trim())).toEqual([
-        ...REQUIRED_CI_JOBS,
-    ])
+    const ci = Bun.YAML.parse(await readFile(join(root, '.github/workflows/ci.yml'), 'utf8')) as {
+        jobs: Record<string, { name?: string }>
+    }
+    expect(Object.values(ci.jobs).map((job) => job.name)).toEqual([...REQUIRED_CI_JOBS])
 })
 
 test('CLI fails with one sanitized error and no credential output before any API request', async () => {
@@ -99,10 +99,10 @@ test('trusted checkout CLI loads with only native Bun and its byte helper, witho
                 head_branch: 'main', event: 'push', status: 'completed', conclusion: 'success' }
             globalThis.fetch = async input => {
                 const path = new URL(String(input)).pathname
-                const compatibility = { ...run, id: 40, workflow_id: 30, path: '.github/workflows/release-compatibility.yml' }
-                if (path.endsWith('/release-compatibility.yml')) return Response.json({ id: 30, path: compatibility.path, state: 'active' })
+                const compatibility = { ...run, id: 40, workflow_id: 30, path: '.github/workflows/production-smokes.yml' }
+                if (path.endsWith('/production-smokes.yml')) return Response.json({ id: 30, path: compatibility.path, state: 'active' })
                 if (path.includes('/workflows/30/runs')) return Response.json({ total_count: 1, workflow_runs: [compatibility] })
-                if (path.includes('/runs/40/') && path.endsWith('/jobs')) return Response.json({ total_count: 1, jobs: [{ id: 1, run_id: 40, head_sha: run.head_sha, name: ${JSON.stringify(REQUIRED_COMPATIBILITY_JOBS[0])}, status: 'completed', conclusion: 'success' }] })
+                if (path.includes('/runs/40/') && path.endsWith('/jobs')) return Response.json({ total_count: ${REQUIRED_COMPATIBILITY_JOBS.length}, jobs: ${JSON.stringify(REQUIRED_COMPATIBILITY_JOBS)}.map((name, index) => ({ id: index + 1, run_id: 40, head_sha: run.head_sha, name, status: 'completed', conclusion: 'success' })) })
                 if (path.endsWith('/runs/40')) return Response.json(compatibility)
                 if (path.endsWith('/ci.yml')) return Response.json({ id: 10, path: run.path, state: 'active' })
                 if (path.endsWith('/jobs')) return Response.json({ total_count: ${REQUIRED_CI_JOBS.length}, jobs: ${JSON.stringify(REQUIRED_CI_JOBS)}.map((name, index) => ({ id: index + 1, run_id: 20, head_sha: run.head_sha, name, status: 'completed', conclusion: 'success' })) })

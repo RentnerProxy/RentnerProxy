@@ -143,7 +143,7 @@ export async function writeStoredOidcSettings(
 }
 
 /** Binds encryption to the provider identity and exact configured credential destinations. */
-export function oidcSecretContext(
+function oidcSecretContext(
     provider: Pick<
         StoredOidcProvider,
         | 'id'
