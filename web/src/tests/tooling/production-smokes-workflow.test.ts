@@ -545,6 +545,7 @@ test('main and manual consumers reuse one runtime producer and expose honest ful
         'release-compatibility',
     ])
         expect(document.jobs[name]?.if).not.toContain('pull_request')
+    expect(document.jobs['compatibility-verified']?.if).toBe('${{ !cancelled() }}')
     const marker = document.jobs['full-runtime-verification']!
     expect(marker.if).toContain("needs.changes.outputs.runtime == 'true'")
     expect(marker.needs).toEqual([

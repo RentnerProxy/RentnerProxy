@@ -381,7 +381,7 @@ jobs:
 
     compatibility-verified:
         name: ${{ github.event_name == 'pull_request' && 'PR Compatibility verified' || 'Compatibility verified' }}
-        if: ${{ always() }}
+        if: ${{ !cancelled() }}
         needs:
             - changes
             - select-compatibility-sources
