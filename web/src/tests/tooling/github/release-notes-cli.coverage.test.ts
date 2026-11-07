@@ -19,7 +19,7 @@ test('release notes CLI writes reviewed outputs from an offline API and rejects 
         RELEASE_PUBLISHED_AT: '2026-10-29T00:00:00.000Z',
         RELEASE_PRERELEASE: 'false',
         RELEASE_CHANNEL: 'stable',
-        RELEASE_IMAGE: 'ghcr.io/rentnerkev/rentnerproxy',
+        RELEASE_IMAGE: 'ghcr.io/rentnerproxy/platform',
         RELEASE_ID: '123',
         RELEASE_MEDIA_REVISION: 'a'.repeat(40),
     }
@@ -70,7 +70,7 @@ test('release notes CLI writes reviewed outputs from an offline API and rejects 
         expect(successful.stdout).toContain('Generated release notes from 0 eligible issue(s).')
         expect(successful.stdout).toContain('Previous release: none (initial release).')
         expect(await readFile(join(output, 'release-body.md'), 'utf8')).toContain(
-            'ghcr.io/rentnerkev/rentnerproxy',
+            'ghcr.io/rentnerproxy/platform',
         )
         expect(await readFile(join(output, 'RentnerProxy-v1.2.3-CHANGELOG.md'), 'utf8')).toContain(
             'v1.2.3',

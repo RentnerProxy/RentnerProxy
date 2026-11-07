@@ -281,8 +281,9 @@ describe('trusted PR preview publisher workflow', () => {
         expect(publisher).not.toContain('id-token: write')
         expect(publisher).not.toContain('write-all')
         expect(publisher).toContain('environment: container-publishing')
-        expect(publisher).toContain('GHCR_TOKEN: ${{ secrets.GHCR_PUBLISH_TOKEN }}')
-        expect(publisher).toContain('GHCR_USERNAME: RentnerKev')
+        expect(publisher).toContain('GHCR_TOKEN: ${{ github.token }}')
+        expect(publisher).toContain('GHCR_USERNAME: ${{ github.actor }}')
+        expect(publisher).not.toContain('GHCR_PUBLISH_TOKEN')
         expect(publisher).toContain('GITHUB_TOKEN: ${{ github.token }}')
     })
 

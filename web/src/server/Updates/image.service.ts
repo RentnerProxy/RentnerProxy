@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { imagePlatform } from '../../lib/ApplicationVersion/imagePlatform.ts'
+import { releaseImageIdentity } from '../../lib/ApplicationVersion/releaseImageIdentity.ts'
 import type {
     ApplicationUpdate,
     UpdateImageStatus,
@@ -8,8 +9,6 @@ import type {
 import type { ReleaseReadiness } from '@/lib/ApplicationVersion/Types/release-readiness.types.ts'
 import { readBoundedBytes, readBoundedText, ResponseBodyLimitError } from './http.ts'
 
-const repository = 'ghcr.io/rentnerkev/rentnerproxy'
-const base = 'https://ghcr.io/v2/rentnerkev/rentnerproxy'
 const digestPattern = /^sha256:[a-f0-9]{64}$/
 const manifestTypes = [
     'application/vnd.oci.image.manifest.v1+json',
@@ -144,21 +143,24 @@ export async function verifyReleaseImage(
     fetcher: typeof fetch,
     signal: AbortSignal,
 ): Promise<ApplicationUpdate['image']> {
+    const identity = releaseImageIdentity(readiness.image.repository, readiness.tag)
     const result = (status: UpdateImageStatus): ApplicationUpdate['image'] => ({
         status,
         reference:
             status === 'verified'
-                ? `${repository}:${readiness.tag}@${readiness.image.digest}`
+                ? `${readiness.image.repository}:${readiness.tag}@${readiness.image.digest}`
                 : null,
         digest: status === 'verified' ? readiness.image.digest : null,
         platform,
     })
     if (
-        readiness.image.repository !== repository ||
+        !identity ||
         !digestPattern.test(readiness.image.digest) ||
         !/^[\w][\w.-]{0,127}$/.test(readiness.tag)
     )
         return result('invalid')
+    const path = identity.repository.slice('ghcr.io/'.length)
+    const base = `https://ghcr.io/v2/${path}`
     if (
         !imagePlatform(platform) ||
         !readiness.image.platforms.some(
@@ -169,7 +171,7 @@ export async function verifyReleaseImage(
     const overallSignal = AbortSignal.any([signal, AbortSignal.timeout(15000)])
     try {
         const auth = await request(
-            'https://ghcr.io/token?service=ghcr.io&scope=repository%3Arentnerkev%2Frentnerproxy%3Apull',
+            `https://ghcr.io/token?service=ghcr.io&scope=${encodeURIComponent(`repository:${path}:pull`)}`,
             null,
             fetcher,
             overallSignal,
@@ -258,8 +260,7 @@ export async function verifyReleaseImage(
             return result(selectedFromIndex ? 'invalid' : 'unsupported-platform')
         const labels = config.data.config.Labels
         if (
-            labels['org.opencontainers.image.source'] !==
-                'https://github.com/RentnerKev/RentnerProxy' ||
+            labels['org.opencontainers.image.source'] !== identity.source ||
             labels['org.opencontainers.image.version'] !== readiness.tag ||
             labels['org.opencontainers.image.revision'] !== readiness.revision
         )

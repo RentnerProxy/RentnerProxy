@@ -261,7 +261,7 @@ type Workflow = {
 const workflow = async (name: string) =>
     Bun.YAML.parse(await readFile(join(root, '.github/workflows', name), 'utf8')) as Workflow
 
-test('forwards named required credentials only to their signing and registry sinks', async () => {
+test('forwards the signing credential only to the signing sink', async () => {
     const [entry, pipeline, signer, recovery] = await Promise.all([
         workflow('release.yml'),
         workflow('release-pipeline.yml'),
@@ -269,18 +269,15 @@ test('forwards named required credentials only to their signing and registry sin
         workflow('release-recovery.yml'),
     ])
     const forwarding = { PACKAGE_SIGNING_KEY: '${{ secrets.PACKAGE_SIGNING_KEY }}' }
-    const registryForwarding = { GHCR_PUBLISH_TOKEN: '${{ secrets.GHCR_PUBLISH_TOKEN }}' }
-    expect(entry.jobs.release!.secrets).toEqual({ ...forwarding, ...registryForwarding })
+    expect(entry.jobs.release!.secrets).toEqual(forwarding)
     expect(entry.jobs.release!.with?.expected_revision).toBe('${{ github.sha }}')
-    expect(recovery.jobs.release!.secrets).toEqual({ ...forwarding, ...registryForwarding })
+    expect(recovery.jobs.release!.secrets).toEqual(forwarding)
     expect(pipeline.jobs['sign-distribution']!.secrets).toEqual(forwarding)
-    expect(pipeline.jobs['publish-image']!.secrets).toEqual(registryForwarding)
+    expect(pipeline.jobs['publish-image']!.secrets).toBeUndefined()
     for (const callable of [pipeline, signer]) {
-        expect(Object.keys(callable.on.workflow_call!.secrets ?? {}).toSorted()).toEqual(
-            callable === pipeline
-                ? ['GHCR_PUBLISH_TOKEN', 'PACKAGE_SIGNING_KEY']
-                : ['PACKAGE_SIGNING_KEY'],
-        )
+        expect(Object.keys(callable.on.workflow_call!.secrets ?? {})).toEqual([
+            'PACKAGE_SIGNING_KEY',
+        ])
         expect(callable.on.workflow_call!.secrets?.PACKAGE_SIGNING_KEY?.required).toBeTrue()
     }
     for (const [name, job] of Object.entries(pipeline.jobs)) {

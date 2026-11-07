@@ -38,7 +38,7 @@ repository="${GITHUB_REPOSITORY,,}"
     echo "::error::Release images require the official source repository."
     exit 1
 }
-image='ghcr.io/rentnerkev/rentnerproxy'
+image='ghcr.io/rentnerproxy/platform'
 
 case "$RELEASE_CHANNEL" in
     alpha)

@@ -75,8 +75,8 @@ case "$phase" in
         install -d -m 0755 /etc/containers/registries.conf.d
         cat > /etc/containers/registries.conf.d/rentnerproxy-fixture.conf <<'MIRROR'
 [[registry]]
-prefix="ghcr.io/rentnerkev/rentnerproxy"
-location="192.0.2.1:15000/rentnerkev/rentnerproxy"
+prefix="ghcr.io/rentnerproxy/platform"
+location="192.0.2.1:15000/rentnerproxy/platform"
 insecure=true
 MIRROR
         podman load --input /test/http3.tar >/dev/null

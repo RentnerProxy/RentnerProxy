@@ -3,8 +3,6 @@ name: RentnerProxy Release Pipeline
 on:
     workflow_call:
         secrets:
-            GHCR_PUBLISH_TOKEN:
-                required: true
             PACKAGE_SIGNING_KEY:
                 required: true
         inputs:
@@ -215,8 +213,6 @@ jobs:
             contents: read
             packages: write
         uses: ./.github/workflows/publish-assessed-image.yml
-        secrets:
-            GHCR_PUBLISH_TOKEN: ${{ secrets.GHCR_PUBLISH_TOKEN }}
         with:
             revision: ${{ needs.prepare.outputs.revision }}
             image: ${{ needs.prepare.outputs.image }}

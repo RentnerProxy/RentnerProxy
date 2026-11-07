@@ -3,6 +3,7 @@ set -Eeuo pipefail
 : "${ARCHIVE:?}" "${EXPECTED_ARCHIVE_SHA256:?}" "${EXPECTED_DIGEST:?}" "${IMAGE:?}" "${IMAGE_TAGS:?}"
 : "${AUTOMATION_DIRECTORY:?}" "${ASSESSED_REPORT:?}" "${IDENTITY_REPORT:?}"
 : "${EVIDENCE_FILE:?}" "${EXPECTED_EVIDENCE_SHA256:?}" "${IMAGE_DIRECTORY:?}" "${PLATFORM_REPORT_DIRECTORY:?}" "${REVISION:?}" "${VERSION:?}"
+: "${GHCR_TOKEN:?}" "${GHCR_USERNAME:?}"
 # Validate the complete tag set before any authenticated registry access.
 # YAML block scalars and Bash here-strings can both add trailing newlines.
 tags=()

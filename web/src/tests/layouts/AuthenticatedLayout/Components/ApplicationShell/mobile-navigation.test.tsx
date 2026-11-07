@@ -245,7 +245,7 @@ for (const checkFailed of [false, true])
                 version: '1.0.0-beta.2',
                 tag: 'v1.0.0-beta.2',
                 channel: 'beta',
-                url: 'https://github.com/RentnerKev/RentnerProxy/releases/tag/v1.0.0-beta.2',
+                url: 'https://github.com/RentnerProxy/platform/releases/tag/v1.0.0-beta.2',
                 notes: null,
                 image: {
                     status: 'pending',

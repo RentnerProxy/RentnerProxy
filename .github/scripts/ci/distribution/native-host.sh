@@ -66,8 +66,8 @@ for (( attempt=0; attempt<60; attempt++ )); do
     (( attempt < 59 )) || exit 1
     sleep 1
 done
-skopeo copy --all --preserve-digests --dest-tls-verify=false "oci-archive:$CANDIDATE_DIRECTORY/candidate-image.tar" docker://192.0.2.1:15000/rentnerkev/rentnerproxy:fixture
-actual=$(skopeo inspect --raw --tls-verify=false "docker://192.0.2.1:15000/rentnerkev/rentnerproxy@$EXPECTED_DIGEST" | sha256sum)
+skopeo copy --all --preserve-digests --dest-tls-verify=false "oci-archive:$CANDIDATE_DIRECTORY/candidate-image.tar" docker://192.0.2.1:15000/rentnerproxy/platform:fixture
+actual=$(skopeo inspect --raw --tls-verify=false "docker://192.0.2.1:15000/rentnerproxy/platform@$EXPECTED_DIGEST" | sha256sum)
 [[ "sha256:${actual%% *}" == "$EXPECTED_DIGEST" ]] || exit 1
 docker build --file "$SOURCE_DIRECTORY/scripts/smoke/http3/Dockerfile" --tag localhost/rentnerproxy-distribution-http3:fixture "$SOURCE_DIRECTORY"
 docker save --output "$DISTRIBUTION_DIRECTORY/http3.tar" localhost/rentnerproxy-distribution-http3:fixture

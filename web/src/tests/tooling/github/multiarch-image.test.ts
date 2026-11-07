@@ -197,6 +197,8 @@ describe('assessed native OCI image assembly', () => {
         { configArchitecture: 'arm64' },
         { version: 'v1.0.0-beta.2' },
         { revision: 'b'.repeat(40) },
+        { source: 'https://github.com/RentnerKev/RentnerProxy' },
+        { source: 'https://github.com/attacker/platform' },
         { noProvenance: true },
         { noSbom: true },
         { wrongSubject: true },

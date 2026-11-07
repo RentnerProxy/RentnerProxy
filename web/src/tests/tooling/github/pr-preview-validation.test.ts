@@ -934,10 +934,10 @@ describe('PR preview identity', () => {
         const identity = createPreviewIdentity('RentnerProxy/platform', 42, testedSha, 7001, 2)
 
         expect(identity).toEqual({
-            image: 'ghcr.io/rentnerkev/rentnerproxy',
-            immutableReference: `ghcr.io/rentnerkev/rentnerproxy:pr-42-${testedSha.slice(0, 12)}-7001-2`,
+            image: 'ghcr.io/rentnerproxy/platform',
+            immutableReference: `ghcr.io/rentnerproxy/platform:pr-42-${testedSha.slice(0, 12)}-7001-2`,
             immutableTag: `pr-42-${testedSha.slice(0, 12)}-7001-2`,
-            movingReference: 'ghcr.io/rentnerkev/rentnerproxy:pr-42',
+            movingReference: 'ghcr.io/rentnerproxy/platform:pr-42',
             movingTag: 'pr-42',
             pullRequestNumber: 42,
             repository: 'rentnerproxy/platform',
@@ -1078,9 +1078,9 @@ describe('PR preview identity', () => {
         for (const override of [
             { image: 'ghcr.io/attacker/rentnerproxy' },
             { image: 'registry.example/rentnerproxy/platform' },
-            { immutableReference: 'ghcr.io/rentnerkev/rentnerproxy:latest' },
+            { immutableReference: 'ghcr.io/rentnerproxy/platform:latest' },
             { immutableTag: 'v1.2.3' },
-            { movingReference: 'ghcr.io/rentnerkev/rentnerproxy:dev' },
+            { movingReference: 'ghcr.io/rentnerproxy/platform:dev' },
             { movingTag: 'latest' },
             { movingTag: 'pr-42\nlatest' },
         ]) {
@@ -1107,7 +1107,7 @@ describe('PR preview identity', () => {
         ).toThrow()
 
         for (const repository of [
-            'ghcr.io/rentnerkev/rentnerproxy',
+            'ghcr.io/rentnerproxy/platform',
             'rentnerproxy/platform:latest',
             'rentnerkev/other/rentnerproxy',
             'rentnerproxy/platform\nattacker/repository',

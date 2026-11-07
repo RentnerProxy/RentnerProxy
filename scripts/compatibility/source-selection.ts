@@ -3,7 +3,6 @@ import { z } from 'zod'
 import {
     CURRENT_COMPATIBILITY_PROFILE,
     READINESS_ASSET,
-    RELEASE_IMAGE,
     RELEASE_REPOSITORY,
 } from '../../web/src/config/compatibility.config.ts'
 import {
@@ -18,6 +17,7 @@ import { isReleaseMetadataCompatible } from '../../web/src/lib/ApplicationVersio
 import { parseReleaseReadiness } from '../../web/src/server/Updates/readiness.ts'
 import { readBoundedText } from '../../web/src/server/Updates/http.ts'
 import { publishedRelease } from './published-releases.ts'
+import { releaseImageIdentity } from '../../web/src/lib/ApplicationVersion/releaseImageIdentity.ts'
 import type { CompatibilitySource, PublishedRelease } from './Types/published-releases.types.ts'
 import type { ImagePlatform } from '../../web/src/lib/ApplicationVersion/Types/image-platform.types.ts'
 
@@ -174,7 +174,7 @@ export async function loadPublishedSource(
             version: release.tag_name,
             revision: readiness.revision,
             digest: readiness.image.digest,
-            image: `${RELEASE_IMAGE}:${release.tag_name}@${readiness.image.digest}`,
+            image: `${readiness.image.repository}:${release.tag_name}@${readiness.image.digest}`,
         }
     }
     throw new Error('Source readiness redirect limit reached')
@@ -396,12 +396,14 @@ export function parseCompatibilitySource(raw: string): CompatibilitySource {
         .parse(JSON.parse(raw))
     if ((source.role === 'fresh') !== (source.release === null))
         throw new Error('Invalid source role binding')
+    const repository = source.release?.image.split(':', 1)[0] ?? ''
     if (
         source.release &&
         (source.release.version !== `v${parseReleaseVersion(source.release.version)?.version}` ||
             !isSupportedUpgradeSource(source.release.version) ||
+            !releaseImageIdentity(repository, source.release.version) ||
             source.release.image !==
-                `${RELEASE_IMAGE}:${source.release.version}@${source.release.digest}`)
+                `${repository}:${source.release.version}@${source.release.digest}`)
     )
         throw new Error('Invalid immutable compatibility source')
     return source

@@ -1,7 +1,12 @@
 import { z } from 'zod'
 
 import type { ReleaseReadiness } from '@/lib/ApplicationVersion/Types/release-readiness.types.ts'
-import { RELEASE_IMAGE, RELEASE_REPOSITORY } from '../../config/compatibility.config.ts'
+import {
+    LEGACY_RELEASE_IMAGE,
+    RELEASE_IMAGE,
+    RELEASE_REPOSITORY,
+} from '../../config/compatibility.config.ts'
+import { releaseImageIdentity } from '../../lib/ApplicationVersion/releaseImageIdentity.ts'
 import { LEGACY_UPGRADE_CONTRACT } from '../../lib/ApplicationVersion/legacyUpgradeContract.ts'
 import { parseReleaseVersion } from '../../lib/ApplicationVersion/releaseVersion.ts'
 import { isSupportedUpgradeTarget } from '../../lib/ApplicationVersion/upgradeCompatibility.ts'
@@ -18,7 +23,7 @@ const readinessSchema = z.strictObject({
     publishedAt: z.iso.datetime(),
     revision: z.string().regex(/^[a-f0-9]{40}$/),
     image: z.strictObject({
-        repository: z.literal(RELEASE_IMAGE),
+        repository: z.enum([RELEASE_IMAGE, LEGACY_RELEASE_IMAGE.repository]),
         digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
         platforms: z
             .array(z.string().regex(/^linux\/(?:amd64|arm64)(?:\/v[0-9]+)?$/))
@@ -41,6 +46,7 @@ export function parseReleaseReadiness(
     const parsed = readinessSchema.safeParse(raw)
     if (!parsed.success) return null
     const data = parsed.data
+    if (!releaseImageIdentity(data.image.repository, data.tag)) return null
     const platforms = imagePlatforms(data.image.platforms)
     if (!platforms) return null
     if (

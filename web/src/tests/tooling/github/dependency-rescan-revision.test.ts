@@ -337,11 +337,11 @@ exit "$result"
                     .trim()
                     .split('\n')
                 expect(inspections[0]).toBe(
-                    'inspect --raw docker://ghcr.io/rentnerkev/rentnerproxy:dev',
+                    'inspect --raw docker://ghcr.io/rentnerproxy/platform:dev',
                 )
                 if (!('rawExit' in scenario))
                     expect(inspections[1]).toBe(
-                        `inspect --override-os linux --override-arch amd64 --config docker://ghcr.io/rentnerkev/rentnerproxy@${digest}`,
+                        `inspect --override-os linux --override-arch amd64 --config docker://ghcr.io/rentnerproxy/platform@${digest}`,
                     )
                 if (scenario.expected === 0) {
                     expect(summary).toContain('The current dev own-dependency gate passed')

@@ -43,7 +43,7 @@ jobs:
             contents: read
         with:
             revision: ${{ github.sha }}
-            image: ghcr.io/rentnerkev/rentnerproxy
+            image: ghcr.io/rentnerproxy/platform
             version: v1.0.0-beta.9999
             title: RentnerProxy assessed multi-architecture candidate
             description: Native validation candidate for the exact tested source.

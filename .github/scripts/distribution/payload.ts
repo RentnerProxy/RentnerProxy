@@ -28,7 +28,7 @@ export async function distributionPayload(
         sourceText(source, 'packaging/linux/appliance.env.example'),
         sourceText(source, 'LICENSE'),
     ])
-    const image = 'ghcr.io/rentnerkev/rentnerproxy@' + release.digest
+    const image = 'ghcr.io/rentnerproxy/platform@' + release.digest
     if (unit.split('@@IMAGE@@').length !== 2 || unit.split('@@PLATFORM@@').length !== 2)
         throw new Error('Invalid versioned Quadlet template')
     const container = unit.replace('@@IMAGE@@', image).replace('@@PLATFORM@@', release.platform)

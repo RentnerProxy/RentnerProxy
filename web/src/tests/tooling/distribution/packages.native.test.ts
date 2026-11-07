@@ -202,7 +202,7 @@ test.skipIf(!enabled)(
                     artifacts,
                     home: signingHome,
                     fingerprint,
-                    baseUrl: 'https://rentnerkev.github.io/RentnerProxy',
+                    baseUrl: 'https://rentnerproxy.github.io/platform',
                 }
                 expect(await updatePackageRepository(options)).toHaveLength(2)
                 const signed = await readFile(

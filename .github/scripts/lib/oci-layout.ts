@@ -208,8 +208,7 @@ export async function inspectOciLayout(
         if (
             labels['org.opencontainers.image.revision'] !== identity.revision ||
             labels['org.opencontainers.image.version'] !== identity.version ||
-            labels['org.opencontainers.image.source'] !==
-                'https://github.com/RentnerKev/RentnerProxy'
+            labels['org.opencontainers.image.source'] !== 'https://github.com/RentnerProxy/platform'
         )
             throw new Error('OCI image revision or version mismatch')
         const layers = ociArray(manifest.layers, 256).map(ociDescriptor)

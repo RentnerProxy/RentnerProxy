@@ -163,7 +163,7 @@ export function createPreviewIdentity(
     const immutableTag = assertPreviewTag(
         `pr-${pullRequestNumber}-${shortTestedSha}-${buildRunId}-${buildRunAttempt}`,
     )
-    const image = 'ghcr.io/rentnerkev/rentnerproxy'
+    const image = 'ghcr.io/rentnerproxy/platform'
 
     return {
         image,

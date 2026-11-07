@@ -16,7 +16,7 @@ function fixture(tag = 'v1.0.0-beta.2') {
         architecture: 'amd64',
         config: {
             Labels: {
-                'org.opencontainers.image.source': 'https://github.com/RentnerKev/RentnerProxy',
+                'org.opencontainers.image.source': 'https://github.com/RentnerProxy/platform',
                 'org.opencontainers.image.version': tag,
                 'org.opencontainers.image.revision': revision,
             },
@@ -40,7 +40,7 @@ function fixture(tag = 'v1.0.0-beta.2') {
         publishedAt: publication,
         revision,
         image: {
-            repository: 'ghcr.io/rentnerkev/rentnerproxy',
+            repository: 'ghcr.io/rentnerproxy/platform',
             digest: sha256(manifest),
             platforms: ['linux/amd64'],
         },
@@ -100,7 +100,7 @@ describe('read-only update checker', () => {
         expect(result.latest?.image).toEqual({
             status: 'verified',
             platform: 'linux/amd64',
-            reference: `ghcr.io/rentnerkev/rentnerproxy:${data.metadata.tag}@${data.metadata.image.digest}`,
+            reference: `ghcr.io/rentnerproxy/platform:${data.metadata.tag}@${data.metadata.image.digest}`,
             digest: data.metadata.image.digest,
         })
         expect(result.latest?.compatibility.status).toBe('supported')
@@ -127,7 +127,7 @@ describe('read-only update checker', () => {
                 image: {
                     status: 'verified',
                     platform: 'linux/amd64',
-                    reference: `ghcr.io/rentnerkev/rentnerproxy:${data.metadata.tag}@${data.metadata.image.digest}`,
+                    reference: `ghcr.io/rentnerproxy/platform:${data.metadata.tag}@${data.metadata.image.digest}`,
                     digest: data.metadata.image.digest,
                 },
                 compatibility: { status: 'supported' },
@@ -356,6 +356,34 @@ describe('read-only update checker', () => {
 })
 
 describe('declared upgrade compatibility', () => {
+    test.each(['v1.0.0-beta.2', 'v1.0.0-beta.3', 'v1.0.0-beta.4', 'v1.0.0'])(
+        'restricts historical readiness repositories to their exact release tags: %s',
+        (tag) => {
+            const data = fixture(tag)
+            const identity = {
+                id: 42,
+                tag,
+                channel: data.metadata.channel,
+                publishedAt: publication,
+                notes: null,
+                readinessAssetId: 99,
+                version: tag.slice(1),
+            }
+            expect(parseReleaseReadiness(data.metadata, identity)).not.toBeNull()
+            const historical = {
+                ...data.metadata,
+                image: {
+                    ...data.metadata.image,
+                    repository: 'ghcr.io/rentnerkev/rentnerproxy' as const,
+                },
+            }
+            const result = parseReleaseReadiness(historical, identity)
+            if (tag === 'v1.0.0-beta.2' || tag === 'v1.0.0-beta.3') {
+                expect(result?.image).toEqual(historical.image)
+                expect(result?.revision).toBe(data.metadata.revision)
+            } else expect(result).toBeNull()
+        },
+    )
     test('never recommends a Beta 1 downgrade or applies its policy to another target family', () => {
         for (const [source, target] of [
             ['1.0.0-alpha.1', '1.1.0-alpha.1'],

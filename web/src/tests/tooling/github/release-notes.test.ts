@@ -60,7 +60,7 @@ function documentInput(overrides: Partial<Parameters<typeof renderReleaseNotes>[
         tagName: 'v1.2.0',
         channel: 'stable' as const,
         publishedAt: '2026-09-02T12:00:00Z',
-        image: 'ghcr.io/rentnerkev/rentnerproxy',
+        image: 'ghcr.io/rentnerproxy/platform',
         bannerRevision: 'a'.repeat(40),
         issues: [] as GitHubIssue[],
         config,
@@ -383,12 +383,12 @@ describe('release note rendering', () => {
             }),
         ).body
         expect(stable.startsWith('![RentnerProxy Release](')).toBeTrue()
-        expect(stable).toContain('ghcr.io/rentnerkev/rentnerproxy:latest')
-        expect(stable).not.toContain('ghcr.io/rentnerkev/rentnerproxy:dev')
+        expect(stable).toContain('ghcr.io/rentnerproxy/platform:latest')
+        expect(stable).not.toContain('ghcr.io/rentnerproxy/platform:dev')
         expect(beta.startsWith('![RentnerProxy Beta Release](')).toBeTrue()
-        expect(beta).toContain('ghcr.io/rentnerkev/rentnerproxy:beta')
-        expect(beta).not.toContain('ghcr.io/rentnerkev/rentnerproxy:dev')
-        expect(beta).not.toContain('ghcr.io/rentnerkev/rentnerproxy:latest')
+        expect(beta).toContain('ghcr.io/rentnerproxy/platform:beta')
+        expect(beta).not.toContain('ghcr.io/rentnerproxy/platform:dev')
+        expect(beta).not.toContain('ghcr.io/rentnerproxy/platform:latest')
         expect(beta).toContain('Beta Pre-Release')
         expect(beta).toContain('Not intended as the stable channel')
         expect(beta).toContain('Breaking changes may occur')
@@ -397,9 +397,9 @@ describe('release note rendering', () => {
             const alpha = renderReleaseNotes(documentInput({ tagName, channel: 'alpha' })).body
             expect(alpha.startsWith('![RentnerProxy Alpha Release](')).toBeTrue()
             expect(alpha).toContain('Alpha Pre-Release')
-            expect(alpha).toContain('ghcr.io/rentnerkev/rentnerproxy:alpha')
-            expect(alpha).not.toContain('ghcr.io/rentnerkev/rentnerproxy:dev')
-            expect(alpha).not.toContain('ghcr.io/rentnerkev/rentnerproxy:latest')
+            expect(alpha).toContain('ghcr.io/rentnerproxy/platform:alpha')
+            expect(alpha).not.toContain('ghcr.io/rentnerproxy/platform:dev')
+            expect(alpha).not.toContain('ghcr.io/rentnerproxy/platform:latest')
             expect(alpha).toContain('Back up your RentnerProxy state before upgrading or testing.')
         }
         for (const tagName of ['v1.0.0-alphabet.1', 'v1.0.0-beta-alpha.1']) {
@@ -504,15 +504,15 @@ describe('GitHub API integration boundary', () => {
                         publishedAt: '2026-09-02T12:00:00Z',
                     },
                     channel: 'beta',
-                    image: 'ghcr.io/rentnerkev/rentnerproxy',
+                    image: 'ghcr.io/rentnerproxy/platform',
                     bannerRevision: 'a'.repeat(40),
                     config,
                 },
                 client,
             )
             expect(result.body).toContain('Beta Pre-Release')
-            expect(result.body).toContain('ghcr.io/rentnerkev/rentnerproxy:beta')
-            expect(result.body).not.toContain('ghcr.io/rentnerkev/rentnerproxy:latest')
+            expect(result.body).toContain('ghcr.io/rentnerproxy/platform:beta')
+            expect(result.body).not.toContain('ghcr.io/rentnerproxy/platform:latest')
         },
     )
 
@@ -544,7 +544,7 @@ describe('GitHub API integration boundary', () => {
                     publishedAt: '2026-09-02T12:00:00Z',
                 },
                 channel: 'stable',
-                image: 'ghcr.io/rentnerkev/rentnerproxy',
+                image: 'ghcr.io/rentnerproxy/platform',
                 bannerRevision: 'a'.repeat(40),
                 config,
             },
@@ -598,7 +598,7 @@ describe('GitHub API integration boundary', () => {
                     publishedAt: '2026-03-01T00:00:00Z',
                 },
                 channel: 'stable',
-                image: 'ghcr.io/rentnerkev/rentnerproxy',
+                image: 'ghcr.io/rentnerproxy/platform',
                 bannerRevision: 'a'.repeat(40),
                 config,
             },
@@ -651,7 +651,7 @@ describe('GitHub API integration boundary', () => {
                     publishedAt: '2026-02-10T00:00:00Z',
                 },
                 channel: 'beta',
-                image: 'ghcr.io/rentnerkev/rentnerproxy',
+                image: 'ghcr.io/rentnerproxy/platform',
                 bannerRevision: 'a'.repeat(40),
                 config,
             },

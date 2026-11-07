@@ -22,7 +22,7 @@ function readiness(tag = 'v1.0.0-beta.3'): ReleaseReadiness {
         publishedAt: '2026-10-24T12:00:00Z',
         revision: 'a'.repeat(40),
         image: {
-            repository: 'ghcr.io/rentnerkev/rentnerproxy',
+            repository: 'ghcr.io/rentnerproxy/platform',
             digest: 'sha256:' + 'b'.repeat(64),
             platforms: ['linux/amd64'],
         },

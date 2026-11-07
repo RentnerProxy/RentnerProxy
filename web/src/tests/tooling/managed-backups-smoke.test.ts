@@ -134,7 +134,7 @@ describe('managed backup isolated smoke configuration', () => {
     test('accepts explicit repository tags and content-addressed image references', () => {
         for (const image of [
             'rentnerproxy-issue290:work',
-            'ghcr.io/rentnerkev/rentnerproxy:managed-backups',
+            'ghcr.io/rentnerproxy/platform:managed-backups',
             'localhost:5000/team/image:fixture',
             'image@sha256:' + 'a'.repeat(64),
         ])

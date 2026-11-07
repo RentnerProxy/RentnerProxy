@@ -433,7 +433,7 @@ export async function updatePackageRepository(options: {
         })
         await writeFile(
             join(suite, 'Release'),
-            `Origin: RentnerKev\nLabel: RentnerProxy\nSuite: ${channel}\nCodename: ${channel}\nArchitectures: amd64 arm64\nComponents: main\nValid-Until: ${new Date(now.getTime() + 35 * 86_400_000).toUTCString()}\n` +
+            `Origin: RentnerProxy\nLabel: RentnerProxy\nSuite: ${channel}\nCodename: ${channel}\nArchitectures: amd64 arm64\nComponents: main\nValid-Until: ${new Date(now.getTime() + 35 * 86_400_000).toUTCString()}\n` +
                 metadata,
         )
         await sign(home, fingerprint, join(suite, 'Release'), true)

@@ -151,7 +151,7 @@ describe('application topbar', () => {
                         version: '1.0.0-beta.2',
                         tag: 'v1.0.0-beta.2',
                         channel: 'beta',
-                        url: 'https://github.com/RentnerKev/RentnerProxy/releases',
+                        url: 'https://github.com/RentnerProxy/platform/releases',
                         notes: null,
                         image: {
                             status: 'pending',

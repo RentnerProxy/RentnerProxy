@@ -66,7 +66,9 @@ Requirements:
 - Free ports `80/tcp`, `443/tcp`, and `443/udp`.
 - HTTPS management origin and SMTP credentials.
 
-The example pins the Beta 3 image with `RENTNERPROXY_IMAGE`:
+This Compose example is pinned to the already published Beta 3 image in the
+previous registry namespace. That historical tag remains there; it is not
+available in the new organization namespace:
 `ghcr.io/rentnerkev/rentnerproxy:v1.0.0-beta.3`.
 
 Save this as `docker-compose.yml` (or use the [repository file](docker-compose.yml)):
@@ -101,6 +103,7 @@ volumes:
 Create `.env` beside it (see also [`.env.production.example`](.env.production.example)):
 
 ```dotenv
+# Historical Beta 3 image; new publications use ghcr.io/rentnerproxy/platform.
 RENTNERPROXY_IMAGE=ghcr.io/rentnerkev/rentnerproxy:v1.0.0-beta.3
 RENTNERPROXY_PUBLIC_ORIGIN=https://management.example.com
 SMTP_HOST=smtp.example.com
@@ -156,6 +159,13 @@ From Beta 2 onward, `v1.0.0-beta.1` is the minimum supported upgrade source.
 Back up the installation with its current release's tools before changing the image.
 Keep the persistent volume, encryption material and deployment configuration.
 
+New releases and the `:dev` image use `ghcr.io/rentnerproxy/platform`. Existing
+installations do not switch registries automatically: older clients still expect
+the previous registry and source identity. After backing up, explicitly change
+the image in `RENTNERPROXY_IMAGE` and recreate the Compose service, or install the
+package published for the new registry. Use the old registry path for the exact
+already published Beta and Alpha pins below; those tags have not been moved.
+
 Alpha installations must first upgrade to the exact image
 `ghcr.io/rentnerkev/rentnerproxy:v1.0.0-beta.1`. Complete startup and configuration
 reconciliation, verify hosts and certificates, and create a new v4 backup before
@@ -170,7 +180,7 @@ See [upgrade, backup and rollback instructions](docs/operations.md#upgrades).
 
 ## Docker images
 
-RentnerProxy images are published to `ghcr.io/rentnerkev/rentnerproxy`.
+New RentnerProxy images are published to `ghcr.io/rentnerproxy/platform`.
 
 | Tag       | Channel                                                                        |
 | --------- | ------------------------------------------------------------------------------ |
@@ -179,8 +189,9 @@ RentnerProxy images are published to `ghcr.io/rentnerkev/rentnerproxy`.
 | `:alpha`  | Latest alpha release                                                           |
 | `:dev`    | Development build from `main` for testing new and potentially unstable changes |
 
-Every release is also published with its exact version tag. Use an exact tag when you want to pin
-a specific release, for example:
+Previously published Beta and Alpha releases remain available under their original
+registry path. These exact tags are historical pins; new publications use the
+organization image above:
 
 ```text
 ghcr.io/rentnerkev/rentnerproxy:v1.0.0-beta.3

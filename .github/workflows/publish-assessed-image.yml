@@ -2,9 +2,6 @@ name: Publish assessed OCI image
 
 on:
     workflow_call:
-        secrets:
-            GHCR_PUBLISH_TOKEN:
-                required: true
         inputs:
             revision:
                 required: true
@@ -43,16 +40,6 @@ jobs:
         outputs:
             platforms: ${{ steps.publish.outputs.platforms }}
         steps:
-            - name: Verify protected registry publishing credential
-              env:
-                  GHCR_PUBLISH_TOKEN: ${{ secrets.GHCR_PUBLISH_TOKEN }}
-              shell: bash
-              run: |
-                  if [[ -z "$GHCR_PUBLISH_TOKEN" ]]; then
-                      echo '::error::Configure the GHCR_PUBLISH_TOKEN secret in the protected container-publishing environment before publishing legacy GHCR images.'
-                      exit 1
-                  fi
-
             - name: Check out trusted publisher automation
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
@@ -114,8 +101,8 @@ jobs:
                   PLATFORM_REPORT_DIRECTORY: ${{ runner.temp }}/dependency-publish-report
                   REVISION: ${{ inputs.revision }}
                   VERSION: ${{ inputs.version }}
-                  GHCR_TOKEN: ${{ secrets.GHCR_PUBLISH_TOKEN }}
-                  GHCR_USERNAME: RentnerKev
+                  GHCR_TOKEN: ${{ github.token }}
+                  GHCR_USERNAME: ${{ github.actor }}
                   IMAGE: ${{ inputs.image }}
                   IMAGE_TAGS: ${{ inputs.image_tags }}
               run: bash automation/.github/scripts/security/publish-image.sh

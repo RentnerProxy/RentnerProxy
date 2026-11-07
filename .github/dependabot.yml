@@ -99,7 +99,7 @@ updates:
       open-pull-requests-limit: 10
       ignore:
           # Do not recursively update RentnerProxy's own release channel.
-          - dependency-name: 'rentnerkev/rentnerproxy'
+          - dependency-name: 'rentnerproxy/platform'
 
     - package-ecosystem: 'github-actions'
       directory: '/'
