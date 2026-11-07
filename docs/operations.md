@@ -292,6 +292,14 @@ change `RENTNERPROXY_IMAGE` in the Compose environment and recreate the service,
 install the package published for the new registry. Keep the old registry path for
 the exact already published Beta and Alpha image pins; those tags have not been moved.
 
+The signed APT repository also changes its `Origin` from `RentnerKev` to
+`RentnerProxy`. If APT reports this Origin change, confirm the repository URL and
+signing-key fingerprint against the installation guide, then accept it once with
+`sudo apt-get update --allow-releaseinfo-change-origin`. Update custom
+`apt_preferences` pins from `o=RentnerKev` to `o=RentnerProxy`. The
+[APT manual](https://manpages.debian.org/trixie/apt/apt-get.8.en.html) describes this
+field-specific confirmation.
+
 For an Alpha installation, first select
 `ghcr.io/rentnerkev/rentnerproxy:v1.0.0-beta.1`, complete its startup and
 reconciliation, verify the installation and create a new v4 backup. Then select
