@@ -92,6 +92,15 @@ export function smokeProgress(suite: Suite) {
     ])
     return {
         consume(line: string): string | undefined {
+            if (
+                suite === 'backups' &&
+                /^Managed backup health: (?:fixture|interrupted-backup-restart) running=(?:true|false) exitCode=(?:0|[1-9]\d?|1\d{2}|2[0-4]\d|25[0-5]) health=(?:none|starting|healthy|unhealthy)$/u.test(
+                    line,
+                )
+            ) {
+                diagnostic = line
+                return diagnostic
+            }
             if (suite === 'backups' && isOnlineRestoreDiagnostic(line)) {
                 diagnostic = line
                 return diagnostic

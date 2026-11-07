@@ -1,8 +1,9 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, spyOn, test } from 'bun:test'
 import {
     managedBackupSmokeCompose,
     validateManagedBackupTestImage,
     managedRestoreDiagnostic,
+    waitForManagedBackupHealth,
 } from '../../../../.github/scripts/ci/managed-backups-smoke.ts'
 import { backupNotificationPayloadSchema } from '../../../../.github/scripts/ci/fixtures/managed-backup-probe.ts'
 import { SMOKE_RUN_LABEL, smokeRunScope } from '../../../../scripts/smoke/resources.ts'
@@ -13,6 +14,56 @@ import {
 } from '../../../../.github/scripts/ci/online-restore-diagnostics.ts'
 import { waitForRestoreCheckpoint } from '../../../../.github/scripts/ci/fixtures/managed-restore-probe.ts'
 import { smokeProgress } from '../../../../.github/scripts/ci/production-smoke-ci.ts'
+
+test('stopped backup restart fails on its first inspection with bounded health facts', async () => {
+    const messages = spyOn(console, 'error').mockImplementation(() => {})
+    let inspections = 0
+    try {
+        await expect(
+            waitForManagedBackupHealth(async () => {
+                inspections += 1
+                return JSON.stringify({ running: false, exitCode: 1, health: 'unhealthy' })
+            }, 'interrupted-backup-restart'),
+        ).rejects.toThrow('Managed backup smoke operation failed: stopped fixture')
+        expect(inspections).toBe(1)
+        expect(messages).toHaveBeenCalledWith(
+            'Managed backup health: interrupted-backup-restart running=false exitCode=1 health=unhealthy',
+        )
+    } finally {
+        messages.mockRestore()
+    }
+})
+
+test('backup health deadline reports safe facts without accepting private inspect fields', async () => {
+    const messages = spyOn(console, 'error').mockImplementation(() => {})
+    try {
+        await expect(
+            waitForManagedBackupHealth(
+                async () => JSON.stringify({ running: true, exitCode: 0, health: 'unhealthy' }),
+                'interrupted-backup-restart',
+                0,
+            ),
+        ).rejects.toThrow('Managed backup smoke deadline exceeded: healthy fixture')
+        expect(messages).toHaveBeenCalledWith(
+            'Managed backup health: interrupted-backup-restart running=true exitCode=0 health=unhealthy',
+        )
+        messages.mockClear()
+        await expect(
+            waitForManagedBackupHealth(
+                async () =>
+                    JSON.stringify({ running: false, exitCode: 1, health: 'private-token' }),
+                'fixture',
+                0,
+            ),
+        ).rejects.toThrow('Managed backup smoke deadline exceeded: healthy fixture')
+        expect(messages).not.toHaveBeenCalled()
+        await waitForManagedBackupHealth(async () =>
+            JSON.stringify({ running: true, exitCode: 0, health: 'healthy' }),
+        )
+    } finally {
+        messages.mockRestore()
+    }
+})
 
 test.each(RESTORE_CHECKPOINTS)(
     'every declared checkpoint passes both diagnostic boundaries: %s',

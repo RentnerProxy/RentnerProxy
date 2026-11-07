@@ -48,7 +48,7 @@ mkdir -p /opt/rentnerproxy-caddy-source
             await copyFile(prepare, '/tmp/prepare-caddy-source.sh')
             const fakeCaddy = `#!/usr/bin/env -S bun --no-env-file
 const mode=process.env.FIXTURE_MODE
-if(process.argv[2]==='version')console.log(mode==='version'?'v0.0.0':'v2.11.7 fixture')
+if(process.argv[2]==='version')console.log(mode==='version'?'v0.0.0':'v2.11.9 fixture')
 else { if(mode!=='missing-cache')console.log('http.handlers.rentnerproxy_response_cache'); console.log('crowdsec');if(mode!=='missing-http')console.log('http.handlers.crowdsec');console.log('layer4');console.log('http.handlers.appsec') }
 `
             const fake = `#!/usr/bin/env -S bun --no-env-file
@@ -99,7 +99,7 @@ if(name==='xcaddy'){
                         PATH: bin + ':' + process.env.PATH,
                         FIXTURE_MODE: mode,
                         FIXTURE_CALLS: callsPath,
-                        CADDY_VERSION: 'v2.11.7',
+                        CADDY_VERSION: 'v2.11.9',
                         CADDY_CROWDSEC_BOUNCER_VERSION: 'v0.14.2-0.20261030164527-4a6ce1d3094d',
                         CADDY_LAYER4_VERSION: 'v0.1.3-0.20261029145729-f607ccea1b7d',
                     },
@@ -161,7 +161,7 @@ if(name==='xcaddy'){
                     assert.deepEqual(compile.slice(0, 5), [
                         'xcaddy',
                         'build',
-                        'v2.11.7',
+                        'v2.11.9',
                         '--output',
                         '/usr/bin/caddy',
                     ])

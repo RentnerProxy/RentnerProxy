@@ -29,6 +29,40 @@ export function managedRestoreDiagnostic(stderr: string): string | undefined {
 const repositoryRoot = fileURLToPath(new URL('../../..', import.meta.url))
 const containerProbe = '/tmp/managed-backup-probe.js'
 
+/** Inspect only bounded process/health facts; Docker health logs may contain credentials. */
+export async function waitForManagedBackupHealth(
+    inspect: () => Promise<string>,
+    scenario: 'fixture' | 'interrupted-backup-restart' = 'fixture',
+    timeoutMs = 240_000,
+): Promise<void> {
+    const deadline = Date.now() + timeoutMs
+    let latest: { running: boolean; exitCode: number; health: string } | undefined
+    while (true) {
+        try {
+            latest = z
+                .strictObject({
+                    running: z.boolean(),
+                    exitCode: z.number().int().min(0).max(255),
+                    health: z.enum(['none', 'starting', 'healthy', 'unhealthy']),
+                })
+                .parse(JSON.parse(await inspect()))
+        } catch {
+            // A transient inspect failure must not disclose raw Docker output.
+        }
+        if (latest?.running && latest.health === 'healthy') return
+        if (latest && (!latest.running || Date.now() >= deadline)) {
+            console.error(
+                `Managed backup health: ${scenario} running=${latest.running} exitCode=${latest.exitCode} health=${latest.health}`,
+            )
+        }
+        if (latest && !latest.running)
+            throw new Error('Managed backup smoke operation failed: stopped fixture')
+        if (Date.now() >= deadline)
+            throw new Error('Managed backup smoke deadline exceeded: healthy fixture')
+        await Bun.sleep(500)
+    }
+}
+
 export function validateManagedBackupTestImage(value: string): string {
     if (
         value.length > 255 ||
@@ -267,22 +301,23 @@ export async function runManagedBackupsSmoke(): Promise<number> {
         )
         return value
     }
-    async function healthy(container: string) {
-        await wait(
-            async () =>
-                (
-                    await command(
-                        [
-                            'docker',
-                            'inspect',
-                            '--format',
-                            '{{if .State.Health}}{{.State.Health.Status}}{{end}}',
-                            container,
-                        ],
-                        'inspect fixture health',
-                    )
-                ).trim() === 'healthy',
-            'healthy fixture',
+    async function healthy(
+        container: string,
+        scenario: 'fixture' | 'interrupted-backup-restart' = 'fixture',
+    ) {
+        await waitForManagedBackupHealth(
+            () =>
+                command(
+                    [
+                        'docker',
+                        'inspect',
+                        '--format',
+                        '{"running":{{.State.Running}},"exitCode":{{.State.ExitCode}},"health":"{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}"}',
+                        container,
+                    ],
+                    'inspect fixture health',
+                ),
+            scenario,
         )
     }
     async function probe(
@@ -503,7 +538,7 @@ export async function runManagedBackupsSmoke(): Promise<number> {
             'interrupt owned source during active maintenance',
         )
         await command(['docker', 'start', source], 'restart interrupted fixture', 60_000)
-        await healthy(source)
+        await healthy(source, 'interrupted-backup-restart')
         const recovered = await status(source)
         assert.equal(recovered.jobs.find((job) => job.id === interrupted.id)?.state, 'interrupted')
         assert.equal(recovered.jobs.find((job) => job.id === second.id)?.retained, true)
