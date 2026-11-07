@@ -6,7 +6,7 @@ import { readBoundedText } from '@/server/Updates/http.ts'
 
 const manifestType = 'application/vnd.oci.image.manifest.v1+json'
 const indexType = 'application/vnd.oci.image.index.v1+json'
-const repository = 'ghcr.io/rentnerkev/rentnerproxy'
+const repository = 'ghcr.io/rentnerproxy/platform'
 const digest = (value: string) => `sha256:${createHash('sha256').update(value).digest('hex')}`
 const encode = (value: unknown) => JSON.stringify(value)
 
@@ -19,16 +19,26 @@ function fixture(
         configVariant?: string
         platforms?: string[]
         labels?: Record<string, string>
+        legacy?: boolean
+        tag?: string
+        source?: string
     } = {},
 ) {
+    const imageRepository = options.legacy ? 'ghcr.io/rentnerkev/rentnerproxy' : repository
+    const base = `https://ghcr.io/v2/${imageRepository.slice('ghcr.io/'.length)}`
+    const tag = options.tag ?? 'v1.0.0-beta.2'
     const config = encode({
         os: 'linux',
         architecture: options.architecture ?? 'amd64',
         ...(options.configVariant ? { variant: options.configVariant } : {}),
         config: {
             Labels: options.labels ?? {
-                'org.opencontainers.image.source': 'https://github.com/RentnerKev/RentnerProxy',
-                'org.opencontainers.image.version': 'v1.0.0-beta.2',
+                'org.opencontainers.image.source':
+                    options.source ??
+                    (options.legacy
+                        ? 'https://github.com/RentnerKev/RentnerProxy'
+                        : 'https://github.com/RentnerProxy/platform'),
+                'org.opencontainers.image.version': tag,
                 'org.opencontainers.image.revision': 'a'.repeat(40),
             },
         },
@@ -69,21 +79,21 @@ function fixture(
     const readiness: ReleaseReadiness = {
         schemaVersion: 1,
         releaseId: 42,
-        tag: 'v1.0.0-beta.2',
+        tag,
         channel: 'beta',
         publishedAt: '2026-10-18T12:00:00Z',
         revision: 'a'.repeat(40),
         image: {
-            repository,
+            repository: imageRepository,
             digest: digest(root),
             platforms: options.platforms ?? ['linux/amd64'],
         },
         upgrade: { policy: 'beta1-appliance-v1', minimumVersion: 'v1.0.0-beta.1' },
     }
     const bodies = new Map<string, string>([
-        [`https://ghcr.io/v2/rentnerkev/rentnerproxy/manifests/${readiness.tag}`, root],
-        [`https://ghcr.io/v2/rentnerkev/rentnerproxy/manifests/${digest(manifest)}`, manifest],
-        [`https://ghcr.io/v2/rentnerkev/rentnerproxy/blobs/${digest(config)}`, config],
+        [`${base}/manifests/${readiness.tag}`, root],
+        [`${base}/manifests/${digest(manifest)}`, manifest],
+        [`${base}/blobs/${digest(config)}`, config],
     ])
     const requests: { url: string; init: RequestInit | undefined }[] = []
     const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -98,6 +108,92 @@ function fixture(
 }
 
 describe('bounded GHCR release image verification', () => {
+    test('verifies canonical releases using their canonical GHCR scope', async () => {
+        const data = fixture({ tag: 'v1.0.0-beta.4' })
+        expect(
+            (
+                await verifyReleaseImage(
+                    data.readiness,
+                    'linux/amd64',
+                    data.fetcher,
+                    new AbortController().signal,
+                )
+            ).status,
+        ).toBe('verified')
+        expect(data.requests[0]!.url).toContain('scope=repository%3Arentnerproxy%2Fplatform%3Apull')
+    })
+    test.each([
+        'ghcr.io/attacker/platform',
+        'ghcr.io/RentnerKev/rentnerproxy',
+        'ghcr.io/rentnerkev/rentnerproxy/other',
+        'ghcr.io/rentnerproxy/platform?injected=1',
+    ])('rejects an untrusted repository before networking: %s', async (untrusted) => {
+        const data = fixture()
+        const readiness = {
+            ...data.readiness,
+            image: { ...data.readiness.image, repository: untrusted },
+        } as unknown as ReleaseReadiness
+        expect(
+            (
+                await verifyReleaseImage(
+                    readiness,
+                    'linux/amd64',
+                    data.fetcher,
+                    new AbortController().signal,
+                )
+            ).status,
+        ).toBe('invalid')
+        expect(data.requests).toHaveLength(0)
+    })
+    test.each(['v1.0.0-beta.1', 'v1.0.0-beta.2', 'v1.0.0-beta.3'])(
+        'retains exact historical image and source identity for %s',
+        async (tag) => {
+            const data = fixture({ legacy: true, tag })
+            const result = await verifyReleaseImage(
+                data.readiness,
+                'linux/amd64',
+                data.fetcher,
+                new AbortController().signal,
+            )
+            expect(result.status).toBe('verified')
+            expect(result.reference).toBe(
+                `ghcr.io/rentnerkev/rentnerproxy:${tag}@${data.readiness.image.digest}`,
+            )
+            expect(data.requests[0]!.url).toContain(
+                'scope=repository%3Arentnerkev%2Frentnerproxy%3Apull',
+            )
+        },
+    )
+    test('rejects legacy identity for later releases before requesting registry data', async () => {
+        const data = fixture({ legacy: true, tag: 'v1.0.0-beta.4' })
+        expect(
+            (
+                await verifyReleaseImage(
+                    data.readiness,
+                    'linux/amd64',
+                    data.fetcher,
+                    new AbortController().signal,
+                )
+            ).status,
+        ).toBe('invalid')
+        expect(data.requests).toHaveLength(0)
+    })
+    test.each([
+        { legacy: false, source: 'https://github.com/RentnerKev/RentnerProxy' },
+        { legacy: true, source: 'https://github.com/RentnerProxy/platform' },
+    ])('rejects mixed repository and source identities: %j', async (options) => {
+        const data = fixture(options)
+        expect(
+            (
+                await verifyReleaseImage(
+                    data.readiness,
+                    'linux/amd64',
+                    data.fetcher,
+                    new AbortController().signal,
+                )
+            ).status,
+        ).toBe('invalid')
+    })
     test.each([undefined, 'v8'])(
         'verifies native ARM64 descriptors with compatible variant %s',
         async (variant) => {
@@ -139,7 +235,7 @@ describe('bounded GHCR release image verification', () => {
             image: { ...data.readiness.image, digest: digest(root) },
         }
         data.bodies.set(
-            `https://ghcr.io/v2/rentnerkev/rentnerproxy/manifests/${data.readiness.tag}`,
+            `https://ghcr.io/v2/rentnerproxy/platform/manifests/${data.readiness.tag}`,
             root,
         )
         expect(
@@ -210,7 +306,7 @@ describe('bounded GHCR release image verification', () => {
 
     test('rejects stale retags and inconsistent digest headers', async () => {
         const data = fixture()
-        const rootUrl = `https://ghcr.io/v2/rentnerkev/rentnerproxy/manifests/${data.readiness.tag}`
+        const rootUrl = `https://ghcr.io/v2/rentnerproxy/platform/manifests/${data.readiness.tag}`
         data.bodies.set(rootUrl, data.root + ' ')
         expect(
             (
@@ -261,7 +357,7 @@ describe('bounded GHCR release image verification', () => {
         const data = fixture()
         const body = '{bad json'
         data.bodies.set(
-            `https://ghcr.io/v2/rentnerkev/rentnerproxy/manifests/${data.readiness.tag}`,
+            `https://ghcr.io/v2/rentnerproxy/platform/manifests/${data.readiness.tag}`,
             body,
         )
         const readiness = {

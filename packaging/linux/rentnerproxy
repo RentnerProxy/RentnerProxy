@@ -159,7 +159,7 @@ maintenance() {
     fi
     image=$(< "$metadata/image")
     platform=$(< "$metadata/platform")
-    [[ "$image" =~ ^ghcr\.io/rentnerkev/rentnerproxy@sha256:[a-f0-9]{64}$ ]] || fail 'Invalid installed immutable image reference.'
+    [[ "$image" =~ ^ghcr\.io/(rentnerproxy/platform|rentnerkev/rentnerproxy)@sha256:[a-f0-9]{64}$ ]] || fail 'Invalid installed immutable image reference.'
     identifier=$(< /proc/sys/kernel/random/uuid)
     [[ "$identifier" =~ ^[a-f0-9-]{36}$ ]] || fail 'Cannot establish maintenance ownership.'
     maintenance_name="rentnerproxy-maintenance-$identifier"

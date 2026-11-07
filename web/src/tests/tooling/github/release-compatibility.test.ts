@@ -170,7 +170,9 @@ function readiness(entry = release()) {
         publishedAt: entry.published_at,
         revision: beta2.revision,
         image: {
-            repository: 'ghcr.io/rentnerkev/rentnerproxy',
+            repository: ['v1.0.0-beta.1', 'v1.0.0-beta.2', 'v1.0.0-beta.3'].includes(entry.tag_name)
+                ? 'ghcr.io/rentnerkev/rentnerproxy'
+                : 'ghcr.io/rentnerproxy/platform',
             digest: beta2.digest,
             platforms: ['linux/amd64', 'linux/arm64'],
         },
@@ -446,11 +448,34 @@ describe('published compatibility source selection', () => {
         expect(
             parseCompatibilitySource(JSON.stringify({ role: 'previous', release: beta2 })).release,
         ).toEqual(beta2)
+        const canonical = {
+            ...beta2,
+            version: 'v1.0.0-beta.4',
+            image: `ghcr.io/rentnerproxy/platform:v1.0.0-beta.4@${beta2.digest}`,
+        }
+        expect(
+            parseCompatibilitySource(JSON.stringify({ role: 'previous', release: canonical }))
+                .release,
+        ).toEqual(canonical)
         for (const value of [
             { role: 'fresh', release: beta2 },
             { role: 'evil', release: null },
             { role: 'previous', release: { ...beta2, image: 'evil:latest' } },
             { role: 'previous', release: { ...beta2, version: 'v2.0.0' } },
+            {
+                role: 'previous',
+                release: {
+                    ...canonical,
+                    image: `ghcr.io/rentnerkev/rentnerproxy:v1.0.0-beta.4@${beta2.digest}`,
+                },
+            },
+            {
+                role: 'previous',
+                release: {
+                    ...beta2,
+                    image: `ghcr.io/RentnerKev/rentnerproxy:${beta2.version}@${beta2.digest}`,
+                },
+            },
         ])
             expect(() => parseCompatibilitySource(JSON.stringify(value))).toThrow()
     })

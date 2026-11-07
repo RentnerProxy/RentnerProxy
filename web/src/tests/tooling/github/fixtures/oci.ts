@@ -21,6 +21,7 @@ export async function platformFixture(
         readonly configArchitecture?: string
         readonly version?: string
         readonly revision?: string
+        readonly source?: string
         readonly noProvenance?: boolean
         readonly noSbom?: boolean
         readonly wrongSubject?: boolean
@@ -42,7 +43,8 @@ export async function platformFixture(
             ...(options.variant ? { variant: options.variant } : {}),
             config: {
                 Labels: {
-                    'org.opencontainers.image.source': 'https://github.com/RentnerKev/RentnerProxy',
+                    'org.opencontainers.image.source':
+                        options.source ?? 'https://github.com/RentnerProxy/platform',
                     'org.opencontainers.image.revision': options.revision ?? identity.revision,
                     'org.opencontainers.image.version': options.version ?? identity.version,
                 },

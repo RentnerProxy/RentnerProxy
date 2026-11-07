@@ -1,5 +1,6 @@
 import type { PublishedRelease, PublishedReleaseKey } from './Types/published-releases.types.ts'
 
+// Historical bootstrap identity; moving this pin would change the assessed source.
 const image = 'ghcr.io/rentnerkev/rentnerproxy'
 
 export const PUBLISHED_RELEASES = {

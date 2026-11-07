@@ -1,5 +1,5 @@
 import type { ReleaseChannel } from '@/features/ApplicationVersion/Types/application-update.types.ts'
-import type { RELEASE_IMAGE } from '../../../config/compatibility.config.ts'
+import type { LEGACY_RELEASE_IMAGE, RELEASE_IMAGE } from '../../../config/compatibility.config.ts'
 import type { LEGACY_UPGRADE_CONTRACT } from '../legacyUpgradeContract.ts'
 
 export interface ReleaseReadiness {
@@ -10,7 +10,7 @@ export interface ReleaseReadiness {
     readonly publishedAt: string
     readonly revision: string
     readonly image: {
-        readonly repository: typeof RELEASE_IMAGE
+        readonly repository: typeof RELEASE_IMAGE | typeof LEGACY_RELEASE_IMAGE.repository
         readonly digest: string
         readonly platforms: readonly string[]
     }

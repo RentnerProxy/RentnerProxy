@@ -285,6 +285,13 @@ encryption material. Change the image only after the backup completes. Preserve
 the existing volume and verify health, proxy traffic, certificates, permissions
 and configuration reconciliation after startup.
 
+New releases and `:dev` use `ghcr.io/rentnerproxy/platform`. Existing installations
+do not switch registries automatically, and older clients still expect the previous
+registry and source identity. After backing up, make the one-time switch explicitly:
+change `RENTNERPROXY_IMAGE` in the Compose environment and recreate the service, or
+install the package published for the new registry. Keep the old registry path for
+the exact already published Beta and Alpha image pins; those tags have not been moved.
+
 For an Alpha installation, first select
 `ghcr.io/rentnerkev/rentnerproxy:v1.0.0-beta.1`, complete its startup and
 reconciliation, verify the installation and create a new v4 backup. Then select

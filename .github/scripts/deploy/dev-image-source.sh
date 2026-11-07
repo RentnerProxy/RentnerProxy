@@ -24,7 +24,7 @@ if ! grep -Fq '**/.env' source/docker/production/Dockerfile.dockerignore ||
     exit 1
 fi
 {
-    printf 'image=ghcr.io/rentnerkev/rentnerproxy\n'
+    printf 'image=ghcr.io/rentnerproxy/platform\n'
     printf 'revision=%s\n' "$revision"
     printf 'version=dev-%.12s\n' "$revision"
 } >> "$GITHUB_OUTPUT"

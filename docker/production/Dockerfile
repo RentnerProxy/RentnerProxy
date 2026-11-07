@@ -133,7 +133,7 @@ FROM mirror.gcr.io/library/postgres:18.6@sha256:e3d24f6906d0760bf4da0dae87241539
 
 ARG TARGETOS
 ARG TARGETARCH
-LABEL org.opencontainers.image.source="https://github.com/RentnerKev/RentnerProxy" \
+LABEL org.opencontainers.image.source="https://github.com/RentnerProxy/platform" \
     org.opencontainers.image.description="Modern self-hosted reverse proxy manager powered by Caddy."
 
 ENV APP_DIR=/opt/rentnerproxy/web \

@@ -30,7 +30,17 @@ test('release payload generation refuses binary/oversized source assets and ambi
         ])
         const template = '[Container]\nImage=@@IMAGE@@\nPodmanArgs=--platform=@@PLATFORM@@\n'
         await writeFile(join(directory, 'rentnerproxy.container.in'), template)
-        expect(await distributionPayload(root, release)).toHaveLength(9)
+        const payload = await distributionPayload(root, release)
+        expect(payload).toHaveLength(9)
+        const immutableImage = 'ghcr.io/rentnerproxy/platform@' + release.digest
+        expect(payload.find((file) => file.path === 'usr/share/rentnerproxy/image')?.content).toBe(
+            immutableImage + '\n',
+        )
+        expect(
+            payload.find(
+                (file) => file.path === 'usr/share/containers/systemd/rentnerproxy.container',
+            )?.content,
+        ).toContain('Image=' + immutableImage)
         for (const content of ['', 'binary\0asset', 'x'.repeat(1024 * 1024 + 1)]) {
             await writeFile(join(directory, 'rentnerproxy'), content)
             await expect(distributionPayload(root, release)).rejects.toThrow('asset')

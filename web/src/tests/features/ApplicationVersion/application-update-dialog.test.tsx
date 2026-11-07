@@ -28,7 +28,7 @@ const result: ApplicationUpdateResult = {
         notes: '<img src=x onerror=alert(1)> **Release**',
         image: {
             status: 'verified',
-            reference: `ghcr.io/rentnerkev/rentnerproxy@sha256:${'a'.repeat(64)}`,
+            reference: `ghcr.io/rentnerproxy/platform@sha256:${'a'.repeat(64)}`,
             digest: `sha256:${'a'.repeat(64)}`,
             platform: 'linux/amd64',
         },
@@ -273,7 +273,7 @@ for (const transition of ['close', 'reference', 'unmount'] as const) {
                         ...result.latest!,
                         image: {
                             ...result.latest!.image,
-                            reference: `ghcr.io/rentnerkev/rentnerproxy@sha256:${'b'.repeat(64)}`,
+                            reference: `ghcr.io/rentnerproxy/platform@sha256:${'b'.repeat(64)}`,
                         },
                     },
                 })

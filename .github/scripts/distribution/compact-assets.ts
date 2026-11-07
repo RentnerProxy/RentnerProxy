@@ -170,7 +170,7 @@ rentnerproxy-${tag}-ARCH-SHA256SUMS.asc against rentnerproxy-${tag}-ARCH-SHA256S
 then run: sha256sum --check rentnerproxy-${tag}-ARCH-SHA256SUMS
 Replace ARCH with amd64 or arm64. Do not skip missing files or signature failures.
 The unchanged per-architecture metadata is also available at:
-https://rentnerkev.github.io/RentnerProxy/releases/${tag}/${packageRevision}/ARCH/
+https://rentnerproxy.github.io/platform/releases/${tag}/${packageRevision}/ARCH/
 `,
     )
 }

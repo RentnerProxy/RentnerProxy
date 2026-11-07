@@ -5,7 +5,7 @@ import { expect, test } from 'bun:test'
 
 const root = resolve(import.meta.dir, '../../../../..')
 
-test('forwards the required registry secret through every dev and release publisher boundary', async () => {
+test('uses repository-scoped package permissions without forwarding a personal registry token', async () => {
     const names = [
         'dev-image',
         'release-pipeline',
@@ -18,40 +18,44 @@ test('forwards the required registry secret through every dev and release publis
     )
     const workflows = sources.map((source) => Bun.YAML.parse(source)) as {
         on: { workflow_call?: { secrets?: Record<string, { required: boolean }> } }
-        jobs: Record<string, { uses?: string; secrets?: Record<string, string> }>
+        jobs: Record<
+            string,
+            {
+                uses?: string
+                secrets?: Record<string, string>
+                permissions?: Record<string, string>
+            }
+        >
     }[]
     const [dev, pipeline, release, recovery, publisher] = workflows
-    const registrySecret = { GHCR_PUBLISH_TOKEN: '${{ secrets.GHCR_PUBLISH_TOKEN }}' }
     for (const caller of [dev!, pipeline!]) {
         expect(caller.jobs['publish-image']!.uses).toBe(
             './.github/workflows/publish-assessed-image.yml',
         )
-        expect(caller.jobs['publish-image']!.secrets).toEqual(registrySecret)
-        for (const [name, job] of Object.entries(caller.jobs)) {
-            if (name !== 'publish-image') {
-                expect(JSON.stringify(job)).not.toContain('GHCR_PUBLISH_TOKEN')
-            }
-        }
+        expect(caller.jobs['publish-image']!.secrets).toBeUndefined()
+        expect(caller.jobs['publish-image']!.permissions).toEqual({
+            contents: 'read',
+            packages: 'write',
+        })
     }
     for (const caller of [release!, recovery!]) {
         expect(caller.jobs.release!.uses).toBe('./.github/workflows/release-pipeline.yml')
         expect(caller.jobs.release!.secrets).toEqual({
-            ...registrySecret,
             PACKAGE_SIGNING_KEY: '${{ secrets.PACKAGE_SIGNING_KEY }}',
         })
     }
-    expect(publisher!.on.workflow_call!.secrets).toEqual({
-        GHCR_PUBLISH_TOKEN: { required: true },
-    })
+    expect(publisher!.on.workflow_call!.secrets).toBeUndefined()
     expect(pipeline!.on.workflow_call!.secrets).toEqual({
-        GHCR_PUBLISH_TOKEN: { required: true },
         PACKAGE_SIGNING_KEY: { required: true },
     })
-    for (const source of sources) expect(source).not.toContain('secrets: inherit')
+    for (const source of sources) {
+        expect(source).not.toContain('GHCR_PUBLISH_TOKEN')
+        expect(source).not.toContain('secrets: inherit')
+    }
 })
 
 test.each(['publish-assessed-image', 'pr-preview-publish'])(
-    'protects the legacy registry writer %s and keeps its PAT out of scans',
+    'protects the organization registry writer %s and exposes its token only for publication',
     async (name) => {
         const source = await readFile(resolve(root, `.github/workflows/${name}.yml`), 'utf8')
         const parsed = Bun.YAML.parse(source) as {
@@ -59,6 +63,7 @@ test.each(['publish-assessed-image', 'pr-preview-publish'])(
                 string,
                 {
                     environment?: string
+                    permissions?: Record<string, string>
                     steps: {
                         id?: string
                         env?: Record<string, string>
@@ -69,55 +74,35 @@ test.each(['publish-assessed-image', 'pr-preview-publish'])(
         }
         const publisher = parsed.jobs.publish!
         expect(publisher.environment).toBe('container-publishing')
-        const preflight = publisher.steps[0]!
-        expect(preflight.env).toEqual({
-            GHCR_PUBLISH_TOKEN: '${{ secrets.GHCR_PUBLISH_TOKEN }}',
-        })
-        expect(preflight.run).toContain('Configure the GHCR_PUBLISH_TOKEN secret')
+        expect(publisher.permissions?.packages).toBe('write')
+        expect(source).not.toContain('GHCR_PUBLISH_TOKEN')
         const publication = publisher.steps.find((step) => step.id === 'publish')!
-        expect(publication.env?.GHCR_TOKEN).toBe('${{ secrets.GHCR_PUBLISH_TOKEN }}')
-        expect(publication.env?.GHCR_USERNAME).toBe('RentnerKev')
+        expect(publication.env?.GHCR_TOKEN).toBe('${{ github.token }}')
+        expect(publication.env?.GHCR_USERNAME).toBe('${{ github.actor }}')
         if (name === 'pr-preview-publish') {
             expect(publication.env?.GITHUB_TOKEN).toBe('${{ github.token }}')
         }
-        for (const step of publisher.steps.filter(
-            (candidate) => candidate !== preflight && candidate !== publication,
-        )) {
-            expect(JSON.stringify(step)).not.toContain('GHCR_PUBLISH_TOKEN')
+        for (const step of publisher.steps.filter((candidate) => candidate !== publication)) {
+            expect(step.env?.GHCR_TOKEN).toBeUndefined()
         }
         for (const [jobName, job] of Object.entries(parsed.jobs)) {
             if (jobName !== 'publish') {
-                expect(JSON.stringify(job)).not.toContain('GHCR_PUBLISH_TOKEN')
+                expect(JSON.stringify(job)).not.toContain('GHCR_TOKEN')
             }
         }
-        const bash = process.platform === 'win32' ? 'C:/Program Files/Git/bin/bash.exe' : 'bash'
-        await Promise.all(
-            ['', 'synthetic-registry-credential'].map(async (token) => {
-                const child = Bun.spawn([bash, '--noprofile', '--norc', '-c', preflight.run!], {
-                    env: { GHCR_PUBLISH_TOKEN: token },
-                    stdout: 'pipe',
-                    stderr: 'pipe',
-                })
-                const [status, stdout, stderr] = await Promise.all([
-                    child.exited,
-                    new Response(child.stdout).text(),
-                    new Response(child.stderr).text(),
-                ])
-                expect(status, stderr).toBe(token ? 0 : 1)
-                if (!token) expect(stdout).toContain('container-publishing')
-                expect(stdout + stderr).not.toContain('synthetic-registry-credential')
-            }),
-        )
     },
 )
 
-test('keeps the legacy registry PAT out of all candidate builders', async () => {
+test('keeps publishing credentials out of all candidate builders', async () => {
     const sources = await Promise.all(
         ['build-assessed-image', 'build-assessed-platform', 'pr-preview-build'].map((name) =>
             readFile(resolve(root, `.github/workflows/${name}.yml`), 'utf8'),
         ),
     )
-    for (const source of sources) expect(source).not.toContain('GHCR_PUBLISH_TOKEN')
+    for (const source of sources) {
+        expect(source).not.toContain('GHCR_PUBLISH_TOKEN')
+        expect(source).not.toContain('GHCR_TOKEN')
+    }
 })
 
 test('assesses production OCI before registry credentials and keeps source execution out of the publisher', async () => {
@@ -156,7 +141,7 @@ test('assesses production OCI before registry credentials and keeps source execu
         )
         expect(JSON.stringify(parsed.jobs.build)).not.toContain('secrets.GITHUB_TOKEN')
         expect(source).toContain(
-            'org.opencontainers.image.source=https://github.com/RentnerKev/RentnerProxy',
+            'org.opencontainers.image.source=https://github.com/RentnerProxy/platform',
         )
     }
     for (const source of files.slice(0, 2)) {
