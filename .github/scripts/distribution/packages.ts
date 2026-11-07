@@ -33,7 +33,7 @@ const debPostrm =
     packageRemoved.split('\n').slice(2).join('\n') +
     ';; esac\n'
 
-export function quadletInstaller(payload: readonly DistributionPayloadFile[]): string {
+function quadletInstaller(payload: readonly DistributionPayloadFile[]): string {
     return (
         '#!/bin/bash\nset -eu\n[[ $(id -u) == 0 ]] || exit 1\n' +
         packageOwnershipGuard +
@@ -50,7 +50,7 @@ export function quadletInstaller(payload: readonly DistributionPayloadFile[]): s
     )
 }
 
-export function quadletUninstaller(payload: readonly DistributionPayloadFile[]): string {
+function quadletUninstaller(payload: readonly DistributionPayloadFile[]): string {
     const checks = payload
         .map((file) => {
             const path = '/' + file.path,
@@ -84,7 +84,7 @@ export async function verifyQuadletArchive(
     )
 }
 
-export function debControl(identity: DistributionRelease): readonly DistributionPayloadFile[] {
+function debControl(identity: DistributionRelease): readonly DistributionPayloadFile[] {
     const release = parseDistributionRelease(identity)
     return [
         {
@@ -99,7 +99,7 @@ export function debControl(identity: DistributionRelease): readonly Distribution
     ]
 }
 
-export function rpmSpec(
+function rpmSpec(
     release: DistributionRelease,
     payload: readonly DistributionPayloadFile[],
 ): string {

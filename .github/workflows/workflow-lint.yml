@@ -15,17 +15,35 @@ concurrency:
     cancel-in-progress: true
 
 jobs:
+    changes:
+        uses: ./.github/workflows/detect-changes.yml
+
     workflow-lint:
         name: Workflow Lint
+        needs: changes
+        if: ${{ !cancelled() }}
+        env:
+            RUN_CHECK: ${{ needs.changes.outputs.actions != 'false' }}
         runs-on: ubuntu-latest
         timeout-minutes: 10
         steps:
+            - name: Require successful change detection
+              env:
+                  CHANGE_RESULT: ${{ needs.changes.result }}
+              run: test "$CHANGE_RESULT" = success
+
+            - name: Report unaffected check
+              if: env.RUN_CHECK != 'true'
+              run: echo 'No relevant inputs changed; this check does not need to run.'
+
             - name: Check out repository
+              if: env.RUN_CHECK == 'true'
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   persist-credentials: false
 
             - name: Check out trusted workflow tooling
+              if: env.RUN_CHECK == 'true'
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   persist-credentials: false
@@ -33,6 +51,7 @@ jobs:
                   ref: ${{ github.event.pull_request.base.sha || github.sha }}
 
             - name: Install actionlint
+              if: env.RUN_CHECK == 'true'
               env:
                   ACTIONLINT_VERSION: 1.7.12
                   ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
@@ -40,8 +59,10 @@ jobs:
               run: bash trusted/.github/scripts/ci/install-actionlint.sh
 
             - name: Lint workflows
+              if: env.RUN_CHECK == 'true'
               run: |
                   "$RUNNER_TEMP/actionlint" -color
 
             - name: Lint automation shell scripts
+              if: env.RUN_CHECK == 'true'
               run: find .github/scripts -type f -name '*.sh' -print0 | xargs -0 -- shellcheck

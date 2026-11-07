@@ -8,7 +8,7 @@ import type {
 export type BulkHostAction = z.infer<typeof bulkHostActionSchema>
 export type BulkHostPreviewInput = z.infer<typeof bulkHostPreviewSchema>
 export type BulkHostApplyInput = z.infer<typeof bulkHostApplySchema>
-export type BulkHostReason =
+type BulkHostReason =
     | 'permission'
     | 'missing'
     | 'discovery'

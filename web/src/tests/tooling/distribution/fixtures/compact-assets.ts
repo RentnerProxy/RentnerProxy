@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 
 export const compactTag = 'v1.0.0-beta.3'
-export const compactIdentity = {
+const compactIdentity = {
     version: compactTag,
     revision: 'a'.repeat(40),
     digest: 'sha256:' + 'b'.repeat(64),

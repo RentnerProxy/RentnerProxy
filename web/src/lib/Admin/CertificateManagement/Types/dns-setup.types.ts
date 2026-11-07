@@ -14,7 +14,7 @@ export interface DnsSetupInput {
         | undefined
 }
 
-export type DnsSetupStatus =
+type DnsSetupStatus =
     'ready' | 'missing' | 'conflicting' | 'lookup_failed' | 'nameservers_unavailable'
 
 export interface DnsSetupResult {

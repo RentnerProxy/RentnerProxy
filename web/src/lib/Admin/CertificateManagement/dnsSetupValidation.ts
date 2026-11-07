@@ -3,7 +3,7 @@ import { ACME_ENVIRONMENTS, MAX_CERTIFICATE_DOMAINS } from '@/config/certificate
 import { dnsZoneIdSchema, dnsZoneNameSchema } from '@/lib/DnsConnections/validation.ts'
 import { isPublicAcmeDomain, normalizeCertificateDomain } from './certificateValidation.ts'
 
-export const dnsSetupDomainSchema = z
+const dnsSetupDomainSchema = z
     .string()
     .trim()
     .max(253)

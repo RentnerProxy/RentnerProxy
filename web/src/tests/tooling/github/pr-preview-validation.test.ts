@@ -39,6 +39,7 @@ import {
 import {
     previewGateLifecycle,
     verifyGate,
+    verifyWorkflowRunIdentity,
 } from '../../../../../.github/scripts/deploy/pr-preview/gate.ts'
 import { previewLifecycle } from '../../../../../.github/scripts/deploy/pr-preview/checks.ts'
 
@@ -526,6 +527,247 @@ describe('obsolete preview lifecycle', () => {
         await expect(previewGateLifecycle(api, expectedPullRequest)).rejects.toThrow(
             'Required check failed: CI',
         )
+    })
+})
+
+function sourceGateApi(
+    options: {
+        latest?: Record<string, unknown>
+        producer?: Record<string, unknown> | null
+        run?: Record<string, unknown>
+        skippedRun?: Record<string, unknown>
+        changedWorkflow?: boolean
+        sourceBaseSha?: string
+        extraChecks?: Record<string, unknown>[]
+    } = {},
+) {
+    return fixtureApi((path) => {
+        if (path.endsWith('/pulls/42')) return rawPullRequest()
+        if (path.endsWith('/git/ref/heads/main'))
+            return { ref: 'refs/heads/main', object: { type: 'commit', sha: baseSha } }
+        if (path.includes('/compare/'))
+            return {
+                status: 'ahead',
+                ahead_by: 1,
+                behind_by: 0,
+                base_commit: { sha: baseSha },
+                merge_base_commit: { sha: baseSha },
+            }
+        if (path.includes('/rules/'))
+            return [
+                {
+                    type: 'required_status_checks',
+                    parameters: {
+                        strict_required_status_checks_policy: true,
+                        required_status_checks: [
+                            { context: 'PR Preview Source', integration_id: 15_368 },
+                            ...(options.extraChecks ?? []).map((check) => ({
+                                context: check.name,
+                                integration_id: 15_368,
+                            })),
+                        ],
+                    },
+                },
+            ]
+        const check = {
+            name: 'PR Preview Source',
+            status: 'completed',
+            app: { id: 15_368 },
+        }
+        if (path.includes('/check-runs?'))
+            return {
+                check_runs: [
+                    ...(options.producer === null
+                        ? []
+                        : [
+                              {
+                                  ...check,
+                                  id: 1,
+                                  conclusion: 'success',
+                                  details_url:
+                                      'https://github.com/rentnerproxy/platform/actions/runs/101/job/1',
+                                  ...options.producer,
+                              },
+                          ]),
+                    {
+                        ...check,
+                        id: 2,
+                        conclusion: 'skipped',
+                        details_url:
+                            'https://github.com/rentnerproxy/platform/actions/runs/102/job/2',
+                        ...options.latest,
+                    },
+                    ...(options.extraChecks ?? []),
+                ],
+            }
+        if (/\/actions\/runs\/10[123]$/u.test(path))
+            return {
+                id: Number(path.split('/').at(-1)),
+                workflow_id: 202,
+                run_attempt: 1,
+                name: 'PR Preview Source',
+                path: '.github/workflows/pr-preview-source.yml',
+                event: 'pull_request',
+                status: 'completed',
+                conclusion: path.endsWith('/101') ? 'success' : 'skipped',
+                repository: { full_name: expectedPullRequest.baseRepository },
+                head_repository: { full_name: expectedPullRequest.headRepository },
+                head_sha: headSha,
+                pull_requests: [
+                    {
+                        number: 42,
+                        base: {
+                            ref: 'main',
+                            sha: options.sourceBaseSha ?? baseSha,
+                            repo: { url: 'https://api.github.com/repos/rentnerproxy/platform' },
+                        },
+                        head: {
+                            sha: headSha,
+                            repo: { url: 'https://api.github.com/repos/contributor/rentnerproxy' },
+                        },
+                    },
+                ],
+                ...options.run,
+                ...(path.endsWith('/101') ? {} : options.skippedRun),
+            }
+        if (path.endsWith('/actions/workflows/202'))
+            return {
+                id: 202,
+                name: 'PR Preview Source',
+                path: '.github/workflows/pr-preview-source.yml',
+                state: 'active',
+            }
+        if (path.includes('/contents/'))
+            return {
+                type: 'file',
+                sha:
+                    options.changedWorkflow && path.endsWith(testedSha)
+                        ? 'b'.repeat(40)
+                        : 'a'.repeat(40),
+            }
+        throw new Error('Unexpected source gate fixture request: ' + path)
+    })
+}
+
+describe('metadata-only preview source checks', () => {
+    test('keeps the successful source producer when a later metadata edit skips the exact source workflow', async () => {
+        expect(await verifyGate(sourceGateApi(), expectedPullRequest, false)).toEqual(
+            currentPullRequest(),
+        )
+    })
+
+    test('handles successive metadata edits without hiding an intervening producer failure', async () => {
+        const laterSkip = {
+            id: 3,
+            name: 'PR Preview Source',
+            status: 'completed',
+            conclusion: 'skipped',
+            app: { id: 15_368 },
+            details_url: 'https://github.com/rentnerproxy/platform/actions/runs/103/job/3',
+        }
+        expect(
+            await verifyGate(
+                sourceGateApi({ extraChecks: [laterSkip] }),
+                expectedPullRequest,
+                false,
+            ),
+        ).toEqual(currentPullRequest())
+        await expect(
+            verifyGate(
+                sourceGateApi({
+                    latest: { conclusion: 'failure' },
+                    extraChecks: [laterSkip],
+                }),
+                expectedPullRequest,
+                false,
+            ),
+        ).rejects.toThrow('PR Preview Source (skipped)')
+    })
+
+    test('requires a successful producer and keeps relevant source failures and pending checks strict', async () => {
+        await Promise.all(
+            [
+                { producer: null },
+                { producer: { conclusion: 'failure' } },
+                { producer: { conclusion: 'cancelled' } },
+                { latest: { conclusion: 'failure' } },
+                { latest: { status: 'in_progress', conclusion: null } },
+                { latest: { app: { id: 999 } }, producer: null },
+            ].map(async (options) => {
+                await expect(
+                    verifyGate(sourceGateApi(options), expectedPullRequest, false),
+                ).rejects.toThrow()
+            }),
+        )
+    })
+
+    test('rejects spoofed source workflow identity, stale source commits and changed workflow files', async () => {
+        await Promise.all(
+            [
+                { run: { name: 'CI' } },
+                { run: { path: '.github/workflows/ci.yml' } },
+                { run: { event: 'push' } },
+                { run: { conclusion: 'failure' } },
+                { run: { conclusion: 'skipped' } },
+                { run: { id: 999 } },
+                { run: { head_sha: '4'.repeat(40) } },
+                { changedWorkflow: true },
+                { sourceBaseSha: '4'.repeat(40) },
+                { run: { head_repository: { full_name: 'other/repository' } } },
+            ].map(async (options) => {
+                await expect(
+                    verifyGate(sourceGateApi(options), expectedPullRequest, false),
+                ).rejects.toThrow()
+            }),
+        )
+    })
+
+    test('requires an actual completed skipped source run rather than a failed, cancelled or pending run', async () => {
+        await Promise.all(
+            [
+                { conclusion: 'failure' },
+                { conclusion: 'cancelled' },
+                { conclusion: 'success' },
+                { status: 'in_progress', conclusion: 'skipped' },
+                { status: 'queued', conclusion: null },
+            ].map(async (skippedRun) => {
+                await expect(
+                    verifyGate(sourceGateApi({ skippedRun }), expectedPullRequest, false),
+                ).rejects.toThrow()
+            }),
+        )
+    })
+
+    test('keeps the general workflow verifier success-only', async () => {
+        await expect(
+            verifyWorkflowRunIdentity(
+                sourceGateApi(),
+                { ...triggerRun, conclusion: 'skipped' },
+                { event: 'pull_request' },
+            ),
+        ).rejects.toThrow('Workflow run identity or result is invalid')
+    })
+
+    test('does not accept unrelated skipped required checks', async () => {
+        await expect(
+            verifyGate(
+                sourceGateApi({
+                    extraChecks: [
+                        {
+                            id: 3,
+                            name: 'CI',
+                            status: 'completed',
+                            conclusion: 'skipped',
+                            app: { id: 15_368 },
+                            details_url:
+                                'https://github.com/rentnerproxy/platform/actions/runs/103/job/3',
+                        },
+                    ],
+                }),
+                expectedPullRequest,
+                false,
+            ),
+        ).rejects.toThrow('CI (skipped)')
     })
 })
 

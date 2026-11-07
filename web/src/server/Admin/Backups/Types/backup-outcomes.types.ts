@@ -10,7 +10,7 @@ export interface BackupAuditCursor {
     readonly sequence: number
     readonly restorePending?: true | undefined
 }
-export interface BackupAuditTransaction {
+interface BackupAuditTransaction {
     readonly cursor: BackupAuditCursor
     readonly enqueue: (
         events: readonly ManagedBackupAuditEvent[],

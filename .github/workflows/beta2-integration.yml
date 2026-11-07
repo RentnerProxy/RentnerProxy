@@ -14,13 +14,18 @@ concurrency:
     cancel-in-progress: true
 
 jobs:
+    changes:
+        uses: ./.github/workflows/detect-changes.yml
+
     beta2:
         name: Cross-language Beta 2 journeys
+        needs: changes
+        if: ${{ !cancelled() }}
         runs-on: ubuntu-latest
         timeout-minutes: 15
         services:
             postgres:
-                image: mirror.gcr.io/library/postgres:18.6@sha256:3a4264520e121176619f54ff867d12774bc81e95e7b84db58d63bccdb6144b81
+                image: ${{ needs.changes.outputs.runtime != 'false' && 'mirror.gcr.io/library/postgres:18.6@sha256:3a4264520e121176619f54ff867d12774bc81e95e7b84db58d63bccdb6144b81' || '' }}
                 env:
                     POSTGRES_USER: rentnerproxy
                     POSTGRES_PASSWORD: rentnerproxy
@@ -32,7 +37,7 @@ jobs:
                     --health-timeout 5s
                     --health-retries 10
             valkey:
-                image: mirror.gcr.io/valkey/valkey:9.1.3-alpine@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b
+                image: ${{ needs.changes.outputs.runtime != 'false' && 'mirror.gcr.io/valkey/valkey:9.1.3-alpine@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b' || '' }}
                 ports: [6379:6379]
                 options: >-
                     --health-cmd "valkey-cli ping"
@@ -40,30 +45,45 @@ jobs:
                     --health-timeout 5s
                     --health-retries 10
         env:
+            RUN_CHECK: ${{ needs.changes.outputs.runtime != 'false' }}
             BUN_VERSION: 1.4.4
             RUST_VERSION: 1.99.1
             DATABASE_URL: postgresql://rentnerproxy:rentnerproxy@127.0.0.1:5432/rentnerproxy_beta2_test
             VALKEY_URL: redis://127.0.0.1:6379
             RENTNERPROXY_BETA2_INTEGRATION: '1'
         steps:
+            - name: Require successful change detection
+              env:
+                  CHANGE_RESULT: ${{ needs.changes.result }}
+              run: test "$CHANGE_RESULT" = success
+
+            - name: Report unaffected check
+              if: env.RUN_CHECK != 'true'
+              run: echo 'No relevant inputs changed; this check does not need to run.'
+
             - name: Check out repository
+              if: env.RUN_CHECK == 'true'
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   persist-credentials: false
             - name: Set up Bun
+              if: env.RUN_CHECK == 'true'
               uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
               with:
                   bun-version: ${{ env.BUN_VERSION }}
             - name: Set up Rust
+              if: env.RUN_CHECK == 'true'
               run: |
                   rustup toolchain install "$RUST_VERSION" --profile minimal
                   rustup override set "$RUST_VERSION"
             - name: Restore Bun dependency cache
+              if: env.RUN_CHECK == 'true'
               uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
               with:
                   path: ~/.bun/install/cache
                   key: ${{ runner.os }}-bun-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock') }}
             - name: Restore Cargo dependency cache
+              if: env.RUN_CHECK == 'true'
               uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
               with:
                   path: |
@@ -73,8 +93,30 @@ jobs:
                       ~/.cargo/git/db
                   key: ${{ runner.os }}-cargo-${{ env.RUST_VERSION }}-${{ hashFiles('core/Cargo.lock') }}
             - name: Install dependencies
+              if: env.RUN_CHECK == 'true'
               run: bun install --frozen-lockfile
+            - name: Set up Docker Buildx
+              if: env.RUN_CHECK == 'true'
+              uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+            - name: Build cached production Caddy fixture
+              if: env.RUN_CHECK == 'true'
+              uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+              env:
+                  DOCKER_BUILD_RECORD_UPLOAD: 'false'
+              with:
+                  context: .
+                  file: docker/proxy-runtime/Dockerfile
+                  target: caddy-build
+                  load: true
+                  push: false
+                  tags: rentnerproxy-beta2-caddy:${{ github.sha }}
+                  cache-from: |
+                      type=gha,version=2,scope=beta2-caddy-build-v1,timeout=2m
+                      type=gha,version=2,scope=ci-caddy-build-v1,timeout=2m
+                      type=gha,version=2,scope=production-smokes-proxy-runtime-v1,timeout=2m
+                  cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,version=2,scope=beta2-caddy-build-v1,mode=max,timeout=2m,ignore-error=true' || '' }}
             - name: Build and extract production Caddy fixture binary
+              if: env.RUN_CHECK == 'true'
               shell: bash
               env:
                   CADDY_FIXTURE_IMAGE: rentnerproxy-beta2-caddy:${{ github.sha }}
@@ -83,15 +125,16 @@ jobs:
                   export RENTNERPROXY_TEST_CADDY_BIN="$RUNNER_TEMP/beta2-caddy"
                   printf '%s\n' "RENTNERPROXY_TEST_CADDY_BIN=$RENTNERPROXY_TEST_CADDY_BIN" >> "$GITHUB_ENV"
                   image="$CADDY_FIXTURE_IMAGE"
-                  docker build --target caddy-build --file docker/proxy-runtime/Dockerfile --tag "$image" .
                   container=$(docker create "$image")
                   trap 'docker rm -f "$container" >/dev/null' EXIT
                   docker cp "$container:/usr/bin/caddy" "$RENTNERPROXY_TEST_CADDY_BIN"
                   chmod 700 "$RENTNERPROXY_TEST_CADDY_BIN"
                   "$RENTNERPROXY_TEST_CADDY_BIN" version
             - name: Migrate isolated fixture database
+              if: env.RUN_CHECK == 'true'
               run: bun --no-env-file run db:migrate
             - name: Run real Beta 2 journeys with overridden TMPDIR
+              if: env.RUN_CHECK == 'true'
               env:
                   TMPDIR: ${{ runner.temp }}
               run: bun --no-env-file .github/scripts/ci/beta2/run.ts

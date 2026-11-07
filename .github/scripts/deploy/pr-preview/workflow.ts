@@ -34,7 +34,7 @@ const PREVIEW_SOURCE_ARTIFACT_NAME = 'pr-preview-source'
 
 const PREVIEW_TRIGGER_WORKFLOW_NAME = 'PR Preview Source'
 
-export const PREVIEW_TRIGGER_WORKFLOW_PATH = '.github/workflows/pr-preview-source.yml'
+const PREVIEW_TRIGGER_WORKFLOW_PATH = '.github/workflows/pr-preview-source.yml'
 
 const PREVIEW_WORKFLOW_NAME = 'PR Preview Build'
 

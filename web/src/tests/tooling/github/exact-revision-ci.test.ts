@@ -42,15 +42,13 @@ function job(name: string, id: number, overrides: Record<string, unknown> = {}) 
 }
 function fixture() {
     const compatibility = {
-        runs: [
-            run({ id: 40, workflow_id: 30, path: '.github/workflows/release-compatibility.yml' }),
-        ],
+        runs: [run({ id: 40, workflow_id: 30, path: '.github/workflows/production-smokes.yml' })],
         finalRuns: null as ReturnType<typeof run>[] | null,
         details: [] as ReturnType<typeof run>[],
         jobs: REQUIRED_COMPATIBILITY_JOBS.map((name, index) =>
             job(name, index + 1, { run_id: 40 }),
         ),
-        workflow: { id: 30, path: '.github/workflows/release-compatibility.yml', state: 'active' },
+        workflow: { id: 30, path: '.github/workflows/production-smokes.yml', state: 'active' },
     }
     const state = {
         runs: [run()],
@@ -67,7 +65,7 @@ function fixture() {
         if (path === `${prefix}/workflows/ci.yml`) return state.workflow
         const url = new URL('https://api.github.com' + path)
         const page = Number(url.searchParams.get('page'))
-        if (path === `${prefix}/workflows/release-compatibility.yml`) return compatibility.workflow
+        if (path === `${prefix}/workflows/production-smokes.yml`) return compatibility.workflow
         if (url.pathname === `${prefix}/workflows/30/runs`) {
             if (page === 1) compatibilityListings++
             const runs =
@@ -564,10 +562,34 @@ test.each(['runs', 'jobs'])('rejects incomplete compatibility %s listings', asyn
             ? Promise.resolve(
                   mode === 'runs'
                       ? { total_count: 2, workflow_runs: data.compatibility.runs }
-                      : { total_count: 2, jobs: data.compatibility.jobs },
+                      : {
+                            total_count: data.compatibility.jobs.length + 1,
+                            jobs: data.compatibility.jobs,
+                        },
               )
             : data.getJson(path, signal)
     await expect(verifyExactRevisionCi(repository, revision, getJson)).rejects.toThrow(
+        CI_GATE_ERROR,
+    )
+})
+
+test.each(['Full verification', 'Full runtime verification'])(
+    'rejects partial verification despite successful unaffected checks: %s',
+    async (name) => {
+        const data = fixture()
+        const jobs = name === 'Full verification' ? data.state.jobs : data.compatibility.jobs
+        const marker = jobs.find((candidate) => candidate.name === name)!
+        marker.conclusion = 'skipped'
+        await expect(verifyExactRevisionCi(repository, revision, data.getJson)).rejects.toThrow(
+            CI_GATE_ERROR,
+        )
+    },
+)
+
+test('dedicated compatibility success cannot replace central runtime evidence', async () => {
+    const data = fixture()
+    data.compatibility.workflow.path = '.github/workflows/release-compatibility.yml'
+    await expect(verifyExactRevisionCi(repository, revision, data.getJson)).rejects.toThrow(
         CI_GATE_ERROR,
     )
 })

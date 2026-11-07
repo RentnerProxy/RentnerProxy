@@ -190,7 +190,7 @@ test('assesses production OCI before registry credentials and keeps source execu
         'schedule',
         'workflow_dispatch',
     ])
-    expect(workflow.jobs['locked-source']?.if).toBeUndefined()
+    expect(workflow.jobs['locked-source']?.if).toBe('${{ !cancelled() }}')
     expect(
         workflow.jobs['locked-source']?.steps?.some((step) => step.run?.includes('audit-cargo.sh')),
     ).toBe(true)
@@ -198,7 +198,7 @@ test('assesses production OCI before registry credentials and keeps source execu
         workflow.jobs['locked-source']?.steps?.some((step) => step.run?.includes('audit-bun.sh')),
     ).toBe(true)
     expect(workflow.jobs['production-candidate']?.if).toBe(
-        "github.event_name != 'schedule' && github.event_name != 'pull_request'",
+        "github.event_name == 'workflow_dispatch'",
     )
     expect(
         workflow.jobs['production-candidate']?.steps?.some((step) =>
@@ -238,7 +238,7 @@ test('audits exact source with base-revision automation outside PR configuration
     expect(workflow.permissions).toEqual({ contents: 'read' })
     for (const name of ['locked-source', 'production-candidate']) {
         const job = workflow.jobs[name]!
-        expect(job.needs).toBeUndefined()
+        expect(job.needs).toBe(name === 'locked-source' ? 'changes' : undefined)
         const checkouts = job.steps.filter((step) => step.uses?.startsWith('actions/checkout@'))
         expect(checkouts).toHaveLength(2)
         expect(checkouts.find((step) => step.with?.path === 'automation')?.with).toEqual({
@@ -310,7 +310,7 @@ test('PR production audit scans the same-run OCI with trusted base automation an
             string,
             {
                 name?: string
-                needs?: string
+                needs?: string | string[]
                 if?: string
                 steps: {
                     uses?: string
@@ -327,13 +327,12 @@ test('PR production audit scans the same-run OCI with trusted base automation an
     expect(source).not.toContain('workflow_run:')
     expect(source).not.toMatch(/\$\{\{[^}]*\bsecrets(?:\s*\[|\.)/u)
     const audit = workflow.jobs['production-candidate']!
-    expect(audit.name).toBe(
-        "${{ github.event_name == 'pull_request' && 'Production image dependency audit' || 'PR image dependency audit (inactive)' }}",
-    )
-    expect(audit.needs).toBe('build-runtime-images')
-    expect(audit.if).toBe("${{ !cancelled() && github.event_name == 'pull_request' }}")
+    expect(audit.name).toBe('Production image dependency audit')
+    expect(audit.needs).toEqual(['changes', 'build-runtime-images'])
+    expect(audit.if).toBe('${{ !cancelled() }}')
     expect(audit.steps[0]?.env?.IMAGE_BUILD_RESULT).toBe('${{ needs.build-runtime-images.result }}')
-    expect(audit.steps[0]?.run).toBe('test "$IMAGE_BUILD_RESULT" = success')
+    expect(audit.steps[0]?.run).toContain('true) test "$IMAGE_BUILD_RESULT" = success')
+    expect(audit.steps[0]?.run).toContain('test "$SELECTION_RESULT" = success')
     const checkouts = audit.steps.filter((step) => step.uses?.startsWith('actions/checkout@'))
     expect(checkouts.find((step) => step.with?.path === 'automation')?.with).toEqual({
         'persist-credentials': false,
@@ -396,10 +395,10 @@ test('PR production audit scans the same-run OCI with trusted base automation an
         await readFile(resolve(root, '.github/workflows/dependency-security.yml'), 'utf8'),
     ) as { jobs: Record<string, { name?: string; if?: string }> }
     expect(standalone.jobs['production-candidate']?.if).toBe(
-        "github.event_name != 'schedule' && github.event_name != 'pull_request'",
+        "github.event_name == 'workflow_dispatch'",
     )
     expect(standalone.jobs['production-candidate']?.name).toBe(
-        "${{ github.event_name == 'pull_request' && 'Standalone image audit (inactive)' || 'Production image dependency audit' }}",
+        "${{ github.event_name == 'workflow_dispatch' && 'Production image dependency audit' || 'Standalone image audit (inactive)' }}",
     )
     expect(JSON.stringify(audit)).not.toContain('continue-on-error')
     expect(JSON.stringify(audit)).not.toContain('result == 3')

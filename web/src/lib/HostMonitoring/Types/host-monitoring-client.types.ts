@@ -23,7 +23,7 @@ export interface HostMonitoringObservationView {
     readonly httpStatus: number | null
 }
 
-export interface HostMonitoringIncidentView {
+interface HostMonitoringIncidentView {
     readonly id: string
     readonly policyId: string
     readonly startedAt: Date

@@ -75,7 +75,7 @@ export function providerInput(draft: ProviderDraft) {
     }
 }
 
-export const providerSummarySchema = oidcProviderSchema.safeExtend({
+const providerSummarySchema = oidcProviderSchema.safeExtend({
     revision: z.number().int().nonnegative(),
     credentialConfigured: z.boolean(),
 })
