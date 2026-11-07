@@ -117,6 +117,10 @@ jobs:
               run: bun --no-env-file run dependencies:check
               if: "${{ needs.changes.outputs.web == 'true' }}"
 
+            - name: Check web types when no web build is selected
+              if: ${{ needs.changes.outputs.web == 'true' && needs.changes.outputs.build_web != 'true' }}
+              run: bun --no-env-file --check --tsconfig-override tsconfig.json
+
             - name: Run Oxlint
               run: bun --no-env-file run lint
               if: "${{ needs.changes.outputs.web == 'true' }}"

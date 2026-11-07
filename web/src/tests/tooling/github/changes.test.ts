@@ -187,3 +187,19 @@ test('required CI jobs guard detector failures and preserve successful unaffecte
         true,
     )
 })
+
+test('test-only web changes receive native type checking without building production assets', async () => {
+    const selected = selectChecks(['web/src/tests/features/Hosts/host.test.tsx'])
+    expect(selected.web).toBe(true)
+    expect(selected.build_web).toBe(false)
+    const workflow = Bun.YAML.parse(
+        await readFile(new URL('../../../../../.github/workflows/ci.yml', import.meta.url), 'utf8'),
+    ) as { jobs: Record<string, { steps: { name: string; if?: string; run?: string }[] }> }
+    const typecheck = workflow.jobs.lint?.steps.find((step) =>
+        step.run?.includes('--check --tsconfig-override tsconfig.json'),
+    )
+    expect(typecheck?.if).toBe(
+        "${{ needs.changes.outputs.web == 'true' && needs.changes.outputs.build_web != 'true' }}",
+    )
+    expect(typecheck?.run).toBe('bun --no-env-file --check --tsconfig-override tsconfig.json')
+})
