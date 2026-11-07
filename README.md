@@ -12,13 +12,17 @@
   <a href="https://github.com/RentnerProxy/platform/actions/workflows/ci.yml"><img src="https://github.com/RentnerProxy/platform/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
   <a href="https://github.com/RentnerProxy/platform/actions/workflows/codeql.yml"><img src="https://github.com/RentnerProxy/platform/actions/workflows/codeql.yml/badge.svg?branch=main" alt="CodeQL status"></a>
   <a href="https://www.bestpractices.dev/projects/14354"><img src="https://www.bestpractices.dev/projects/14354/badge" alt="OpenSSF Best Practices badge"></a>
-  <a href="https://github.com/RentnerProxy/platform/releases/tag/v1.0.0-beta.3"><img src="https://img.shields.io/github/v/release/RentnerProxy/platform?include_prereleases&amp;sort=semver" alt="Current GitHub release"></a>
+  <a href="https://github.com/RentnerProxy/platform/releases/tag/v1.0.0-beta.3.1"><img src="https://img.shields.io/github/v/release/RentnerProxy/platform?include_prereleases&amp;sort=semver" alt="Current GitHub release"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/github/license/RentnerProxy/platform" alt="MIT license"></a>
 </p>
 
 > [!IMPORTANT]
-> Current public release: [v1.0.0-beta.3](https://github.com/RentnerProxy/platform/releases/tag/v1.0.0-beta.3).
+> Current public release: [v1.0.0-beta.3.1](https://github.com/RentnerProxy/platform/releases/tag/v1.0.0-beta.3.1).
 > This is beta software: breaking changes are possible. Back up your data before upgrades.
+>
+> **Image migration:** Beta 3.1 and newer images use `ghcr.io/rentnerproxy/platform`.
+> Update existing deployments from `ghcr.io/rentnerkev/rentnerproxy` explicitly.
+> Beta 3.1 includes Caddy 2.11.9 with upstream security fixes.
 
 ## Features
 
@@ -49,7 +53,7 @@ manual challenges, supported delegation targets, renewal and recovery.
 
 ## Installation
 
-Beta 3 is available for `linux/amd64` and `linux/arm64`.
+Beta 3.1 is available for `linux/amd64` and `linux/arm64`.
 
 | Installation        | Get started                                                                                      |
 | ------------------- | ------------------------------------------------------------------------------------------------ |
@@ -66,20 +70,19 @@ Requirements:
 - Free ports `80/tcp`, `443/tcp`, and `443/udp`.
 - HTTPS management origin and SMTP credentials.
 
-This Compose example is pinned to the already published Beta 3 image in the
-previous registry namespace. That historical tag remains there; it is not
-available in the new organization namespace:
-`ghcr.io/rentnerkev/rentnerproxy:v1.0.0-beta.3`.
+This Compose example is pinned to the Beta 3.1 image:
+`ghcr.io/rentnerproxy/platform:v1.0.0-beta.3.1`. The public image supports
+anonymous pulls; no GitHub or registry login is required.
 
 Save this as `docker-compose.yml` (or use the [repository file](docker-compose.yml)):
 
 ```yaml
 services:
     rentnerproxy:
-        image: ${RENTNERPROXY_IMAGE:?Set RENTNERPROXY_IMAGE to a Valkey-based RentnerProxy image}
+        image: ${RENTNERPROXY_IMAGE:?Set RENTNERPROXY_IMAGE to a RentnerProxy image}
         environment:
-            RENTNERPROXY_PUBLIC_ORIGIN: ${RENTNERPROXY_PUBLIC_ORIGIN:?Set RENTNERPROXY_PUBLIC_ORIGIN}
-            RENTNERPROXY_PROXY_TRUSTED_PROXY_CIDRS: ${RENTNERPROXY_PROXY_TRUSTED_PROXY_CIDRS:-}
+            PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN}
+            PROXY_TRUSTED_PROXY_CIDRS: ${PROXY_TRUSTED_PROXY_CIDRS:-}
             SMTP_FROM: ${SMTP_FROM:?Set SMTP_FROM}
             SMTP_HOST: ${SMTP_HOST:?Set SMTP_HOST}
             SMTP_PASSWORD: ${SMTP_PASSWORD:?Set SMTP_PASSWORD}
@@ -103,9 +106,9 @@ volumes:
 Create `.env` beside it (see also [`.env.production.example`](.env.production.example)):
 
 ```dotenv
-# Historical Beta 3 image; new publications use ghcr.io/rentnerproxy/platform.
-RENTNERPROXY_IMAGE=ghcr.io/rentnerkev/rentnerproxy:v1.0.0-beta.3
-RENTNERPROXY_PUBLIC_ORIGIN=https://management.example.com
+# Pin the public Beta 3.1 image; use :beta to follow the latest beta instead.
+RENTNERPROXY_IMAGE=ghcr.io/rentnerproxy/platform:v1.0.0-beta.3.1
+PUBLIC_ORIGIN=https://management.example.com
 SMTP_HOST=smtp.example.com
 SMTP_PORT=587
 SMTP_SECURE=false
@@ -114,7 +117,7 @@ SMTP_PASSWORD=replace-me
 SMTP_FROM=RentnerProxy <rentnerproxy@example.com>
 
 # Optional: only the direct IP/CIDR of a trusted proxy in front of RentnerProxy.
-# RENTNERPROXY_PROXY_TRUSTED_PROXY_CIDRS=192.0.2.10/32
+# PROXY_TRUSTED_PROXY_CIDRS=192.0.2.10/32
 ```
 
 To build from this checkout instead, run the following command and set
@@ -132,7 +135,7 @@ docker compose up -d
 ```
 
 - Complete first-owner setup at `http://localhost:81`. For a remote host, keep port 81 private and use `ssh -L 8181:127.0.0.1:81 user@server`.
-- Use the configured HTTPS `RENTNERPROXY_PUBLIC_ORIGIN` for normal access, email links, and passkeys.
+- Use the configured HTTPS `PUBLIC_ORIGIN` for normal access, email links, and passkeys.
 - Application data lives in the persistent `rentnerproxy` Docker volume.
 
 During restart or recreation, the controller recovers supported persisted proxy snapshots after
@@ -151,7 +154,7 @@ Podman 5.4 or newer, systemd 252 or newer, cgroup v2 and nftables. Rootless depl
 Follow the [installation and verification guide](https://rentnerproxy.github.io/platform/INSTALL.txt)
 to verify the signing-key fingerprint, configure APT or DNF, or install a versioned DEB, RPM or
 Quadlet archive. Versioned packages, checksums, signatures and architecture-specific instructions
-are also available in the [Beta 3 downloads](https://github.com/RentnerProxy/platform/releases/tag/v1.0.0-beta.3).
+are also available in the [Beta 3.1 downloads](https://github.com/RentnerProxy/platform/releases/tag/v1.0.0-beta.3.1).
 
 ## Upgrade
 
@@ -159,7 +162,7 @@ From Beta 2 onward, `v1.0.0-beta.1` is the minimum supported upgrade source.
 Back up the installation with its current release's tools before changing the image.
 Keep the persistent volume, encryption material and deployment configuration.
 
-New releases and the `:dev` image use `ghcr.io/rentnerproxy/platform`. Existing
+From Beta 3.1 onward, releases and the `:dev` image use `ghcr.io/rentnerproxy/platform`. Existing
 installations do not switch registries automatically: older clients still expect
 the previous registry and source identity. After backing up, explicitly change
 the image in `RENTNERPROXY_IMAGE` and recreate the Compose service, or install the
@@ -180,7 +183,10 @@ See [upgrade, backup and rollback instructions](docs/operations.md#upgrades).
 
 ## Docker images
 
-New RentnerProxy images are published to `ghcr.io/rentnerproxy/platform`.
+New RentnerProxy images are published to the public package `ghcr.io/rentnerproxy/platform`.
+All tags in this package, including `:dev`, can be pulled without authentication.
+
+The immutable image for this release is `ghcr.io/rentnerproxy/platform:v1.0.0-beta.3.1`.
 
 | Tag       | Channel                                                                        |
 | --------- | ------------------------------------------------------------------------------ |

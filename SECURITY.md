@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-RentnerProxy is in public alpha and has no stable release. It is suitable for testing and
+RentnerProxy is in public beta and has no stable release. It is suitable for testing and
 non-critical deployments, but it should not be treated as production-ready for critical traffic.
 Security fixes currently target the latest commit on `main`; older commits and unreleased
 snapshots are not supported.

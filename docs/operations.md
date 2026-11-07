@@ -285,12 +285,16 @@ encryption material. Change the image only after the backup completes. Preserve
 the existing volume and verify health, proxy traffic, certificates, permissions
 and configuration reconciliation after startup.
 
-New releases and `:dev` use `ghcr.io/rentnerproxy/platform`. Existing installations
+From `v1.0.0-beta.3.1` onward, releases and `:dev` use the public image
+`ghcr.io/rentnerproxy/platform`; pulls require no registry login. Existing installations
 do not switch registries automatically, and older clients still expect the previous
 registry and source identity. After backing up, make the one-time switch explicitly:
 change `RENTNERPROXY_IMAGE` in the Compose environment and recreate the service, or
 install the package published for the new registry. Keep the old registry path for
 the exact already published Beta and Alpha image pins; those tags have not been moved.
+For Beta 3.1, use `ghcr.io/rentnerproxy/platform:v1.0.0-beta.3.1`, or select
+`ghcr.io/rentnerproxy/platform:beta` to follow the newest beta. Beta 3.1 updates
+Caddy from 2.11.7 to 2.11.9, including upstream security fixes.
 
 The signed APT repository also changes its `Origin` from `RentnerKev` to
 `RentnerProxy`. If APT reports this Origin change, confirm the repository URL and
