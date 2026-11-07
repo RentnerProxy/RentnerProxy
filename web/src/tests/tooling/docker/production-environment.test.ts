@@ -86,15 +86,11 @@ describe.skipIf(Bun.which('docker') === null)('production Compose environment al
         expect(environment.PROXY_TRUSTED_PROXY_CIDRS).toBe(
             configuration === 'legacy' ? '2001:db8::/64' : '192.0.2.0/24',
         )
-        expect(environment.RENTNERPROXY_PUBLIC_ORIGIN).toBe(
-            configuration === 'new' ? null : 'https://legacy.example.com',
-        )
-        expect(environment.RENTNERPROXY_PROXY_TRUSTED_PROXY_CIDRS).toBe(
-            configuration === 'new' ? null : '2001:db8::/64',
-        )
+        expect(environment.RENTNERPROXY_PUBLIC_ORIGIN).toBeUndefined()
+        expect(environment.RENTNERPROXY_PROXY_TRUSTED_PROXY_CIDRS).toBeUndefined()
     })
 
-    test('forwards legacy names from the Compose env file for runtime migration warnings', async () => {
+    test('maps legacy env-file values to canonical container variables', async () => {
         const result = await render(
             {},
             'RENTNERPROXY_PUBLIC_ORIGIN=https://legacy.example.com\nRENTNERPROXY_PROXY_TRUSTED_PROXY_CIDRS=192.0.2.0/24\n',
@@ -102,9 +98,9 @@ describe.skipIf(Bun.which('docker') === null)('production Compose environment al
         expect(result.exit, result.stderr).toBe(0)
         const environment = JSON.parse(result.stdout).services.rentnerproxy.environment
         expect(environment.PUBLIC_ORIGIN).toBe('https://legacy.example.com')
-        expect(environment.RENTNERPROXY_PUBLIC_ORIGIN).toBe('https://legacy.example.com')
+        expect(environment.RENTNERPROXY_PUBLIC_ORIGIN).toBeUndefined()
         expect(environment.PROXY_TRUSTED_PROXY_CIDRS).toBe('192.0.2.0/24')
-        expect(environment.RENTNERPROXY_PROXY_TRUSTED_PROXY_CIDRS).toBe('192.0.2.0/24')
+        expect(environment.RENTNERPROXY_PROXY_TRUSTED_PROXY_CIDRS).toBeUndefined()
     })
 
     test('keeps an explicitly empty new trust list authoritative', async () => {
