@@ -94,7 +94,7 @@ jobs:
             - name: Download immutable candidates
               uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
               with:
-                  name: distribution-candidate-${{ github.run_id }}
+                  name: distribution-assessed-${{ github.run_id }}
                   path: ${{ runner.temp }}/distribution
             - name: Download all four native target proofs
               uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2

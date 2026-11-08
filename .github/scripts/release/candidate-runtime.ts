@@ -99,6 +99,8 @@ async function run(): Promise<void> {
         RENTNERPROXY_SMOKE_RUN: scope,
         RUNTIME_IMAGE_PLATFORM: 'linux/' + architecture,
     }
+    if ((await hashOciFile(archive)) !== 'sha256:' + ociText(env.ARCHIVE_SHA256))
+        throw new Error('Native candidate producer archive checksum mismatch')
     await candidateCommand(
         [
             'skopeo',

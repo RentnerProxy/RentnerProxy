@@ -166,6 +166,16 @@ test.skipIf(!enabled)(
                 'oci-archive:' + archive + ':candidate',
             ])
             await writeFile(proof, JSON.stringify(evidence))
+            await writeFile(
+                join(candidate, 'candidate.json'),
+                JSON.stringify({
+                    schemaVersion: 1,
+                    ...identity,
+                    ...workflow,
+                    digest: evidence.digest,
+                    status: 'unassessed',
+                }),
+            )
             const env = {
                 REVISION: identity.revision,
                 VERSION: identity.version,
@@ -180,6 +190,15 @@ test.skipIf(!enabled)(
                 EVIDENCE_SHA256: (await hashOciFile(proof)).slice(7),
             }
             await prepareDistribution(env)
+            const candidateMetadata = JSON.parse(
+                await readFile(join(output, 'image-candidate.json'), 'utf8'),
+            )
+            expect(candidateMetadata.status).toBe('unassessed')
+            expect(candidateMetadata.images).toEqual([
+                { architecture: 'amd64', imageId: amd.evidence.imageId },
+                { architecture: 'arm64', imageId: arm.evidence.imageId },
+            ])
+            expect(await Bun.file(join(output, 'image-evidence.json')).exists()).toBe(false)
             const checksum = (await readFile(env.GITHUB_OUTPUT, 'utf8')).trim().split('=')[1]!
             expect(checksum).toBe(await distributionFileHash(join(output, 'bundle.json')))
             await verifyDistributionBundle(output, checksum, {

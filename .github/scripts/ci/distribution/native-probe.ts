@@ -2,7 +2,9 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { chmod, readFile, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { distributionCommand } from '../../distribution/process.ts'
+import { ociRecord } from '../../lib/oci-layout.ts'
 import { waitForSmoke } from '../../../../scripts/smoke/wait.ts'
 import { validationAttackSql } from './validation-fixture.ts'
 import {
@@ -211,18 +213,35 @@ async function waitForCertificateCursor() {
     }
 }
 
+export async function verifyNativeCandidateImage(
+    directory: string,
+    architecture: string | undefined,
+    actualImage: string,
+    revision: string,
+) {
+    const candidate = ociRecord(
+        JSON.parse(await readFile(join(directory, 'image-candidate.json'), 'utf8')),
+    )
+    assert.equal(candidate.schemaVersion, 1)
+    assert.equal(candidate.status, 'unassessed')
+    assert.ok(Array.isArray(candidate.images))
+    const expectedImage = candidate.images
+        .map(ociRecord)
+        .find((entry) => entry.architecture === architecture)
+    assert.ok(expectedImage)
+    assert.equal('sha256:' + actualImage.replace(/^sha256:/u, ''), expectedImage.imageId)
+    assert.equal(revision, candidate.revision)
+}
+
 async function run() {
     assert.equal(process.platform, 'linux')
     assert.equal(process.getuid?.(), 0)
     await readFile('/rentnerproxy-isolated-distribution')
-    const evidence = JSON.parse(await readFile('/test/image-evidence.json', 'utf8'))
-    const expectedImage = evidence.native.find(
-        (entry: { architecture: string }) => entry.architecture === process.env.ARCHITECTURE,
-    )
-    assert.ok(expectedImage)
     const actualImage = await command(['podman', 'inspect', '--format', '{{.Image}}', container])
-    assert.equal('sha256:' + actualImage.replace(/^sha256:/u, ''), expectedImage.imageId)
-    assert.equal(
+    await verifyNativeCandidateImage(
+        '/test',
+        process.env.ARCHITECTURE,
+        actualImage,
         await command([
             'podman',
             'inspect',
@@ -230,7 +249,6 @@ async function run() {
             '{{index .Config.Labels "org.opencontainers.image.revision"}}',
             container,
         ]),
-        evidence.revision,
     )
     const phase = process.argv[2]
     if (phase === 'seed') {

@@ -163,7 +163,7 @@ export async function verifyMultiarchImage(
     }
 }
 
-export async function assembleMultiarchImage(input: {
+type AssessedAssemblyInput = {
     readonly directory: string
     readonly output: string
     readonly identity: OciImageIdentity
@@ -180,10 +180,10 @@ export async function assembleMultiarchImage(input: {
         >
     >
     readonly portabilitySha256: string
-}): Promise<MultiarchImageEvidence> {
+}
+
+async function verifyPlatformProofs(input: AssessedAssemblyInput) {
     const native: NativeImageEvidence[] = []
-    const descriptors = []
-    const sourceBlobs = new Map<string, { path: string; size: number }>()
     for (const architecture of ['amd64', 'arm64'] as const) {
         const source = join(input.directory, architecture)
         const expected = input.expected[architecture]
@@ -214,6 +214,35 @@ export async function assembleMultiarchImage(input: {
             digest: image.digest,
         })
         native.push(proof)
+    }
+    const portabilityFile = join(input.directory, 'portability.json')
+    if ((await hashOciFile(portabilityFile)) !== 'sha256:' + input.portabilitySha256)
+        throw new Error('Portability producer artifact checksum mismatch')
+    const portability = parsePortabilityEvidence(await readOciJson(portabilityFile), input.identity)
+    return { native, portability }
+}
+
+export async function assembleCandidateImage(input: {
+    readonly directory: string
+    readonly output: string
+    readonly identity: OciImageIdentity
+    readonly expected: Readonly<
+        Record<OciArchitecture, { readonly digest: string; readonly archiveSha256: string }>
+    >
+}) {
+    const descriptors = []
+    const sourceBlobs = new Map<string, { path: string; size: number }>()
+    for (const architecture of ['amd64', 'arm64'] as const) {
+        const source = join(input.directory, architecture)
+        const expected = input.expected[architecture]
+        if (
+            (await hashOciFile(join(source, 'candidate-image.tar'))) !==
+            'sha256:' + expected.archiveSha256
+        )
+            throw new Error('Platform producer artifact checksum mismatch')
+        const image = await inspectOciLayout(join(source, 'layout'), input.identity, [architecture])
+        if (image.digest !== expected.digest)
+            throw new Error('Candidate platform identity mismatch')
         descriptors.push(...image.descriptors)
         for (const [digest, blob] of image.blobs) {
             if (sourceBlobs.has(digest) && sourceBlobs.get(digest)?.size !== blob.size)
@@ -221,10 +250,6 @@ export async function assembleMultiarchImage(input: {
             sourceBlobs.set(digest, blob)
         }
     }
-    const portabilityFile = join(input.directory, 'portability.json')
-    if ((await hashOciFile(portabilityFile)) !== 'sha256:' + input.portabilitySha256)
-        throw new Error('Portability producer artifact checksum mismatch')
-    const portability = parsePortabilityEvidence(await readOciJson(portabilityFile), input.identity)
     await mkdir(input.output)
     await mkdir(join(input.output, 'blobs/sha256'), { recursive: true })
     for (const [digest, blob] of sourceBlobs)
@@ -258,9 +283,56 @@ export async function assembleMultiarchImage(input: {
         }) + '\n',
         { flag: 'wx' },
     )
+    return inspectOciLayout(input.output, input.identity, ['amd64', 'arm64'])
+}
+
+export async function sealMultiarchImage(
+    input: AssessedAssemblyInput & {
+        readonly candidateLayout: string
+        readonly candidateArchiveSha256: string
+    },
+): Promise<MultiarchImageEvidence> {
+    if (
+        (await hashOciFile(join(input.directory, 'candidate-image.tar'))) !==
+        'sha256:' + input.candidateArchiveSha256
+    )
+        throw new Error('Early root archive checksum mismatch')
+    const { native, portability } = await verifyPlatformProofs(input)
+    const candidate = await inspectOciLayout(input.candidateLayout, input.identity, [
+        'amd64',
+        'arm64',
+    ])
+    return verifyMultiarchImage(
+        input.candidateLayout,
+        {
+            schemaVersion: 1,
+            ...input.identity,
+            digest: candidate.digest,
+            runId: input.runId,
+            native,
+            portability,
+        },
+        input.identity,
+        input.runId,
+        input.runAttempt,
+    )
+}
+
+export async function assembleMultiarchImage(
+    input: AssessedAssemblyInput,
+): Promise<MultiarchImageEvidence> {
+    const { native, portability } = await verifyPlatformProofs(input)
+    const candidate = await assembleCandidateImage(input)
     return verifyMultiarchImage(
         input.output,
-        { schemaVersion: 1, ...input.identity, digest, runId: input.runId, native, portability },
+        {
+            schemaVersion: 1,
+            ...input.identity,
+            digest: candidate.digest,
+            runId: input.runId,
+            native,
+            portability,
+        },
         input.identity,
         input.runId,
         input.runAttempt,
@@ -276,28 +348,55 @@ if (import.meta.main) {
         if (!/^[1-9][0-9]*$/u.test(runId) || !Number.isSafeInteger(runAttempt) || runAttempt < 1)
             throw new Error('Invalid workflow run identity')
         const directory = resolve(ociText(env.IMAGE_DIRECTORY))
-        if (process.argv[2] === 'assemble') {
+        if (['assemble', 'candidate', 'seal'].includes(process.argv[2] ?? '')) {
             const expected = Object.fromEntries(
                 (['amd64', 'arm64'] as const).map((architecture) => [
                     architecture,
                     {
                         digest: ociDigest(env[architecture.toUpperCase() + '_DIGEST']),
                         archiveSha256: ociText(env[architecture.toUpperCase() + '_ARCHIVE_SHA256']),
-                        evidenceSha256: ociText(
-                            env[architecture.toUpperCase() + '_EVIDENCE_SHA256'],
-                        ),
+                        evidenceSha256: env[architecture.toUpperCase() + '_EVIDENCE_SHA256'] ?? '',
                     },
                 ]),
             ) as Parameters<typeof assembleMultiarchImage>[0]['expected']
-            const evidence = await assembleMultiarchImage({
+            const input = {
                 directory,
                 output: resolve(ociText(env.IMAGE_OUTPUT)),
                 identity,
                 runId,
                 runAttempt,
                 expected,
-                portabilitySha256: ociText(env.PORTABILITY_SHA256),
-            })
+                portabilitySha256: env.PORTABILITY_SHA256 ?? '',
+            }
+            if (process.argv[2] === 'candidate') {
+                const candidate = await assembleCandidateImage(input)
+                await writeFile(
+                    join(directory, 'candidate.json'),
+                    JSON.stringify({
+                        schemaVersion: 1,
+                        ...identity,
+                        digest: candidate.digest,
+                        runId,
+                        runAttempt,
+                        status: 'unassessed',
+                    }) + '\n',
+                    { flag: 'wx' },
+                )
+                if (env.GITHUB_OUTPUT)
+                    await appendFile(
+                        env.GITHUB_OUTPUT,
+                        `digest=${candidate.digest}\nplatforms=linux/amd64,linux/arm64\n`,
+                    )
+                process.exit(0)
+            }
+            const evidence =
+                process.argv[2] === 'seal'
+                    ? await sealMultiarchImage({
+                          ...input,
+                          candidateLayout: resolve(ociText(env.CANDIDATE_LAYOUT)),
+                          candidateArchiveSha256: ociText(env.CANDIDATE_ARCHIVE_SHA256),
+                      })
+                    : await assembleMultiarchImage(input)
             await writeFile(join(directory, 'evidence.json'), JSON.stringify(evidence) + '\n', {
                 flag: 'wx',
             })

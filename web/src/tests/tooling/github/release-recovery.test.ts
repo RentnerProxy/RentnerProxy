@@ -331,7 +331,7 @@ test('limits recovery to trusted main and routes only validated outputs through 
         type: 'string',
     })
     expect(pipeline.jobs.build!.needs).toContain('prepare')
-    expect(pipeline.jobs['sign-distribution']!.needs).toContain('distribution')
+    expect(pipeline.jobs['sign-distribution']!.needs).toContain('build')
     expect(pipeline.jobs['publish-image']!.needs).toContain('sign-distribution')
     expect(pipeline.jobs.publish!.needs).toContain('publish-distribution')
     const publicationWorkflows = await Promise.all([

@@ -4,6 +4,8 @@ import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promise
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
+import { assembleCandidateImage } from '../../../../../.github/scripts/release/multiarch-image.ts'
+import { bindDistribution } from '../../../../../.github/scripts/distribution/bind.ts'
 import { buildDistributionPackages } from '../../../../../.github/scripts/distribution/packages.ts'
 import { parseDistributionRelease } from '../../../../../.github/scripts/distribution/release.ts'
 import {
@@ -43,28 +45,43 @@ test.skipIf(!enabled)(
         const directory = await mkdtemp(join(tmpdir(), 'rp-publication-native-'))
         try {
             const bundle = join(directory, 'bundle'),
+                candidate = join(directory, 'candidate'),
                 reports = join(directory, 'reports'),
                 root = join(directory, 'public')
-            const expected = { ...identity, ...workflow, digest: 'sha256:' + 'b'.repeat(64) }
-            await mkdir(bundle)
+            await mkdir(candidate)
             await mkdir(reports)
-            const amd = await platformFixture(join(directory, 'amd'), 'amd64'),
-                arm = await platformFixture(join(directory, 'arm'), 'arm64')
+            const amd = await platformFixture(join(directory, 'amd64'), 'amd64'),
+                arm = await platformFixture(join(directory, 'arm64'), 'arm64')
+            const layout = join(directory, 'layout')
+            const image = await assembleCandidateImage({
+                directory,
+                output: layout,
+                identity,
+                expected: { amd64: amd.expected, arm64: arm.expected },
+            })
+            const expected = { ...identity, ...workflow, digest: image.digest }
+            const evidence = {
+                schemaVersion: 1,
+                ...expected,
+                native: [amd.evidence, arm.evidence],
+                portability: {
+                    schemaVersion: 1,
+                    ...identity,
+                    sourceManifest: amd.runtime.digest,
+                    targetManifest: arm.runtime.digest,
+                    backupVersion: 4,
+                    checks: 'amd64-backup-to-native-arm64',
+                    nativeUpgradeSources: [],
+                },
+            }
+            const archiveSha256 = 'b'.repeat(64)
             await writeFile(
-                join(bundle, 'image-evidence.json'),
+                join(candidate, 'image-candidate.json'),
                 JSON.stringify({
                     schemaVersion: 1,
                     ...expected,
-                    native: [amd.evidence, arm.evidence],
-                    portability: {
-                        schemaVersion: 1,
-                        ...identity,
-                        sourceManifest: amd.runtime.digest,
-                        targetManifest: arm.runtime.digest,
-                        backupVersion: 4,
-                        checks: 'amd64-backup-to-native-arm64',
-                        nativeUpgradeSources: [],
-                    },
+                    status: 'unassessed',
+                    archiveSha256,
                 }),
             )
             for (const architecture of ['amd64', 'arm64']) {
@@ -76,9 +93,12 @@ test.skipIf(!enabled)(
                 })
                 await buildDistributionPackages(
                     source,
-                    join(bundle, 'packages', architecture),
+                    join(candidate, 'packages', architecture),
                     release,
                 )
+            }
+            const candidateHash = await writeDistributionBundle(candidate, expected)
+            for (const architecture of ['amd64', 'arm64'])
                 for (const target of ['debian', 'fedora'])
                     await writeFile(
                         join(reports, `native-${target}-${architecture}.json`),
@@ -88,10 +108,19 @@ test.skipIf(!enabled)(
                             architecture,
                             target,
                             passed: true,
+                            candidateBundleSha256: candidateHash,
                         }),
                     )
-            }
-            const bundleHash = await writeDistributionBundle(bundle, expected),
+            const bundleHash = await bindDistribution({
+                    candidate,
+                    candidateHash,
+                    output: bundle,
+                    reports,
+                    layout,
+                    evidence,
+                    archiveSha256,
+                    identity: expected,
+                }),
                 home = join(directory, 'fixture-key')
             await mkdir(home, { mode: 0o700 })
             await distributionCommand([
