@@ -1,6 +1,6 @@
 import { plugin } from 'bun'
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, normalize, resolve } from 'node:path'
 import type { CoverageGlobal, CoverageManifest } from './Types/instrumentation.types.ts'
 function readCoverageManifest(path: string): CoverageManifest {
@@ -75,8 +75,8 @@ export function writeCoverageSnapshot(): void {
             state.manifest.files.includes(filename),
         ),
     )
-    writeFileSync(
-        join(rawDirectory, `${process.pid}-${randomUUID()}.json`),
-        JSON.stringify(snapshot),
-    )
+    const snapshotPath = join(rawDirectory, `${process.pid}-${randomUUID()}.json`)
+    const pendingPath = snapshotPath + '.tmp'
+    writeFileSync(pendingPath, JSON.stringify(snapshot), { flag: 'wx' })
+    renameSync(pendingPath, snapshotPath)
 }
