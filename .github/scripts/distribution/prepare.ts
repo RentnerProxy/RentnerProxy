@@ -83,7 +83,13 @@ export async function prepareDistribution(env: NodeJS.ProcessEnv = process.env) 
             }
         await writeFile(
             join(output, 'image-candidate.json'),
-            JSON.stringify(candidateMetadata) + '\n',
+            JSON.stringify({
+                ...candidateMetadata,
+                images: Array.from(image.imageIds, ([architecture, imageId]) => ({
+                    architecture,
+                    imageId,
+                })),
+            }) + '\n',
             { flag: 'wx' },
         )
         const home = join(temporary, 'fixture-key')
