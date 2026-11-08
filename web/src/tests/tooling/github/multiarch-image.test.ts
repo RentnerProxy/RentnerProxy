@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import { inspectOciLayout, ociDescriptor } from '../../../../../.github/scripts/lib/oci-layout.ts'
 import {
     assembleMultiarchImage,
+    assembleCandidateImage,
+    sealMultiarchImage,
     parseNativeImageEvidence,
     parsePortabilityEvidence,
     nativeUpgradeTargetVersion,
@@ -22,7 +24,7 @@ test('multiarch publication depends on both native producers and their separate 
         jobs: Record<
             string,
             {
-                needs?: string[]
+                needs?: string | string[]
                 if?: string
                 permissions: Record<string, string>
                 with?: Record<string, string>
@@ -35,9 +37,34 @@ test('multiarch publication depends on both native producers and their separate 
         expect(pipeline.jobs[architecture]?.if).toBe("github.repository == 'RentnerProxy/platform'")
         expect(pipeline.jobs[architecture]?.permissions).toEqual({ contents: 'read' })
     }
-    expect(pipeline.jobs.portability?.needs).toEqual(['amd64', 'arm64'])
+    expect(pipeline.jobs['candidate-index']?.needs).toEqual(['amd64', 'arm64'])
+    expect(pipeline.jobs.portability?.needs).toEqual(['arm64', 'native-amd64', 'native-arm64'])
+    for (const architecture of ['amd64', 'arm64']) {
+        for (const check of ['assessment', 'native']) {
+            const verification = pipeline.jobs[`${check}-${architecture}`]
+            expect(verification?.needs).toBe(architecture)
+            expect(verification?.with?.check).toBe(check)
+            expect(verification?.permissions).toEqual({ contents: 'read' })
+        }
+    }
+    expect(pipeline.jobs.distribution?.needs).toBe('candidate-index')
+    expect(pipeline.jobs.distribution?.if).toBe('inputs.validate_distribution')
+    expect(pipeline.jobs['bind-distribution']?.needs).toEqual([
+        'candidate-index',
+        'assemble',
+        'distribution',
+    ])
     const assembly = pipeline.jobs.assemble!
-    expect(assembly.needs).toEqual(['amd64', 'arm64', 'portability'])
+    expect(assembly.needs).toEqual([
+        'amd64',
+        'arm64',
+        'candidate-index',
+        'assessment-amd64',
+        'assessment-arm64',
+        'native-amd64',
+        'native-arm64',
+        'portability',
+    ])
     expect(assembly.permissions).toEqual({ contents: 'read' })
     const environment = assembly.steps?.find((step) => step.id === 'assemble')?.env
     for (const architecture of ['amd64', 'arm64']) {
@@ -45,7 +72,7 @@ test('multiarch publication depends on both native producers and their separate 
             '${{ needs.' + architecture + '.outputs.digest }}',
         )
         expect(environment?.[architecture.toUpperCase() + '_EVIDENCE_SHA256']).toBe(
-            '${{ needs.' + architecture + '.outputs.evidence_sha256 }}',
+            '${{ needs.native-' + architecture + '.outputs.evidence_sha256 }}',
         )
     }
     const review = await readFile(
@@ -54,6 +81,73 @@ test('multiarch publication depends on both native producers and their separate 
     )
     expect(review).not.toContain('packages: write')
     expect(review).not.toContain('publish-assessed-image.yml\n')
+})
+
+const readWorkflow = async (name: string) =>
+    Bun.YAML.parse(
+        await readFile(
+            new URL(`../../../../../.github/workflows/${name}.yml`, import.meta.url),
+            'utf8',
+        ),
+    ) as {
+        on: { workflow_call: { inputs: Record<string, { default?: boolean }> } }
+        permissions: Record<string, string>
+        jobs: Record<
+            string,
+            {
+                needs?: string | string[]
+                if?: string
+                permissions?: Record<string, string>
+                with?: Record<string, unknown>
+                steps?: {
+                    uses?: string
+                    with?: Record<string, unknown>
+                    env?: Record<string, string>
+                }[]
+            }
+        >
+    }
+
+test('unprivileged verification branches keep every final publication gate and leave Dev packages disabled', async () => {
+    const orchestrator = await readWorkflow('build-assessed-image')
+    expect(orchestrator.on.workflow_call.inputs.validate_distribution?.default).toBe(false)
+    const dev = await readWorkflow('dev-image')
+    expect(dev.jobs.build?.with?.validate_distribution).toBeUndefined()
+    const release = await readWorkflow('release-pipeline')
+    const review = await readWorkflow('multiarch-candidate')
+    expect(release.jobs.build?.with?.validate_distribution).toBe(true)
+    expect(review.jobs.candidate?.with?.validate_distribution).toBe(true)
+    expect(release.jobs['sign-distribution']?.needs).toEqual(['prepare', 'build'])
+    expect(release.jobs['sign-distribution']?.with?.bundle_sha256).toBe(
+        '${{ needs.build.outputs.bundle_sha256 }}',
+    )
+    expect(release.jobs['publish-image']?.needs).toContain('sign-distribution')
+    expect(release.jobs['publish-distribution']?.needs).toContain('publish-image')
+    const verification = await readWorkflow('verify-image-platform')
+    expect(verification.permissions).toEqual({})
+    for (const [kind, job] of Object.entries(verification.jobs)) {
+        expect(job.if).toBe(`inputs.check == '${kind}'`)
+        expect(job.needs).toBeUndefined()
+        expect(job.permissions).toEqual({ contents: 'read' })
+        expect(JSON.stringify(job)).not.toContain('secrets.')
+        for (const step of job.steps ?? []) {
+            if (step.uses?.startsWith('actions/checkout@'))
+                expect(step.with?.['persist-credentials']).toBe(false)
+        }
+    }
+    const runtime = await readFile(
+        new URL('../../../../../.github/scripts/release/candidate-runtime.ts', import.meta.url),
+        'utf8',
+    )
+    expect(runtime.indexOf('Native candidate producer archive checksum mismatch')).toBeLessThan(
+        runtime.indexOf("'docker-daemon:' + image"),
+    )
+    const seal = await readFile(
+        new URL('../../../../../.github/scripts/release/assemble-image.sh', import.meta.url),
+        'utf8',
+    )
+    expect(seal).not.toContain('tar --create')
+    expect(seal).toContain('CANDIDATE_ARCHIVE_SHA256')
 })
 
 describe('assessed native OCI image assembly', () => {
@@ -79,6 +173,11 @@ describe('assessed native OCI image assembly', () => {
         'archive',
         'native-checksum',
         'portability-checksum',
+        'wrong-arch',
+        'wrong-version',
+        'wrong-revision',
+        'future-attempt',
+        'early-root',
     ])('never assembles a partially trusted platform set: %s', async (scenario) => {
         const directory = await mkdtemp(join(tmpdir(), 'rp-rejected-'))
         try {
@@ -94,6 +193,20 @@ describe('assessed native OCI image assembly', () => {
                 nativeUpgradeSources: [],
             })
             await writeFile(join(directory, 'portability.json'), portability)
+            const early = join(directory, 'early')
+            const input = {
+                directory,
+                output: early,
+                identity,
+                ...workflow,
+                expected: { amd64: amd64.expected, arm64: arm64.expected },
+                portabilitySha256: hash(
+                    scenario === 'portability-checksum' ? 'changed' : portability,
+                ).slice(7),
+            }
+            await assembleCandidateImage(input)
+            const earlyIndex = await readFile(join(early, 'index.json'))
+            await writeFile(join(directory, 'candidate-image.tar'), 'immutable-root-archive')
             const approvalFile = join(directory, 'arm64/assessment.json')
             if (scenario === 'missing') await rm(approvalFile)
             if (scenario === 'blocked' || scenario === 'stale') {
@@ -104,21 +217,53 @@ describe('assessed native OCI image assembly', () => {
             }
             if (scenario === 'archive')
                 await writeFile(join(directory, 'arm64/candidate-image.tar'), 'changed')
+            if (
+                ['wrong-arch', 'wrong-version', 'wrong-revision', 'future-attempt'].includes(
+                    scenario,
+                )
+            ) {
+                const proof = {
+                    ...arm64.evidence,
+                    ...(scenario === 'wrong-arch' ? { architecture: 'amd64' } : {}),
+                    ...(scenario === 'wrong-version' ? { version: 'v1.0.0-beta.2' } : {}),
+                    ...(scenario === 'wrong-revision' ? { revision: 'b'.repeat(40) } : {}),
+                    ...(scenario === 'future-attempt'
+                        ? { runAttempt: workflow.runAttempt + 1 }
+                        : {}),
+                }
+                const serialized = JSON.stringify(proof)
+                await writeFile(join(directory, 'arm64/native.json'), serialized)
+                arm64.expected.evidenceSha256 = hash(serialized).slice(7)
+            }
+            if (scenario === 'early-root')
+                await writeFile(join(directory, 'candidate-image.tar'), 'changed-root-archive')
             if (scenario === 'native-checksum')
                 await writeFile(join(directory, 'arm64/native.json'), '{}')
+            if (scenario !== 'early-root')
+                await expect(
+                    assembleMultiarchImage({
+                        directory,
+                        output: join(directory, 'combined'),
+                        identity,
+                        ...workflow,
+                        expected: { amd64: amd64.expected, arm64: arm64.expected },
+                        portabilitySha256: hash(
+                            scenario === 'portability-checksum' ? 'changed' : portability,
+                        ).slice(7),
+                    }),
+                ).rejects.toThrow()
+            expect(await Bun.file(join(directory, 'combined/index.json')).exists()).toBe(false)
             await expect(
-                assembleMultiarchImage({
-                    directory,
-                    output: join(directory, 'combined'),
-                    identity,
-                    ...workflow,
-                    expected: { amd64: amd64.expected, arm64: arm64.expected },
-                    portabilitySha256: hash(
-                        scenario === 'portability-checksum' ? 'changed' : portability,
-                    ).slice(7),
+                sealMultiarchImage({
+                    ...input,
+                    candidateLayout: early,
+                    candidateArchiveSha256: hash('immutable-root-archive').slice(7),
                 }),
             ).rejects.toThrow()
-            expect(await Bun.file(join(directory, 'combined/index.json')).exists()).toBe(false)
+            expect(await readFile(join(early, 'index.json'))).toEqual(earlyIndex)
+            expect(await readFile(join(directory, 'candidate-image.tar'), 'utf8')).toBe(
+                scenario === 'early-root' ? 'changed-root-archive' : 'immutable-root-archive',
+            )
         } finally {
             await rm(directory, { recursive: true, force: true })
         }
@@ -249,14 +394,26 @@ describe('assessed native OCI image assembly', () => {
             }
             const serialized = JSON.stringify(portability)
             await writeFile(join(directory, 'portability.json'), serialized)
-            const evidence = await assembleMultiarchImage({
+            const input = {
                 directory,
                 output: join(directory, 'combined'),
                 identity,
                 ...workflow,
                 expected: { amd64: amd64.expected, arm64: arm64.expected },
                 portabilitySha256: hash(serialized).slice(7),
+            }
+            await assembleCandidateImage(input)
+            const before = await readFile(join(input.output, 'index.json'))
+            await writeFile(join(directory, 'candidate-image.tar'), 'immutable-root-archive')
+            const evidence = await sealMultiarchImage({
+                ...input,
+                candidateLayout: input.output,
+                candidateArchiveSha256: hash('immutable-root-archive').slice(7),
             })
+            expect(await readFile(join(input.output, 'index.json'))).toEqual(before)
+            expect(await readFile(join(directory, 'candidate-image.tar'), 'utf8')).toBe(
+                'immutable-root-archive',
+            )
             expect(evidence.native.map((item) => item.architecture)).toEqual(['amd64', 'arm64'])
             const result = await inspectOciLayout(join(directory, 'combined'), identity, [
                 'amd64',

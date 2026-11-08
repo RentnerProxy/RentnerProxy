@@ -1,12 +1,12 @@
 #!/bin/bash
 set -Eeuo pipefail
-: "${DISTRIBUTION_DIRECTORY:?}" "${CANDIDATE_DIRECTORY:?}" "${SOURCE_DIRECTORY:?}" "${RUNNER_TEMP:?}" "${ARCHITECTURE:?}" "${TARGET:?}" "${EXPECTED_DIGEST:?}" "${ARCHIVE_SHA256:?}"
+: "${DISTRIBUTION_DIRECTORY:?}" "${CANDIDATE_DIRECTORY:?}" "${SOURCE_DIRECTORY:?}" "${RUNNER_TEMP:?}" "${ARCHITECTURE:?}" "${TARGET:?}" "${EXPECTED_DIGEST:?}" "${ARCHIVE_SHA256:?}" "${BUNDLE_SHA256:?}"
 [[ "$ARCHITECTURE" == amd64 || "$ARCHITECTURE" == arm64 ]] || exit 1
 [[ "$TARGET" == debian || "$TARGET" == fedora ]] || exit 1
 case "$ARCHITECTURE/$(uname -m)" in amd64/x86_64|arm64/aarch64) ;; *) exit 1 ;; esac
 [[ "$EXPECTED_DIGEST" =~ ^sha256:[a-f0-9]{64}$ && "$ARCHIVE_SHA256" =~ ^[a-f0-9]{64}$ ]] || exit 1
 printf '%s  %s\n' "$ARCHIVE_SHA256" "$CANDIDATE_DIRECTORY/candidate-image.tar" | sha256sum --check --status
-bun --no-env-file "$SOURCE_DIRECTORY/.github/scripts/distribution/prepare.ts" verify
+bun --no-env-file "$SOURCE_DIRECTORY/.github/scripts/distribution/prepare.ts" verify-candidate
 work=$(mktemp -d "$RUNNER_TEMP/distribution-native-XXXXXXXX")
 machine="rp-distribution-$TARGET-$ARCHITECTURE"
 registry="rp-distribution-registry-$TARGET-$ARCHITECTURE"
@@ -107,4 +107,4 @@ for mode in package quadlet; do
     done
     guest after-boot
 done
-printf '{"schemaVersion":1,"architecture":"%s","target":"%s","digest":"%s","revision":"%s","version":"%s","runId":"%s","runAttempt":%s,"passed":true}\n' "$ARCHITECTURE" "$TARGET" "$EXPECTED_DIGEST" "$REVISION" "$VERSION" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" > "$DISTRIBUTION_DIRECTORY/native-$TARGET-$ARCHITECTURE.json"
+printf '{"schemaVersion":1,"architecture":"%s","target":"%s","digest":"%s","revision":"%s","version":"%s","runId":"%s","runAttempt":%s,"candidateBundleSha256":"%s","passed":true}\n' "$ARCHITECTURE" "$TARGET" "$EXPECTED_DIGEST" "$REVISION" "$VERSION" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$BUNDLE_SHA256" > "$DISTRIBUTION_DIRECTORY/native-$TARGET-$ARCHITECTURE.json"

@@ -82,7 +82,7 @@ describe('dev image workflow', () => {
         for (const step of steps) {
             if (step.uses) expect(step.uses).toMatch(/^[^@]+@[0-9a-f]{40}$/u)
         }
-        const assessed = await readGitHubWorkflow('build-assessed-platform.yml')
+        const assessed = await readGitHubWorkflow('verify-image-platform.yml')
         expect(assessed).toContain('audit-cargo.sh')
         expect(assessed).toContain('audit-bun.sh')
         expect(config.jobs.build.uses).toBe('./.github/workflows/build-assessed-image.yml')

@@ -191,21 +191,10 @@ jobs:
             title: RentnerProxy
             description: Modern self-hosted reverse proxy manager powered by Caddy.
             cache_scope: release-${{ inputs.channel }}
-
-    distribution:
-        needs: [prepare, build]
-        permissions:
-            contents: read
-        uses: ./.github/workflows/build-distribution.yml
-        with:
-            revision: ${{ needs.prepare.outputs.revision }}
-            version: ${{ inputs.release_tag }}
-            digest: ${{ needs.build.outputs.digest }}
-            archive_sha256: ${{ needs.build.outputs.archive_sha256 }}
-            evidence_sha256: ${{ needs.build.outputs.evidence_sha256 }}
+            validate_distribution: true
 
     sign-distribution:
-        needs: [prepare, build, distribution]
+        needs: [prepare, build]
         permissions:
             contents: read
         uses: ./.github/workflows/sign-distribution.yml
@@ -215,7 +204,7 @@ jobs:
             revision: ${{ needs.prepare.outputs.revision }}
             version: ${{ inputs.release_tag }}
             digest: ${{ needs.build.outputs.digest }}
-            bundle_sha256: ${{ needs.distribution.outputs.bundle_sha256 }}
+            bundle_sha256: ${{ needs.build.outputs.bundle_sha256 }}
             release_id: ${{ inputs.release_id }}
             published_at: ${{ inputs.published_at }}
             prerelease: ${{ inputs.prerelease }}

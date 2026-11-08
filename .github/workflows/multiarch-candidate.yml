@@ -4,6 +4,7 @@ on:
     pull_request:
         paths:
             - '.github/workflows/build-assessed-*.yml'
+            - '.github/workflows/verify-image-platform.yml'
             - '.github/workflows/publish-assessed-image.yml'
             - '.github/workflows/multiarch-candidate.yml'
             - '.github/workflows/release-pipeline.yml'
@@ -48,15 +49,4 @@ jobs:
             title: RentnerProxy assessed multi-architecture candidate
             description: Native validation candidate for the exact tested source.
             cache_scope: multiarch-review
-
-    distribution:
-        needs: candidate
-        permissions:
-            contents: read
-        uses: ./.github/workflows/build-distribution.yml
-        with:
-            revision: ${{ github.sha }}
-            version: v1.0.0-beta.9999
-            digest: ${{ needs.candidate.outputs.digest }}
-            archive_sha256: ${{ needs.candidate.outputs.archive_sha256 }}
-            evidence_sha256: ${{ needs.candidate.outputs.evidence_sha256 }}
+            validate_distribution: true

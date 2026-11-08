@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto'
 import { ociRecord, ociText } from '../lib/oci-layout.ts'
 import { parseNativeImageEvidence, parsePortabilityEvidence } from '../release/multiarch-image.ts'
 import { verifyDistributionBundle, bundleFiles, distributionFileHash } from './bundle.ts'
+import { verifyBoundDistribution, validateDistributionReports } from './candidate.ts'
 import { distributionWorkflowIdentity } from './prepare.ts'
 import { distributionPayload } from './payload.ts'
 import { parseDistributionRelease, distributionPackageVersion } from './release.ts'
@@ -41,6 +42,8 @@ export async function validateNativeDistributionProofs(
     reports: string,
     identity: ReturnType<typeof distributionWorkflowIdentity>,
 ): Promise<void> {
+    const candidateHash = await verifyBoundDistribution(bundle, identity)
+    await validateDistributionReports(reports, identity, candidateHash)
     const raw = ociRecord(JSON.parse(await readFile(join(bundle, 'image-evidence.json'), 'utf8')))
     if (
         raw.schemaVersion !== 1 ||
@@ -68,28 +71,6 @@ export async function validateNativeDistributionProofs(
         portability.targetManifest !== native[1]!.manifestDigest
     )
         throw new Error('Invalid image portability binding')
-    for (const architecture of ['amd64', 'arm64'])
-        for (const target of ['debian', 'fedora']) {
-            const path = join(reports, `native-${target}-${architecture}.json`),
-                info = await lstat(path)
-            if (!info.isFile() || info.size > 4096)
-                throw new Error('Invalid native distribution report')
-            const report = ociRecord(JSON.parse(await readFile(path, 'utf8')))
-            if (
-                report.schemaVersion !== 1 ||
-                report.architecture !== architecture ||
-                report.target !== target ||
-                report.passed !== true ||
-                Object.entries(identity).some(
-                    ([key, value]) => key !== 'runAttempt' && report[key] !== value,
-                ) ||
-                typeof report.runAttempt !== 'number' ||
-                !Number.isSafeInteger(report.runAttempt) ||
-                report.runAttempt < 1 ||
-                report.runAttempt > identity.runAttempt
-            )
-                throw new Error('Missing or mismatched native distribution gate')
-        }
 }
 
 export function maintainerInstructions(): string {

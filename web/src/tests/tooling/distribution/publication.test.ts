@@ -98,6 +98,10 @@ test('bundle checks bind source, image, workflow and every file, allowing safe f
 test('all four native distribution reports must bind the same assessed image and source', async () => {
     const root = await mkdtemp(join(tmpdir(), 'rp-native-proof-'))
     try {
+        const bundle = join(root, 'bundle'),
+            reports = join(root, 'reports')
+        await mkdir(bundle)
+        await mkdir(reports)
         const amd = await platformFixture(join(root, 'amd'), 'amd64'),
             arm = await platformFixture(join(root, 'arm'), 'arm64')
         const expected = { ...identity, ...workflow, digest: 'sha256:' + 'b'.repeat(64) }
@@ -115,21 +119,50 @@ test('all four native distribution reports must bind the same assessed image and
                 nativeUpgradeSources: [],
             },
         }
-        await writeFile(join(root, 'image-evidence.json'), JSON.stringify(evidence))
+        await writeFile(
+            join(bundle, 'image-candidate.json'),
+            JSON.stringify({
+                schemaVersion: 1,
+                ...expected,
+                status: 'unassessed',
+                archiveSha256: 'b'.repeat(64),
+            }),
+        )
+        const candidateHash = await writeDistributionBundle(bundle, expected)
+        await writeFile(
+            join(bundle, 'candidate-bundle.json'),
+            await readFile(join(bundle, 'bundle.json')),
+        )
+        await rm(join(bundle, 'bundle.json'))
+        await writeFile(join(bundle, 'image-evidence.json'), JSON.stringify(evidence))
+        const writeBinding = async () =>
+            writeFile(
+                join(bundle, 'binding.json'),
+                JSON.stringify({
+                    schemaVersion: 1,
+                    status: 'assessed',
+                    candidateBundleSha256: candidateHash,
+                    imageEvidenceSha256: await distributionFileHash(
+                        join(bundle, 'image-evidence.json'),
+                    ),
+                }),
+            )
+        await writeBinding()
         for (const target of ['debian', 'fedora'])
             for (const architecture of ['amd64', 'arm64'])
                 await writeFile(
-                    join(root, `native-${target}-${architecture}.json`),
+                    join(reports, `native-${target}-${architecture}.json`),
                     JSON.stringify({
                         schemaVersion: 1,
                         ...expected,
                         target,
                         architecture,
                         passed: true,
+                        candidateBundleSha256: candidateHash,
                     }),
                 )
-        await validateNativeDistributionProofs(root, root, expected)
-        const file = join(root, 'native-fedora-arm64.json'),
+        await validateNativeDistributionProofs(bundle, reports, expected)
+        const file = join(reports, 'native-fedora-arm64.json'),
             original = await readFile(file, 'utf8')
         for (const change of [
             { digest: 'sha256:' + 'c'.repeat(64) },
@@ -139,14 +172,15 @@ test('all four native distribution reports must bind the same assessed image and
             { runAttempt: 99 },
         ]) {
             await writeFile(file, JSON.stringify({ ...JSON.parse(original), ...change }))
-            await expect(validateNativeDistributionProofs(root, root, expected)).rejects.toThrow(
-                'gate',
-            )
+            await expect(
+                validateNativeDistributionProofs(bundle, reports, expected),
+            ).rejects.toThrow('gate')
         }
         await writeFile(file, original)
         evidence.portability.targetManifest = 'sha256:' + 'c'.repeat(64)
-        await writeFile(join(root, 'image-evidence.json'), JSON.stringify(evidence))
-        await expect(validateNativeDistributionProofs(root, root, expected)).rejects.toThrow(
+        await writeFile(join(bundle, 'image-evidence.json'), JSON.stringify(evidence))
+        await writeBinding()
+        await expect(validateNativeDistributionProofs(bundle, reports, expected)).rejects.toThrow(
             'portability',
         )
     } finally {

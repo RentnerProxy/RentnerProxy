@@ -95,9 +95,12 @@ test.each(['publish-assessed-image', 'pr-preview-publish'])(
 
 test('keeps publishing credentials out of all candidate builders', async () => {
     const sources = await Promise.all(
-        ['build-assessed-image', 'build-assessed-platform', 'pr-preview-build'].map((name) =>
-            readFile(resolve(root, `.github/workflows/${name}.yml`), 'utf8'),
-        ),
+        [
+            'build-assessed-image',
+            'build-assessed-platform',
+            'verify-image-platform',
+            'pr-preview-build',
+        ].map((name) => readFile(resolve(root, `.github/workflows/${name}.yml`), 'utf8')),
     )
     for (const source of sources) {
         expect(source).not.toContain('GHCR_PUBLISH_TOKEN')
@@ -136,8 +139,8 @@ test('assesses production OCI before registry credentials and keeps source execu
         expect(parsed.jobs.build?.steps?.find((step) => step.id === 'build')?.with?.tags).toBe(
             '${{ inputs.image }}:candidate-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.architecture }}',
         )
-        expect(source.indexOf('Assess immutable candidate')).toBeLessThan(
-            source.indexOf('Store assessed OCI candidate'),
+        expect(source.indexOf('Authenticate immutable platform identity')).toBeLessThan(
+            source.indexOf('Store immutable unassessed platform'),
         )
         expect(JSON.stringify(parsed.jobs.build)).not.toContain('secrets.GITHUB_TOKEN')
         expect(source).toContain(

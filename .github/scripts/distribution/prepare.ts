@@ -1,14 +1,14 @@
 // oxlint-disable no-await-in-loop -- Build both package architectures and fixture repositories from one verified image.
-import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
-import { hashOciFile, ociText } from '../lib/oci-layout.ts'
-import { verifyMultiarchImage } from '../release/multiarch-image.ts'
+import { hashOciFile, inspectOciLayout, ociText, readOciJson } from '../lib/oci-layout.ts'
 import { buildDistributionPackages } from './packages.ts'
 import { parseDistributionRelease } from './release.ts'
 import { distributionBytes, distributionCommand } from './process.ts'
 import { updatePackageRepository, withSigningKey } from './repository.ts'
-import { verifyDistributionBundle, writeDistributionBundle } from './bundle.ts'
+import { writeDistributionBundle } from './bundle.ts'
+import { validateDistributionCandidate, verifyCandidateDistribution } from './candidate.ts'
 import type { DistributionRelease } from './Types/distribution.types.ts'
 
 export function distributionWorkflowIdentity(env: NodeJS.ProcessEnv = process.env) {
@@ -39,12 +39,8 @@ export async function prepareDistribution(env: NodeJS.ProcessEnv = process.env) 
     const source = resolve(ociText(env.SOURCE_DIRECTORY)),
         output = resolve(ociText(env.DISTRIBUTION_DIRECTORY)),
         candidate = resolve(ociText(env.CANDIDATE_DIRECTORY))
-    if (
-        (await hashOciFile(join(candidate, 'candidate-image.tar'))).slice(7) !==
-            env.ARCHIVE_SHA256 ||
-        (await hashOciFile(join(candidate, 'evidence.json'))).slice(7) !== env.EVIDENCE_SHA256
-    )
-        throw new Error('Assessed image artifact checksum mismatch')
+    if ((await hashOciFile(join(candidate, 'candidate-image.tar'))).slice(7) !== env.ARCHIVE_SHA256)
+        throw new Error('Candidate image artifact checksum mismatch')
     const temporary = await mkdtemp(join(tmpdir(), 'rentnerproxy-distribution-'))
     try {
         const layout = join(temporary, 'layout')
@@ -59,14 +55,13 @@ export async function prepareDistribution(env: NodeJS.ProcessEnv = process.env) 
             ],
             { timeoutMs: 360_000 },
         )
-        const evidence = await verifyMultiarchImage(
-            layout,
-            JSON.parse(await readFile(join(candidate, 'evidence.json'), 'utf8')),
+        const image = await inspectOciLayout(layout, identity, ['amd64', 'arm64'])
+        if (image.digest !== identity.digest) throw new Error('Distribution image root mismatch')
+        const candidateMetadata = validateDistributionCandidate(
+            await readOciJson(join(candidate, 'candidate.json'), 4096),
             identity,
-            identity.runId,
-            identity.runAttempt,
+            ociText(env.ARCHIVE_SHA256),
         )
-        if (evidence.digest !== identity.digest) throw new Error('Distribution image root mismatch')
         await mkdir(output, { recursive: true })
         const artifacts: { directory: string; release: DistributionRelease }[] = []
         const upgrades: typeof artifacts = []
@@ -86,7 +81,11 @@ export async function prepareDistribution(env: NodeJS.ProcessEnv = process.env) 
                 await buildDistributionPackages(source, directory, release)
                 ;(packageRevision === 1 ? artifacts : upgrades).push({ directory, release })
             }
-        await writeFile(join(output, 'image-evidence.json'), JSON.stringify(evidence) + '\n')
+        await writeFile(
+            join(output, 'image-candidate.json'),
+            JSON.stringify(candidateMetadata) + '\n',
+            { flag: 'wx' },
+        )
         const home = join(temporary, 'fixture-key')
         await mkdir(home, { mode: 0o700 })
         await distributionCommand([
@@ -147,12 +146,12 @@ export async function prepareDistribution(env: NodeJS.ProcessEnv = process.env) 
 }
 
 if (import.meta.main) {
-    if (process.argv[2] === 'verify')
-        await verifyDistributionBundle(
+    if (process.argv[2] === 'verify-candidate')
+        await verifyCandidateDistribution(
             resolve(ociText(process.env.DISTRIBUTION_DIRECTORY)),
             ociText(process.env.BUNDLE_SHA256),
             distributionWorkflowIdentity(),
         )
-    else if (process.argv[2] === 'build') await prepareDistribution()
-    else throw new Error('Expected build or verify')
+    else if (process.argv[2] === 'candidate') await prepareDistribution()
+    else throw new Error('Expected candidate or verify-candidate')
 }

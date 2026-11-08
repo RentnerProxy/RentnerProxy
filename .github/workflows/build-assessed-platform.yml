@@ -1,4 +1,4 @@
-name: Build assessed native platform
+name: Build immutable native platform
 
 on:
     workflow_call:
@@ -37,26 +37,20 @@ on:
                 value: ${{ jobs.build.outputs.digest }}
             archive_sha256:
                 value: ${{ jobs.build.outputs.archive_sha256 }}
-            evidence_sha256:
-                value: ${{ jobs.build.outputs.evidence_sha256 }}
-            portable_sha256:
-                value: ${{ jobs.build.outputs.portable_sha256 }}
 
 permissions: {}
 
 jobs:
     build:
         if: github.repository == 'RentnerProxy/platform'
-        name: Build, assess and test ${{ inputs.architecture }} image
+        name: Build immutable ${{ inputs.architecture }} image
         runs-on: ${{ inputs.architecture == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
         timeout-minutes: 75
         permissions:
             contents: read
         outputs:
-            digest: ${{ steps.scan.outputs.digest }}
-            archive_sha256: ${{ steps.native.outputs.archive_sha256 }}
-            evidence_sha256: ${{ steps.native.outputs.evidence_sha256 }}
-            portable_sha256: ${{ steps.native.outputs.portable_sha256 }}
+            digest: ${{ steps.identity.outputs.digest }}
+            archive_sha256: ${{ steps.identity.outputs.archive_sha256 }}
         steps:
             - name: Require the native platform and prepare isolated output
               env:
@@ -147,99 +141,27 @@ jobs:
                   outputs: type=oci,dest=${{ runner.temp }}/candidate-${{ inputs.architecture }}/candidate-image.tar
                   sbom: true
 
-            - name: Set up Bun for advisory policy
+            - name: Set up Bun
               uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
               with:
                   bun-version: 1.4.4
-
-            - name: Audit locked source graphs
-              env:
-                  AUTOMATION_DIRECTORY: automation
-                  SOURCE_DIRECTORY: source
-                  REPORT_DIRECTORY: ${{ runner.temp }}/dependency-source-report
-                  REVISION: ${{ inputs.revision }}
-              run: |
-                  bash automation/.github/scripts/security/audit-cargo.sh
-                  bash automation/.github/scripts/security/audit-bun.sh
-
-            - name: Install pinned vulnerability tools
+            - name: Install OCI transport
               run: bash automation/.github/scripts/security/install-dependency-tools.sh
-
-            - name: Assess immutable candidate before publication
-              id: scan
-              env:
-                  AUTOMATION_DIRECTORY: automation
-                  IMAGE_SOURCE: oci-archive:${{ runner.temp }}/candidate-${{ inputs.architecture }}/candidate-image.tar
-                  IMAGE_ARCHITECTURE: ${{ inputs.architecture }}
-                  REPORT_DIRECTORY: ${{ runner.temp }}/dependency-image-report
-                  REVISION: ${{ inputs.revision }}
-              run: bash automation/.github/scripts/security/scan-image.sh
-
-            - name: Validate the exact native candidate lifecycle
-              id: native
+            - name: Authenticate immutable platform identity
+              id: identity
               env:
                   IMAGE_ARCHITECTURE: ${{ inputs.architecture }}
-                  SOURCE_DIRECTORY: source
                   CANDIDATE_DIRECTORY: ${{ runner.temp }}/candidate-${{ inputs.architecture }}
                   REVISION: ${{ inputs.revision }}
                   VERSION: ${{ inputs.version }}
-                  EXPECTED_DIGEST: ${{ steps.scan.outputs.digest }}
-              run: bun --no-env-file automation/.github/scripts/release/candidate-runtime.ts
-
-            - name: Retain the platform assessment with its candidate
-              env:
-                  ARCHITECTURE: ${{ inputs.architecture }}
-              run: cp "$RUNNER_TEMP/dependency-image-report/assessment.json" "$RUNNER_TEMP/candidate-$ARCHITECTURE/assessment.json"
-
-            - name: Store assessed OCI candidate
+                  EXPECTED_DIGEST: ${{ steps.build.outputs.digest }}
+              run: bun --no-env-file automation/.github/scripts/release/platform-identity.ts
+            - name: Store immutable unassessed platform
               uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
               with:
                   compression-level: 0
                   if-no-files-found: error
                   overwrite: true
-                  name: assessed-platform-${{ github.run_id }}-${{ inputs.architecture }}
-                  path: |
-                      ${{ runner.temp }}/candidate-${{ inputs.architecture }}/candidate-image.tar
-                      ${{ runner.temp }}/candidate-${{ inputs.architecture }}/native.json
-                      ${{ runner.temp }}/candidate-${{ inputs.architecture }}/assessment.json
-                      ${{ runner.temp }}/candidate-${{ inputs.architecture }}/portable.tar
+                  name: candidate-platform-${{ github.run_id }}-${{ inputs.architecture }}
+                  path: ${{ runner.temp }}/candidate-${{ inputs.architecture }}/candidate-image.tar
                   retention-days: 2
-
-            - name: Store dependency evidence
-              if: always()
-              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-              with:
-                  if-no-files-found: error
-                  name: dependency-build-evidence-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.architecture }}
-                  path: |
-                      ${{ runner.temp }}/dependency-source-report
-                      ${{ runner.temp }}/dependency-image-report/manifest.json
-                      ${{ runner.temp }}/dependency-image-report/config.json
-                      ${{ runner.temp }}/dependency-image-report/identity.json
-                      ${{ runner.temp }}/dependency-image-report/assessment.json
-                      ${{ runner.temp }}/dependency-image-report/blocked-assessment.json
-                      ${{ runner.temp }}/dependency-image-report/cargo-lock-copy-diagnostics.txt
-                      ${{ runner.temp }}/dependency-image-report/controller/source-revision.txt
-                      ${{ runner.temp }}/dependency-image-report/controller/cargo-lock.sha256
-                      ${{ runner.temp }}/dependency-image-report/controller/cargo.json
-                      ${{ runner.temp }}/dependency-image-report/controller/cargo-diagnostics.txt
-                      ${{ runner.temp }}/dependency-image-report/controller/rustsec-revision.txt
-                      ${{ runner.temp }}/dependency-image-report/controller/rustsec-database.json
-                      ${{ runner.temp }}/dependency-image-report/bun-lock.sha256
-                      ${{ runner.temp }}/dependency-image-report/bun-audit.json
-                      ${{ runner.temp }}/dependency-image-report/bun-audit-diagnostics.txt
-                      ${{ runner.temp }}/dependency-image-report/bun-audit-status.txt
-                  retention-days: 30
-
-            - name: Store isolated AMD64 portable backup
-              if: inputs.architecture == 'amd64'
-              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-              with:
-                  name: portable-source-${{ github.run_id }}
-                  overwrite: true
-                  compression-level: 0
-                  if-no-files-found: error
-                  retention-days: 2
-                  path: |
-                      ${{ runner.temp }}/candidate-amd64/native.json
-                      ${{ runner.temp }}/candidate-amd64/portable.tar

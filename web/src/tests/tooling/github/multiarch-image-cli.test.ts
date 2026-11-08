@@ -56,7 +56,42 @@ describe('assessed multiarch CLI publication boundary', () => {
                 ARM64_ARCHIVE_SHA256: arm64.expected.archiveSha256,
                 ARM64_EVIDENCE_SHA256: arm64.expected.evidenceSha256,
             }
-            expect((await command('assemble', env)).exitCode).toBe(0)
+            const proofs = await Promise.all(
+                [
+                    'amd64/native.json',
+                    'amd64/assessment.json',
+                    'arm64/native.json',
+                    'arm64/assessment.json',
+                    'portability.json',
+                ].map(async (path) => {
+                    const contents = await readFile(join(directory, path))
+                    await rm(join(directory, path))
+                    return { path, contents }
+                }),
+            )
+            expect((await command('candidate', env)).exitCode).toBe(0)
+            const metadata = JSON.parse(await readFile(join(directory, 'candidate.json'), 'utf8'))
+            expect(metadata).toMatchObject({ ...identity, ...workflow, status: 'unassessed' })
+            expect(await Bun.file(join(directory, 'evidence.json')).exists()).toBe(false)
+            const originalIndex = await readFile(join(env.IMAGE_OUTPUT!, 'index.json'))
+            await Promise.all(
+                proofs.map((proof) => writeFile(join(directory, proof.path), proof.contents)),
+            )
+            await writeFile(join(directory, 'candidate-image.tar'), 'immutable-root')
+            await writeFile(env.GITHUB_OUTPUT!, '')
+            expect(
+                (
+                    await command('seal', {
+                        ...env,
+                        CANDIDATE_LAYOUT: env.IMAGE_OUTPUT,
+                        CANDIDATE_ARCHIVE_SHA256: hash('immutable-root').slice(7),
+                    })
+                ).exitCode,
+            ).toBe(0)
+            expect(await readFile(join(env.IMAGE_OUTPUT!, 'index.json'))).toEqual(originalIndex)
+            expect(await readFile(join(directory, 'candidate-image.tar'), 'utf8')).toBe(
+                'immutable-root',
+            )
             const evidenceText = await readFile(join(directory, 'evidence.json'), 'utf8')
             const evidence = JSON.parse(evidenceText) as { digest: string }
             expect(await readFile(env.GITHUB_OUTPUT!, 'utf8')).toBe(

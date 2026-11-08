@@ -166,6 +166,16 @@ test.skipIf(!enabled)(
                 'oci-archive:' + archive + ':candidate',
             ])
             await writeFile(proof, JSON.stringify(evidence))
+            await writeFile(
+                join(candidate, 'candidate.json'),
+                JSON.stringify({
+                    schemaVersion: 1,
+                    ...identity,
+                    ...workflow,
+                    digest: evidence.digest,
+                    status: 'unassessed',
+                }),
+            )
             const env = {
                 REVISION: identity.revision,
                 VERSION: identity.version,

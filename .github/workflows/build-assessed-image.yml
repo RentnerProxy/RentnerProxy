@@ -29,6 +29,10 @@ on:
                 required: false
                 type: string
                 default: ''
+            validate_distribution:
+                required: false
+                type: boolean
+                default: false
         outputs:
             digest:
                 value: ${{ jobs.assemble.outputs.digest }}
@@ -38,6 +42,8 @@ on:
                 value: ${{ jobs.assemble.outputs.evidence_sha256 }}
             platforms:
                 value: ${{ jobs.assemble.outputs.platforms }}
+            bundle_sha256:
+                value: ${{ jobs.bind-distribution.outputs.bundle_sha256 }}
 
 permissions: {}
 
@@ -74,9 +80,61 @@ jobs:
             published_at: ${{ inputs.published_at }}
             release_tag: ${{ inputs.release_tag }}
 
+    assessment-amd64:
+        needs: amd64
+        permissions:
+            contents: read
+        uses: ./.github/workflows/verify-image-platform.yml
+        with:
+            check: assessment
+            architecture: amd64
+            revision: ${{ inputs.revision }}
+            version: ${{ inputs.version }}
+            digest: ${{ needs.amd64.outputs.digest }}
+            archive_sha256: ${{ needs.amd64.outputs.archive_sha256 }}
+
+    native-amd64:
+        needs: amd64
+        permissions:
+            contents: read
+        uses: ./.github/workflows/verify-image-platform.yml
+        with:
+            check: native
+            architecture: amd64
+            revision: ${{ inputs.revision }}
+            version: ${{ inputs.version }}
+            digest: ${{ needs.amd64.outputs.digest }}
+            archive_sha256: ${{ needs.amd64.outputs.archive_sha256 }}
+
+    assessment-arm64:
+        needs: arm64
+        permissions:
+            contents: read
+        uses: ./.github/workflows/verify-image-platform.yml
+        with:
+            check: assessment
+            architecture: arm64
+            revision: ${{ inputs.revision }}
+            version: ${{ inputs.version }}
+            digest: ${{ needs.arm64.outputs.digest }}
+            archive_sha256: ${{ needs.arm64.outputs.archive_sha256 }}
+
+    native-arm64:
+        needs: arm64
+        permissions:
+            contents: read
+        uses: ./.github/workflows/verify-image-platform.yml
+        with:
+            check: native
+            architecture: arm64
+            revision: ${{ inputs.revision }}
+            version: ${{ inputs.version }}
+            digest: ${{ needs.arm64.outputs.digest }}
+            archive_sha256: ${{ needs.arm64.outputs.archive_sha256 }}
+
     portability:
         name: Native ARM64 backup portability and upgrades
-        needs: [amd64, arm64]
+        needs: [arm64, native-amd64, native-arm64]
         runs-on: ubuntu-24.04-arm
         timeout-minutes: 75
         permissions:
@@ -114,7 +172,12 @@ jobs:
             - name: Download exact ARM64 native candidate
               uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
               with:
-                  name: assessed-platform-${{ github.run_id }}-arm64
+                  name: candidate-platform-${{ github.run_id }}-arm64
+                  path: ${{ runner.temp }}/portability/arm64
+            - name: Download exact ARM64 native proof
+              uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+              with:
+                  name: native-platform-${{ github.run_id }}-arm64
                   path: ${{ runner.temp }}/portability/arm64
             - name: Verify native cross-architecture restore and eligible ARM64 upgrades
               id: portability
@@ -123,10 +186,10 @@ jobs:
                   CANDIDATE_DIRECTORY: ${{ runner.temp }}/portability
                   REVISION: ${{ inputs.revision }}
                   VERSION: ${{ inputs.version }}
-                  AMD64_EVIDENCE_SHA256: ${{ needs.amd64.outputs.evidence_sha256 }}
+                  AMD64_EVIDENCE_SHA256: ${{ needs.native-amd64.outputs.evidence_sha256 }}
                   ARM64_ARCHIVE_SHA256: ${{ needs.arm64.outputs.archive_sha256 }}
-                  ARM64_EVIDENCE_SHA256: ${{ needs.arm64.outputs.evidence_sha256 }}
-                  PORTABLE_SHA256: ${{ needs.amd64.outputs.portable_sha256 }}
+                  ARM64_EVIDENCE_SHA256: ${{ needs.native-arm64.outputs.evidence_sha256 }}
+                  PORTABLE_SHA256: ${{ needs.native-amd64.outputs.portable_sha256 }}
                   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               run: bun --no-env-file automation/.github/scripts/release/portability-runtime.ts
             - name: Store exact portability proof
@@ -138,9 +201,78 @@ jobs:
                   retention-days: 2
                   path: ${{ runner.temp }}/portability/portability.json
 
+    candidate-index:
+        name: Assemble immutable unassessed candidate index
+        needs: [amd64, arm64]
+        runs-on: ubuntu-latest
+        timeout-minutes: 20
+        permissions:
+            contents: read
+        outputs:
+            digest: ${{ steps.assemble.outputs.digest }}
+            archive_sha256: ${{ steps.assemble.outputs.archive_sha256 }}
+            platforms: ${{ steps.assemble.outputs.platforms }}
+        steps:
+            - name: Check out trusted image assembly
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  persist-credentials: false
+                  path: automation
+                  ref: ${{ github.workflow_sha }}
+            - name: Set up Bun
+              uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+              with:
+                  bun-version: 1.4.4
+            - name: Install OCI transport
+              run: bash automation/.github/scripts/security/install-dependency-tools.sh
+            - name: Download exact AMD64 candidate
+              uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+              with:
+                  name: candidate-platform-${{ github.run_id }}-amd64
+                  path: ${{ runner.temp }}/platforms/amd64
+            - name: Download exact ARM64 candidate
+              uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+              with:
+                  name: candidate-platform-${{ github.run_id }}-arm64
+                  path: ${{ runner.temp }}/platforms/arm64
+            - name: Assemble immutable candidate index before checks
+              id: assemble
+              env:
+                  AUTOMATION_DIRECTORY: automation
+                  IMAGE_DIRECTORY: ${{ runner.temp }}/platforms
+                  IMAGE_OUTPUT: ${{ runner.temp }}/assembled-oci
+                  REVISION: ${{ inputs.revision }}
+                  VERSION: ${{ inputs.version }}
+                  AMD64_DIGEST: ${{ needs.amd64.outputs.digest }}
+                  AMD64_ARCHIVE_SHA256: ${{ needs.amd64.outputs.archive_sha256 }}
+                  ARM64_DIGEST: ${{ needs.arm64.outputs.digest }}
+                  ARM64_ARCHIVE_SHA256: ${{ needs.arm64.outputs.archive_sha256 }}
+              run: bash automation/.github/scripts/release/assemble-candidate.sh
+            - name: Store immutable unassessed root
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+              with:
+                  compression-level: 0
+                  overwrite: true
+                  if-no-files-found: error
+                  name: candidate-index-${{ github.run_id }}
+                  retention-days: 2
+                  path: |
+                      ${{ runner.temp }}/platforms/candidate-image.tar
+                      ${{ runner.temp }}/platforms/candidate.json
+
     assemble:
         name: Assemble assessed multi-architecture index
-        needs: [amd64, arm64, portability]
+        needs:
+            [
+                amd64,
+                arm64,
+                candidate-index,
+                assessment-amd64,
+                assessment-arm64,
+                native-amd64,
+                native-arm64,
+                portability,
+            ]
         runs-on: ubuntu-latest
         timeout-minutes: 20
         permissions:
@@ -166,12 +298,37 @@ jobs:
             - name: Download exact AMD64 candidate
               uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
               with:
-                  name: assessed-platform-${{ github.run_id }}-amd64
+                  name: candidate-platform-${{ github.run_id }}-amd64
                   path: ${{ runner.temp }}/platforms/amd64
             - name: Download exact ARM64 candidate
               uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
               with:
-                  name: assessed-platform-${{ github.run_id }}-arm64
+                  name: candidate-platform-${{ github.run_id }}-arm64
+                  path: ${{ runner.temp }}/platforms/arm64
+            - name: Download exact early root archive
+              uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+              with:
+                  name: candidate-index-${{ github.run_id }}
+                  path: ${{ runner.temp }}/platforms
+            - name: Download amd64 native proof
+              uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+              with:
+                  name: native-platform-${{ github.run_id }}-amd64
+                  path: ${{ runner.temp }}/platforms/amd64
+            - name: Download amd64 assessment proof
+              uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+              with:
+                  name: platform-assessment-${{ github.run_id }}-amd64
+                  path: ${{ runner.temp }}/platforms/amd64
+            - name: Download arm64 native proof
+              uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+              with:
+                  name: native-platform-${{ github.run_id }}-arm64
+                  path: ${{ runner.temp }}/platforms/arm64
+            - name: Download arm64 assessment proof
+              uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+              with:
+                  name: platform-assessment-${{ github.run_id }}-arm64
                   path: ${{ runner.temp }}/platforms/arm64
             - name: Download exact native portability proof
               uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -188,10 +345,12 @@ jobs:
                   VERSION: ${{ inputs.version }}
                   AMD64_DIGEST: ${{ needs.amd64.outputs.digest }}
                   AMD64_ARCHIVE_SHA256: ${{ needs.amd64.outputs.archive_sha256 }}
-                  AMD64_EVIDENCE_SHA256: ${{ needs.amd64.outputs.evidence_sha256 }}
+                  AMD64_EVIDENCE_SHA256: ${{ needs.native-amd64.outputs.evidence_sha256 }}
                   ARM64_DIGEST: ${{ needs.arm64.outputs.digest }}
                   ARM64_ARCHIVE_SHA256: ${{ needs.arm64.outputs.archive_sha256 }}
-                  ARM64_EVIDENCE_SHA256: ${{ needs.arm64.outputs.evidence_sha256 }}
+                  ARM64_EVIDENCE_SHA256: ${{ needs.native-arm64.outputs.evidence_sha256 }}
+                  CANDIDATE_DIGEST: ${{ needs.candidate-index.outputs.digest }}
+                  CANDIDATE_ARCHIVE_SHA256: ${{ needs.candidate-index.outputs.archive_sha256 }}
                   PORTABILITY_SHA256: ${{ needs.portability.outputs.sha256 }}
               run: bash automation/.github/scripts/release/assemble-image.sh
             - name: Store assessed OCI index and bound execution evidence
@@ -205,3 +364,77 @@ jobs:
                   path: |
                       ${{ runner.temp }}/platforms/candidate-image.tar
                       ${{ runner.temp }}/platforms/evidence.json
+
+    distribution:
+        if: inputs.validate_distribution
+        needs: candidate-index
+        permissions:
+            contents: read
+        uses: ./.github/workflows/build-distribution.yml
+        with:
+            revision: ${{ inputs.revision }}
+            version: ${{ inputs.version }}
+            digest: ${{ needs.candidate-index.outputs.digest }}
+            archive_sha256: ${{ needs.candidate-index.outputs.archive_sha256 }}
+
+    bind-distribution:
+        if: inputs.validate_distribution
+        name: Bind exact native-tested packages to final image evidence
+        needs: [candidate-index, assemble, distribution]
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        permissions:
+            contents: read
+        outputs:
+            bundle_sha256: ${{ steps.bind.outputs.bundle_sha256 }}
+        steps:
+            - name: Check out trusted distribution binding automation
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  persist-credentials: false
+                  path: automation
+                  ref: ${{ github.workflow_sha }}
+            - name: Set up Bun
+              uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+              with:
+                  bun-version: 1.4.4
+            - name: Install OCI transport
+              run: bash automation/.github/scripts/security/install-dependency-tools.sh
+            - name: Download final assessed image evidence and original archive
+              uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+              with:
+                  name: assessed-candidate-${{ github.run_id }}
+                  path: ${{ runner.temp }}/candidate
+            - name: Download exact tested early package bundle
+              uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+              with:
+                  name: distribution-candidate-${{ github.run_id }}
+                  path: ${{ runner.temp }}/distribution-candidate
+            - name: Download all four native distribution reports
+              uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+              with:
+                  pattern: distribution-native-*-${{ github.run_id }}
+                  merge-multiple: true
+                  path: ${{ runner.temp }}/distribution-proofs
+            - name: Create a new assessed bundle from the exact tested package bytes
+              id: bind
+              env:
+                  REVISION: ${{ inputs.revision }}
+                  VERSION: ${{ inputs.version }}
+                  EXPECTED_DIGEST: ${{ needs.assemble.outputs.digest }}
+                  ARCHIVE_SHA256: ${{ needs.candidate-index.outputs.archive_sha256 }}
+                  EVIDENCE_SHA256: ${{ needs.assemble.outputs.evidence_sha256 }}
+                  CANDIDATE_BUNDLE_SHA256: ${{ needs.distribution.outputs.bundle_sha256 }}
+                  CANDIDATE_BUNDLE_DIRECTORY: ${{ runner.temp }}/distribution-candidate
+                  CANDIDATE_DIRECTORY: ${{ runner.temp }}/candidate
+                  NATIVE_REPORT_DIRECTORY: ${{ runner.temp }}/distribution-proofs
+                  DISTRIBUTION_DIRECTORY: ${{ runner.temp }}/distribution-assessed
+              run: bun --no-env-file automation/.github/scripts/distribution/bind.ts
+            - name: Store new final assessed distribution bundle
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+              with:
+                  name: distribution-assessed-${{ github.run_id }}
+                  path: ${{ runner.temp }}/distribution-assessed
+                  if-no-files-found: error
+                  overwrite: true
+                  retention-days: 30
