@@ -184,6 +184,9 @@ if (import.meta.main) {
         } else if (args.length === 1 && args[0] === '--confirm-restarted-restore') {
             const { confirmRestartedRestore } = await import('./restart-recovery.ts')
             await confirmRestartedRestore()
+        } else if (args.length === 1 && args[0] === '--assert-web-restart-safe') {
+            const { assertWebRestartSafe } = await import('./restart-recovery.ts')
+            await assertWebRestartSafe()
         } else if (args.length === 1 && args[0] === '--request-id') {
             const request = z
                 .strictObject({ id: z.uuid(), kind: z.literal('restore').optional() })

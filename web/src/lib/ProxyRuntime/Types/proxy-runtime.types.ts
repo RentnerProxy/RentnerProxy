@@ -37,6 +37,17 @@ export interface ProxyRuntimeStatus {
     readonly running: boolean
     readonly activeRevision: string | null
     readonly lastApplyAt: string | null
+    readonly recovery?:
+        | {
+              readonly workerRunning: boolean
+              readonly completedTicks: number
+              readonly lastCompletedAgeSeconds: number | null
+              readonly circuitOpen: boolean
+              readonly restartsInWindow: number
+              readonly faults: number
+              readonly consecutiveProbeFailures?: number | undefined
+          }
+        | undefined
 }
 
 export interface ProxyRuntimeSyncStatus extends ProxyRuntimeStatus {

@@ -37,6 +37,17 @@ const statusSchema = z.object({
     running: z.boolean(),
     activeRevision: revisionSchema.nullable(),
     lastApplyAt: timestampSchema,
+    recovery: z
+        .object({
+            workerRunning: z.boolean(),
+            completedTicks: z.number().int().nonnegative().safe(),
+            lastCompletedAgeSeconds: z.number().int().nonnegative().safe().nullable(),
+            circuitOpen: z.boolean(),
+            restartsInWindow: z.number().int().nonnegative().safe(),
+            faults: z.number().int().nonnegative().safe(),
+            consecutiveProbeFailures: z.number().int().nonnegative().safe().optional(),
+        })
+        .optional(),
 })
 
 const applySchema = z.object({
@@ -45,6 +56,7 @@ const applySchema = z.object({
     lastApplyAt: timestampSchema,
 })
 
+/** Reads privileged runtime observations without duplicating the controller's recovery policy. */
 export async function getProxyRuntimeStatus(): Promise<ProxyRuntimeStatus | null> {
     const payload = await controllerRequest('/internal/v1/proxy/status', {
         timeoutMs: STATUS_TIMEOUT_MS,

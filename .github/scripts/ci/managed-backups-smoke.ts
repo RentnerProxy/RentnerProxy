@@ -7,6 +7,11 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { z } from 'zod'
 import { isOnlineRestoreDiagnostic } from './online-restore-diagnostics.ts'
+import {
+    managedBackupFailureDiagnostic,
+    managedBackupSupervisorDiagnostic,
+} from './managed-backup-diagnostics.ts'
+import type { ManagedBackupSmokeStage } from './Types/managed-backup-diagnostics.types.ts'
 import { sharedSmokeImage, verifySharedSmokeImage } from '../../../scripts/smoke/images.ts'
 import { runMaintenanceProcess } from '../../../scripts/backup/maintenance-process.ts'
 import { verifyPublishedBackup } from '../../../scripts/backup/publication.ts'
@@ -172,6 +177,12 @@ export async function runManagedBackupsSmoke(): Promise<number> {
         composeFile,
     ]
     let checks = 0
+    let stage: ManagedBackupSmokeStage = 'setup'
+    /** Mark only fixed lifecycle phases so failed pre-launch execs remain diagnosable without private output. */
+    const setStage = (next: ManagedBackupSmokeStage) => {
+        stage = next
+        console.log('Managed backup stage=' + next)
+    }
     let imageBuilt = false
     let cleanupFailed = false
     let lockProbePending = false
@@ -182,6 +193,66 @@ export async function runManagedBackupsSmoke(): Promise<number> {
         checks += 1
         console.log('PASS ' + message)
     }
+    /** Inspect only bounded facts and classify exact fatal literals before cleanup destroys failure evidence. */
+    async function diagnoseInterruptedProbe(container: string) {
+        try {
+            const result = await runMaintenanceProcess(
+                smokeDockerArguments([
+                    'docker',
+                    'inspect',
+                    '--format',
+                    '{"running":{{.State.Running}},"exitCode":{{.State.ExitCode}},"oomKilled":{{.State.OOMKilled}}}',
+                    container,
+                ]),
+                {
+                    cwd: repositoryRoot,
+                    env: environment,
+                    timeoutMs: 5_000,
+                    maximumOutputBytes: 4096,
+                },
+            )
+            if (result.failed || !result.stopped) throw new Error('failure inspect unavailable')
+            const state = z
+                .strictObject({
+                    running: z.boolean(),
+                    exitCode: z.number().int().min(0).max(255),
+                    oomKilled: z.boolean(),
+                })
+                .parse(JSON.parse(Buffer.from(result.stdout).toString('utf8')))
+            console.error(
+                'Managed backup appliance running=' +
+                    state.running +
+                    ' exitCode=' +
+                    state.exitCode +
+                    ' oomKilled=' +
+                    state.oomKilled,
+            )
+        } catch {
+            console.error('Managed backup appliance unavailable')
+        }
+        try {
+            const result = await runMaintenanceProcess(
+                smokeDockerArguments(['docker', 'logs', '--tail', '200', container]),
+                {
+                    cwd: repositoryRoot,
+                    env: environment,
+                    timeoutMs: 5_000,
+                    maximumOutputBytes: 65_536,
+                },
+            )
+            if (result.failed || !result.stopped) throw new Error('failure logs unavailable')
+            console.error(
+                managedBackupSupervisorDiagnostic(
+                    Buffer.from(result.stdout).toString('utf8') +
+                        '\n' +
+                        Buffer.from(result.stderr).toString('utf8'),
+                ),
+            )
+        } catch {
+            console.error('Managed backup supervisor fatal=unavailable')
+        }
+    }
+    /** Bound subprocess work and forward only fixed checkpoints or validated process facts on failure. */
     async function command(args: string[], operation: string, timeoutMs = 60_000) {
         const result = await runMaintenanceProcess(smokeDockerArguments(args), {
             cwd: repositoryRoot,
@@ -190,6 +261,25 @@ export async function runManagedBackupsSmoke(): Promise<number> {
             maximumOutputBytes: 1024 * 1024,
         })
         if (result.failed || !result.stopped) {
+            if (
+                operation === 'fixture probe online-restore-interrupt' &&
+                /^[a-f0-9]{12,64}$/u.test(args[2] ?? '')
+            )
+                await diagnoseInterruptedProbe(args[2]!)
+            if (
+                result.exitCode === null ||
+                (Number.isInteger(result.exitCode) &&
+                    result.exitCode >= 0 &&
+                    result.exitCode <= 255)
+            )
+                console.error(
+                    'Managed backup process exitCode=' +
+                        result.exitCode +
+                        ' timedOut=' +
+                        result.timedOut +
+                        ' stopped=' +
+                        result.stopped,
+                )
             const phase =
                 /Managed backup fixture probe failed during (setup|web-auth|web-config|web-notifications|download-auth|download-response|download-archive|download-expired|download-audit|online-restore)\b/u.exec(
                     Buffer.from(result.stderr).toString('utf8'),
@@ -739,14 +829,18 @@ export async function runManagedBackupsSmoke(): Promise<number> {
         passed(
             'same volume restore safely resumes root audit acknowledgements without replaying paused notifications',
         )
+        setStage('online-restore')
         assert.deepEqual(await probe(restoredSource, 'online-restore'), { restored: true })
+        setStage('online-restore-health')
         await healthy(restoredSource)
         passed(
             'authenticated web restore completes, preserves current sessions and resumes live progress after service restart',
         )
+        setStage('interrupt-probe')
         assert.deepEqual(await probe(restoredSource, 'online-restore-interrupt'), {
             recoveryPending: true,
         })
+        setStage('interrupt-stop')
         await wait(
             async () =>
                 (await command(
@@ -756,6 +850,7 @@ export async function runManagedBackupsSmoke(): Promise<number> {
             'failed final restore restart stops the owned appliance',
             180_000,
         )
+        setStage('interrupt-exit')
         assert.notEqual(
             await command(
                 ['docker', 'inspect', '--format', '{{.State.ExitCode}}', restoredSource],
@@ -763,6 +858,7 @@ export async function runManagedBackupsSmoke(): Promise<number> {
             ),
             '0',
         )
+        setStage('interrupt-repair')
         await command(
             [
                 'docker',
@@ -772,15 +868,21 @@ export async function runManagedBackupsSmoke(): Promise<number> {
             ],
             'repair owned fixture health probe',
         )
+        setStage('interrupt-start')
         await command(
             ['docker', 'start', restoredSource],
             'restart the interrupted restore fixture',
         )
+        setStage('interrupt-health')
         await healthy(restoredSource)
+        setStage('interrupt-recover')
         assert.deepEqual(await probe(restoredSource, 'online-restore-recover'), { restored: true })
         passed(
             'a failed final restore restart completes only after fresh appliance readiness, retaining data and browser sessions',
         )
+    } catch (error) {
+        console.error(managedBackupFailureDiagnostic(stage, error))
+        throw error
     } finally {
         if (lockProbePending) {
             try {
@@ -841,7 +943,11 @@ export async function runManagedBackupsSmoke(): Promise<number> {
         // Shared and explicitly supplied images remain caller-owned; no daemon-wide pruning occurs.
         await rm(temporary, { recursive: true, force: true })
     }
-    if (cleanupFailed) throw new Error('Managed backup smoke operation failed: owned cleanup')
+    if (cleanupFailed) {
+        const error = new Error('Managed backup smoke operation failed: owned cleanup')
+        console.error(managedBackupFailureDiagnostic('cleanup', error))
+        throw error
+    }
     return checks
 }
 

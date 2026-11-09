@@ -117,6 +117,7 @@ async fn respond(
 }
 
 #[tokio::test]
+/// Confirms startup waits for a matching probe revision and reuses only the verified child.
 async fn owned_start_passes_configuration_and_private_environment_and_reuses_verified_child() {
     let fixture = Fixture::new(
         "/bin/cat > captured.json\nprintf '%s\\n%s\\n%s' \"$XDG_CONFIG_HOME\" \"$XDG_DATA_HOME\" \"$RENTNERPROXY_CROWDSEC_BOUNCER_KEY\" > captured.env\n: > started\nexec /bin/sleep 60",
@@ -126,7 +127,6 @@ async fn owned_start_passes_configuration_and_private_environment_and_reuses_ver
         .set_environment(EngineEnvironment::with_crowdsec_bouncer_key(
             "fixture-bouncer-key".to_owned(),
         ));
-    let listener = fixture.listener("runtime-probe.sock");
     let probe = async {
         timeout(Duration::from_secs(2), async {
             while !fixture.root.join("started").exists() {
@@ -135,6 +135,7 @@ async fn owned_start_passes_configuration_and_private_environment_and_reuses_ver
         })
         .await
         .unwrap();
+        let listener = fixture.listener("runtime-probe.sock");
         respond(
             &listener,
             "GET /__rentnerproxy_runtime_probe HTTP/1.1\r\n",
@@ -163,6 +164,7 @@ async fn owned_start_passes_configuration_and_private_environment_and_reuses_ver
         )
     );
     let original_pid = fixture.engine.child.lock().await.as_ref().unwrap().id();
+    let listener = fixture.listener("runtime-probe.sock");
     let (result, ()) = tokio::join!(
         fixture
             .engine
@@ -230,13 +232,19 @@ async fn unverified_owned_start_times_out_and_reaps_the_child() {
 }
 
 #[tokio::test]
+/// Rejects missing, nonexecutable, and already-exited child programs without retaining them.
 async fn owned_start_rejects_missing_nonexecutable_and_prematurely_exited_children() {
     let fixture = Fixture::new("exit 0");
-    let missing = CaddyProcess::new(fixture.root.join("missing"), fixture.root.clone());
+    let missing_fixture = Fixture::new("exit 0");
+    let missing = CaddyProcess::new(
+        missing_fixture.root.join("missing"),
+        missing_fixture.root.clone(),
+    );
     assert_eq!(
         missing.start("{}", "r").await,
         Err(EngineError::Unavailable)
     );
+    drop(missing);
     std::fs::set_permissions(
         &fixture.engine.binary,
         std::fs::Permissions::from_mode(0o600),

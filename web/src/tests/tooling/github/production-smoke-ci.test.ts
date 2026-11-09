@@ -270,6 +270,53 @@ describe('production smoke CI output boundary', () => {
         expect(progress.result(1).diagnostic).not.toContain('secret-value')
     })
 
+    test('allows fixed web runtime stages and bounded native counters without raw diagnostics', () => {
+        const progress = smokeProgress('production')
+        for (const line of [
+            'Runtime web stage=baseline-native',
+            'Runtime web native workerRunning=true circuitOpen=false completedTicks=0 lastCompletedAgeSeconds=null',
+            'Runtime web native workerRunning=true circuitOpen=false completedTicks=12 lastCompletedAgeSeconds=0',
+            'Runtime web failure stage=resource-fds',
+        ])
+            expect(progress.consume(line)).toBe(line)
+        for (const line of [
+            'Runtime web failure stage=secret-value',
+            'Runtime web stage=baseline-native secret-value',
+            'Runtime web native workerRunning=true circuitOpen=false completedTicks=1234567890123 lastCompletedAgeSeconds=0',
+            'Runtime web native workerRunning=true circuitOpen=false completedTicks=1 lastCompletedAgeSeconds=secret-value',
+            'Runtime descriptor counts before faults secret-value',
+            'Runtime resource sample before faults cpu|memory|pids=secret-value',
+        ])
+            expect(progress.consume(line)).toBeUndefined()
+        expect(progress.result(1).diagnostic).toBe('Runtime web failure stage=resource-fds')
+        expect(smokeProgress('proxy').consume('Runtime web stage=baseline-native')).toBeUndefined()
+        progress.consume('at .github/scripts/ci/appliance/runtime-faults.ts:77:11')
+        expect(progress.result(1).diagnostic).toContain('runtime-faults.ts:77:11')
+    })
+
+    test('retains bounded fault measurements while rejecting extra or private payloads', () => {
+        const progress = smokeProgress('production')
+        const rows = [
+            'Runtime web SIGTERM recoveryMs=2400 nativeCompletedTicksDelta=1 httpRequests=19 httpErrors=0 httpsRequests=18 httpsErrors=0',
+            'Runtime web SIGSTOP recoveryMs=37000 nativeCompletedTicksDelta=7 nativeTicksWhileWebStopped=6 httpRequests=145 httpErrors=0 httpsRequests=142 httpsErrors=0',
+            'Runtime native caddy SIGKILL expectedBoundaryRestart=true boundaryChanged=true recovered=true recoveryMs=22000 httpRequests=81 httpErrors=67 httpsRequests=81 httpsErrors=67',
+            'Runtime native controller SIGSTOP expectedBoundaryRestart=true boundaryChanged=false recovered=false recoveryMs=120000 httpRequests=155 httpErrors=9 httpsRequests=153 httpsErrors=9',
+        ]
+        for (const row of rows) {
+            expect(progress.consume(row)).toBe(row)
+            expect(smokeProgress('proxy').consume(row)).toBeUndefined()
+            expect(progress.consume(row + ' token=private-value')).toBeUndefined()
+            expect(progress.consume(row + '\n::error::private-value')).toBeUndefined()
+            expect(
+                progress.consume(row.replace(/recoveryMs=\d+/u, 'recoveryMs=-1')),
+            ).toBeUndefined()
+            expect(
+                progress.consume(row.replace(/httpRequests=\d+/u, 'httpRequests=123456789')),
+            ).toBeUndefined()
+        }
+        expect(JSON.stringify(progress.result(1))).not.toContain('private-value')
+    })
+
     test('reports CI smoke locations without exposing unrelated stack frames', () => {
         const progress = smokeProgress('production')
         progress.consume('error: Timed out waiting for managed CrowdSec acquisition')

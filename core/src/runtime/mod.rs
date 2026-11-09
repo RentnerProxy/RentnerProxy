@@ -19,6 +19,7 @@ mod hetzner;
 mod lifecycle;
 pub(crate) mod manual_dns_propagation;
 mod provider_connections;
+mod recovery_health;
 pub(crate) mod renderer;
 mod renewal;
 mod state;
@@ -38,6 +39,7 @@ pub(crate) use certificates::{
 pub(crate) use certificates::{CertificateEnvironment, CertificateSource, CertificateStatus};
 pub(crate) use crowdsec::CrowdSecError;
 pub(crate) use engine::{CaddyProcess, EngineEnvironment, EngineError, EngineFuture, ProxyEngine};
+pub(crate) use recovery_health::RecoveryStatus;
 use renderer::RenderSettings;
 use std::{
     collections::BTreeMap,
@@ -160,6 +162,7 @@ pub(crate) struct ProxyRuntime {
     apply_lock: Mutex<()>,
     apply_sequence: AtomicU64,
     stopping: AtomicBool,
+    initialization_started: AtomicBool,
     active_configuration: Mutex<Option<ValidatedProxyConfig>>,
     certificate_store: CertificateStore,
     pub(crate) dns_connections: dns_connections::Store,
@@ -170,6 +173,7 @@ pub(crate) struct ProxyRuntime {
     access_log_snapshots: access_logs::SnapshotCache,
     renewal_task: Mutex<Option<JoinHandle<()>>>,
     recovery_task: Mutex<Option<JoinHandle<()>>>,
+    recovery_health: Arc<recovery_health::RecoveryHealth>,
     ddns_task: Mutex<Option<JoinHandle<()>>>,
     candidate_cursor: AtomicUsize,
     dns_cleanup_cursor: AtomicUsize,
@@ -247,9 +251,11 @@ impl ProxyRuntime {
             apply_lock: Mutex::new(()),
             apply_sequence: AtomicU64::new(0),
             stopping: AtomicBool::new(false),
+            initialization_started: AtomicBool::new(false),
             active_configuration: Mutex::new(None),
             renewal_task: Mutex::new(None),
             recovery_task: Mutex::new(None),
+            recovery_health: Arc::new(recovery_health::RecoveryHealth::default()),
             ddns_task: Mutex::new(None),
             candidate_cursor: AtomicUsize::new(0),
             dns_cleanup_cursor: AtomicUsize::new(0),

@@ -13,6 +13,7 @@ use tokio::time::timeout;
 use tracing::{info, warn};
 
 impl ProxyRuntime {
+    /// Serializes an operator configuration change and preserves the last verified runtime on failure.
     pub(crate) async fn apply(
         self: &Arc<Self>,
         configuration: ValidatedProxyConfig,
@@ -86,6 +87,7 @@ impl ProxyRuntime {
         })
     }
 
+    /// Applies or rolls back a staged configuration while charging replacement attempts to recovery health.
     async fn apply_locked(
         &self,
         configuration: ValidatedProxyConfig,
@@ -215,6 +217,7 @@ impl ProxyRuntime {
         state.host_sources = host_sources;
         state.engine_available = true;
         drop(state);
+        self.recovery_health.probe_verified();
         *self.active_configuration.lock().await = Some(configuration.clone());
 
         if staged.is_some()
@@ -235,6 +238,7 @@ impl ProxyRuntime {
         })
     }
 
+    /// Restores the last verified configuration, optionally replacing Caddy after uncertain activation.
     async fn restore_verified_locked(&self, json: &str, revision: &str, force_restart: bool) {
         let Some(engine) = &self.engine else {
             return;
@@ -246,13 +250,13 @@ impl ProxyRuntime {
                 && self.run_stage(engine.probe(revision)).await.is_ok()
         };
         if recovered {
+            self.recovery_health.probe_verified();
             return;
         }
         self.mark_unavailable().await;
-        let _ = engine.shutdown().await;
         let environment = self.active_crowdsec_provider().await.environment();
         if self
-            .start_engine(engine, json, revision, environment)
+            .replace_engine(engine, json, revision, environment)
             .await
             .is_ok()
         {

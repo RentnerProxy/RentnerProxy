@@ -226,3 +226,79 @@ async fn forced_termination_reaps_the_child_and_is_idempotent() {
         Ok(())
     );
 }
+
+#[tokio::test]
+/// Reserves time for forced child reaping when the graceful shutdown phase consumes its budget.
+async fn expired_graceful_phase_keeps_the_forced_reap_reserve() {
+    let fixture = ShutdownFixture::new("exec sleep 60", Duration::ZERO, 200, false).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+    assert_eq!(
+        fixture
+            .engine
+            .shutdown_owned_until(budget(20, 20), deadline)
+            .await,
+        Err(EngineError::TimedOut)
+    );
+    assert!(fixture.engine.child.lock().await.is_none());
+    assert!(!fixture.engine.is_running().await);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+/// Ensures an externally reaped child remains uncertain and cannot authorize a replacement.
+async fn externally_reaped_child_remains_unknown_and_never_authorizes_replacement() {
+    let root = std::env::temp_dir().join(format!(
+        "rp-external-reap-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let engine = CaddyProcess::new(root.join("must-not-spawn"), root.clone());
+    let child = Command::new("/bin/true")
+        .kill_on_drop(false)
+        .spawn()
+        .unwrap();
+    let pid = child.id().unwrap();
+    // SAFETY: this current-thread fixture synchronously reaps its exact child
+    // before Tokio's signal driver runs. ECHILD then models lost wait ownership
+    // without changing global SIGCHLD handling or touching another process.
+    let reaped = loop {
+        // SAFETY: the exact-child ownership invariant above holds on every retry.
+        let reaped = unsafe { libc::waitpid(pid as i32, std::ptr::null_mut(), 0) };
+        if reaped < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        break reaped;
+    };
+    assert_eq!(reaped, pid as i32);
+    *engine.child.lock().await = Some(child);
+    assert_eq!(
+        engine.owned_child_running().await,
+        Err(EngineError::OwnershipUncertain)
+    );
+    assert!(
+        engine.is_running().await,
+        "unknown ownership cannot be reported as absent"
+    );
+    assert_eq!(
+        engine.start("{}", "none").await,
+        Err(EngineError::OwnershipUncertain)
+    );
+    assert_eq!(
+        engine.terminate_child_bounded(Duration::from_secs(1)).await,
+        Err(EngineError::CommandFailed)
+    );
+    assert!(
+        engine.child.lock().await.is_some(),
+        "failed reaping must retain the original handle"
+    );
+    assert_eq!(
+        engine.owned_child_running().await,
+        Err(EngineError::OwnershipUncertain)
+    );
+    drop(engine);
+    std::fs::remove_dir(root).unwrap();
+}

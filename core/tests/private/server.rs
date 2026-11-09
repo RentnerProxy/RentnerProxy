@@ -248,6 +248,59 @@ async fn readiness_requires_a_running_runtime_but_is_public() {
 }
 
 #[tokio::test]
+/// Keeps public recovery progress minimal and unavailable when the worker stops, independent of traffic readiness.
+async fn recovery_progress_is_public_minimal_and_independent_of_readiness() {
+    let mut settings = RuntimeSettings::new(
+        std::env::temp_dir().join(format!(
+            "rp-progress-{}-{}",
+            std::process::id(),
+            TEST_COUNTER.fetch_add(1, Ordering::SeqCst)
+        )),
+        18_080,
+    );
+    settings.recovery_interval = Duration::from_millis(5);
+    let runtime = ProxyRuntime::new(settings, None);
+    let router = app_with_state(AppState::new(runtime.clone(), default_token()));
+    let read = || {
+        router.clone().oneshot(
+            Request::builder()
+                .uri("/progress")
+                .body(Body::empty())
+                .unwrap(),
+        )
+    };
+    let before = read().await.unwrap();
+    assert_eq!(before.status(), StatusCode::SERVICE_UNAVAILABLE);
+    runtime.start_recovery_worker().await;
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !runtime.recovery_progressing() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let response = read().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
+    let body = axum::body::to_bytes(response.into_body(), 1024)
+        .await
+        .unwrap();
+    assert_eq!(
+        body.as_ref(),
+        br#"{"status":"progressing","scope":"caddy_recovery"}"#
+    );
+    assert!(
+        !runtime.is_ready().await,
+        "worker progress does not claim traffic readiness"
+    );
+    runtime.shutdown().await;
+    assert_eq!(
+        read().await.unwrap().status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+}
+
+#[tokio::test]
 async fn proxy_endpoints_require_configured_authentication() {
     let token = Config::from_values(
         None,

@@ -1,0 +1,179 @@
+use serde::Serialize;
+use std::{collections::VecDeque, sync::Mutex, time::Duration};
+use tokio::time::Instant;
+
+const RESTART_WINDOW: Duration = Duration::from_secs(300);
+const MAX_RESTARTS: usize = 3;
+const MAX_PROGRESS_AGE: Duration = Duration::from_secs(90);
+const MAX_CONSECUTIVE_PROBE_FAILURES: u32 = 3;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RecoveryStatus {
+    pub(crate) worker_running: bool,
+    pub(crate) last_completed_age_seconds: Option<u64>,
+    pub(crate) circuit_open: bool,
+    pub(crate) restarts_in_window: usize,
+    pub(crate) faults: u64,
+    pub(crate) completed_ticks: u64,
+    pub(crate) consecutive_probe_failures: u32,
+}
+
+#[derive(Default)]
+struct State {
+    worker_running: bool,
+    last_completed: Option<Instant>,
+    circuit_open: bool,
+    restarts: VecDeque<Instant>,
+    faults: u64,
+    completed_ticks: u64,
+    consecutive_probe_failures: u32,
+}
+
+#[derive(Default)]
+pub(super) struct RecoveryHealth(Mutex<State>);
+
+impl RecoveryHealth {
+    /// Marks the single recovery worker as active for progress reporting.
+    pub(super) fn worker_started(&self) {
+        if let Ok(mut state) = self.0.lock() {
+            state.worker_running = true;
+        }
+    }
+
+    /// Clears worker liveness when its task exits or is cancelled.
+    pub(super) fn worker_stopped(&self) {
+        if let Ok(mut state) = self.0.lock() {
+            state.worker_running = false;
+        }
+    }
+
+    /// Records a completed recovery tick and refreshes the public progress timestamp.
+    pub(super) fn completed(&self) {
+        if let Ok(mut state) = self.0.lock() {
+            state.last_completed = Some(Instant::now());
+            state.completed_ticks = state.completed_ticks.saturating_add(1);
+        }
+    }
+
+    /// Counts a confirmed runtime fault independently of restart attempts.
+    pub(super) fn fault(&self) {
+        if let Ok(mut state) = self.0.lock() {
+            state.faults = state.faults.saturating_add(1);
+        }
+    }
+
+    /// Advances the serialized probe-failure streak and says when it reaches recovery threshold.
+    pub(super) fn probe_failed(&self) -> bool {
+        let Ok(mut state) = self.0.lock() else {
+            return true;
+        };
+        state.faults = state.faults.saturating_add(1);
+        state.consecutive_probe_failures = state.consecutive_probe_failures.saturating_add(1);
+        state.consecutive_probe_failures >= MAX_CONSECUTIVE_PROBE_FAILURES
+    }
+
+    /// Clears transient probe failures after the active revision has been verified.
+    pub(super) fn probe_verified(&self) {
+        if let Ok(mut state) = self.0.lock() {
+            state.consecutive_probe_failures = 0;
+        }
+    }
+
+    /// Latches fail-closed recovery after process ownership or shutdown becomes uncertain.
+    pub(super) fn open_circuit(&self) {
+        if let Ok(mut state) = self.0.lock() {
+            if !state.circuit_open {
+                tracing::warn!(
+                    stage = "caddy_recovery",
+                    "Caddy ownership is unconfirmed; recovery circuit opened"
+                );
+            }
+            state.circuit_open = true;
+        }
+    }
+
+    /// Admits at most the configured number of replacement starts in the rolling window.
+    pub(super) fn admit_restart(&self, now: Instant) -> bool {
+        let Ok(mut state) = self.0.lock() else {
+            return false;
+        };
+        while state
+            .restarts
+            .front()
+            .is_some_and(|at| now.duration_since(*at) >= RESTART_WINDOW)
+        {
+            state.restarts.pop_front();
+        }
+        if state.circuit_open {
+            return false;
+        }
+        if state.restarts.len() >= MAX_RESTARTS {
+            state.circuit_open = true;
+            tracing::warn!(
+                stage = "caddy_recovery",
+                max_restarts = MAX_RESTARTS,
+                window_seconds = RESTART_WINDOW.as_secs(),
+                "Caddy recovery circuit opened; appliance restart required"
+            );
+            return false;
+        }
+        state.restarts.push_back(now);
+        true
+    }
+
+    /// Copies health counters into a serializable snapshot, failing closed if the mutex is poisoned.
+    pub(super) fn snapshot(&self, now: Instant) -> RecoveryStatus {
+        match self.0.lock() {
+            Ok(state) => RecoveryStatus {
+                worker_running: state.worker_running,
+                last_completed_age_seconds: state
+                    .last_completed
+                    .map(|at| now.duration_since(at).as_secs()),
+                circuit_open: state.circuit_open,
+                restarts_in_window: state
+                    .restarts
+                    .iter()
+                    .filter(|at| now.duration_since(**at) < RESTART_WINDOW)
+                    .count(),
+                faults: state.faults,
+                completed_ticks: state.completed_ticks,
+                consecutive_probe_failures: state.consecutive_probe_failures,
+            },
+            Err(_) => RecoveryStatus {
+                worker_running: false,
+                last_completed_age_seconds: None,
+                circuit_open: true,
+                restarts_in_window: 0,
+                faults: 0,
+                completed_ticks: 0,
+                consecutive_probe_failures: 0,
+            },
+        }
+    }
+
+    /// Requires a live worker, a recent completed tick, and a closed recovery circuit.
+    pub(super) fn progressing(&self, now: Instant) -> bool {
+        let Ok(state) = self.0.lock() else {
+            return false;
+        };
+        state.worker_running
+            && !state.circuit_open
+            && state
+                .last_completed
+                .is_some_and(|at| now.duration_since(at) <= MAX_PROGRESS_AGE)
+    }
+}
+
+pub(super) struct WorkerProgress(pub(super) std::sync::Arc<RecoveryHealth>);
+
+impl Drop for WorkerProgress {
+    /// Releases the progress signal when its recovery task exits for any reason.
+    fn drop(&mut self) {
+        self.0.worker_stopped();
+    }
+}
+
+#[cfg(test)]
+#[path = "../../tests/private/recovery_health.rs"]
+mod tests;

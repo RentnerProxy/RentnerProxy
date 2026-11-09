@@ -29,9 +29,11 @@ log() {
     printf '%s\n' "[rentnerproxy] $*" >&2
 }
 
+# Enter the stopping phase before draining owned consumers so shutdown cannot trigger isolated recovery.
 shutdown_children() {
     local deadline consumer_deadline pid index
 
+    supervisor_phase=stopping
     trap - EXIT INT TERM
     if [[ -n ${backup_recovery_job:-} ]]; then
         backup_write_result "$backup_recovery_job" recovery_failed \
@@ -116,10 +118,15 @@ start_child() {
     child_names+=("$name")
 }
 
+# Recover an exited web child only in steady state; other owned-child exits fail the appliance boundary.
 assert_children_running() {
     local index
     for index in "${!child_pids[@]}"; do
         if ! kill -0 "${child_pids[$index]}" 2>/dev/null; then
+            if [[ ${child_names[$index]} == web && ${supervisor_phase:-starting} == running && ${web_recovery_active:-false} == false ]]; then
+                recover_web "$index" exit
+                continue
+            fi
             fatal "${child_names[$index]} stopped unexpectedly"
         fi
     done
@@ -337,6 +344,7 @@ start_controller() {
         gosu rentnerproxy /usr/local/bin/rentnerproxy-controller
     wait_for_command 'proxy controller' gosu rentnerproxy /usr/local/bin/rentnerproxy-controller \
         --healthcheck ready
+    wait_for_controller_progress
 }
 
 run_migrations() {
@@ -363,24 +371,45 @@ run_web() {
         gosu rentnerproxy-web bun "$app_directory/docker/web/serve.ts"
 }
 
+# Capture the new child's kernel start time so recovery cannot signal a recycled PID.
 start_web() {
     start_child web run_web
+    web_process_start=$(supervisor_process_start "${child_pids[-1]}") || web_process_start=''
 }
 
+# Allow at most 60 seconds for dependency-aware readiness, with each probe bounded to the remaining budget.
+# Continue checking owned children while waiting so startup or recovery cannot hide a service exit.
 wait_for_web_readiness() {
-    wait_for_command 'web readiness' timeout --signal=TERM --kill-after=1s 5s \
-        bun --no-env-file "$app_directory/docker/web/healthcheck.ts"
+    local deadline=$((SECONDS + 60)) remaining budget
+    while ((SECONDS < deadline)); do
+        remaining=$((deadline - SECONDS))
+        ((remaining > 0)) || break
+        budget=$remaining
+        ((budget <= 5)) || budget=5
+        if timeout --signal=TERM --kill-after=1s "${budget}s" \
+            bun --no-env-file "$app_directory/docker/web/healthcheck.ts" >/dev/null 2>&1; then
+            return
+        fi
+        assert_children_running
+        sleep 1
+    done
+    fatal 'timed out waiting for web readiness within 60 seconds'
 }
 
+# Give managed maintenance exclusive lifecycle ownership and run fault health probes only between requests.
 monitor_children() {
     while :; do
         assert_children_running
         if [[ -e $backup_control_directory/request.json || -L $backup_control_directory/request.json ]]; then
+            supervisor_phase=maintenance
             case $(bun --no-env-file "$backup_exporter" --request-kind) in
                 backup) perform_managed_backup ;;
                 restore) perform_managed_restore ;;
                 *) fatal 'invalid maintenance operation' ;;
             esac
+            supervisor_phase=running
+        else
+            monitor_runtime_health
         fi
         sleep 0.2
     done
@@ -397,6 +426,7 @@ initialize_restore_target() {
 
 # Fixed image-owned lifecycle code; no request selects executable code or paths.
 source /usr/local/lib/rentnerproxy-backups.sh
+source /usr/local/lib/rentnerproxy-fault-supervisor.sh
 
 trap shutdown_children EXIT
 trap on_shutdown_signal INT TERM
@@ -425,4 +455,5 @@ wait_for_web_readiness
 # A failed final restart can finish recovery only after this boot proves every
 # service ready. The agent records the matching completion and releases web writers.
 bun --no-env-file "$backup_exporter" --confirm-restarted-restore
+supervisor_phase=running
 monitor_children

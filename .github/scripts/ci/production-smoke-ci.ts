@@ -1,5 +1,6 @@
 import type { Suite, Result } from './Types/production-smoke-ci.types.ts'
 import { isOnlineRestoreDiagnostic } from './online-restore-diagnostics.ts'
+import { isManagedBackupSmokeDiagnostic } from './managed-backup-diagnostics.ts'
 // oxlint-disable no-await-in-loop -- stream draining and ordered Docker cleanup are sequential.
 import { appendFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { isDockerBuildDiagnostic } from '../../../scripts/smoke/docker-build-diagnostics.ts'
@@ -52,6 +53,7 @@ export const smokeSuites = {
 
 // Raw child output can contain assertion operands, generated credentials or PEM material.
 
+/** Reduce child output to counted checks and allowlisted diagnostics without exposing raw assertion operands. */
 export function smokeProgress(suite: Suite) {
     let checks = 0
     let reportedChecks: number | undefined
@@ -66,12 +68,16 @@ export function smokeProgress(suite: Suite) {
                   'startup',
                   'management-and-persistence',
                   'proxy-traffic',
+                  'runtime-faults',
+                  'runtime-traffic',
+                  'native-runtime-faults',
                   'crowdsec',
                   'backup',
                   'restore',
                   'restore-safety',
               ].map((name) => '.github/scripts/ci/appliance/' + name + '.ts')
             : []),
+        ...(suite === 'production' ? ['scripts/smoke/appliance-processes.ts'] : []),
         ...(suite === 'certificates'
             ? [
                   'context',
@@ -91,7 +97,30 @@ export function smokeProgress(suite: Suite) {
             : []),
     ])
     return {
+        /** Forward only recognized scalar facts or fixed stages and retain approved source locations. */
         consume(line: string): string | undefined {
+            if (suite === 'backups' && isManagedBackupSmokeDiagnostic(line)) {
+                if (!line.startsWith('Managed backup stage=')) diagnostic = line
+                return line
+            }
+            if (
+                suite === 'production' &&
+                (/^Runtime web (?:stage=|failure stage=)(?:baseline-container|baseline-native|resource-stats|resource-fds|resource-postgres|fault-processes|fault-native|fault-signal|fault-observation|fault-result)$/u.test(
+                    line,
+                ) ||
+                    /^Runtime web native workerRunning=(?:true|false) circuitOpen=(?:true|false) completedTicks=\d{1,12} lastCompletedAgeSeconds=(?:null|\d{1,12})$/u.test(
+                        line,
+                    ) ||
+                    /^Runtime web SIG(?:TERM|KILL|STOP) recoveryMs=\d{1,6} nativeCompletedTicksDelta=\d{1,8}(?: nativeTicksWhileWebStopped=\d{1,8})? httpRequests=\d{1,8} httpErrors=\d{1,8} httpsRequests=\d{1,8} httpsErrors=\d{1,8}$/u.test(
+                        line,
+                    ) ||
+                    /^Runtime native (?:caddy|controller) SIG(?:TERM|KILL|STOP) expectedBoundaryRestart=(?:true|false) boundaryChanged=(?:true|false) recovered=(?:true|false) recoveryMs=\d{1,6} httpRequests=\d{1,8} httpErrors=\d{1,8} httpsRequests=\d{1,8} httpsErrors=\d{1,8}$/u.test(
+                        line,
+                    ))
+            ) {
+                diagnostic = line
+                return diagnostic
+            }
             if (
                 suite === 'backups' &&
                 /^Managed backup health: (?:fixture|interrupted-backup-restart) running=(?:true|false) exitCode=(?:0|[1-9]\d?|1\d{2}|2[0-4]\d|25[0-5]) health=(?:none|starting|healthy|unhealthy)$/u.test(
@@ -200,6 +229,7 @@ export function smokeProgress(suite: Suite) {
             }
             return undefined
         },
+        /** Require successful exit and matching observed completion counts before declaring the suite passed. */
         result(exitCode: number) {
             return {
                 checks,
@@ -210,10 +240,12 @@ export function smokeProgress(suite: Suite) {
     }
 }
 
+/** Keep each smoke run's fixtures and result files under its own temporary directory. */
 function temporaryRoot(scope: string): string {
     return resolve(process.env.RUNNER_TEMP ?? tmpdir(), 'rentnerproxy-smokes-' + scope)
 }
 
+/** Run one isolated suite, sanitize both output streams, and persist only its summarized outcome. */
 async function runSuite(suite: Suite, root: string): Promise<number> {
     await mkdir(root, { recursive: true, mode: 0o700 })
     const fixtures = join(root, 'fixtures')
@@ -229,6 +261,7 @@ async function runSuite(suite: Suite, root: string): Promise<number> {
         stdout: 'pipe',
         stderr: 'pipe',
     })
+    /** Discard oversized lines before sending complete bounded lines through the diagnostic allowlist. */
     async function drain(stream: ReadableStream<Uint8Array>): Promise<void> {
         let pending = ''
         let oversized = false
@@ -280,6 +313,7 @@ async function runSuite(suite: Suite, root: string): Promise<number> {
     return outcome.passed ? 0 : 1
 }
 
+/** Bound cleanup commands and suppress raw Docker failure output, which may contain private metadata. */
 async function docker(args: string[]): Promise<string> {
     const child = Bun.spawn({ cmd: ['docker', ...args], stdout: 'pipe', stderr: 'pipe' })
     const timer = setTimeout(() => child.kill(), 60_000)
@@ -296,6 +330,7 @@ async function docker(args: string[]): Promise<string> {
     }
 }
 
+/** Remove only label-scoped resources and report incomplete cleanup alongside saved suite outcomes. */
 async function cleanup(scope: string, root: string): Promise<void> {
     const rows = ['| Smoke | Result | Checks | Duration |', '| --- | --- | ---: | ---: |']
     for (const suite of Object.keys(smokeSuites) as Suite[]) {

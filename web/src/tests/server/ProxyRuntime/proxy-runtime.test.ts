@@ -511,6 +511,43 @@ describe('controller runtime client', () => {
         }
     })
 
+    test.each([
+        { restarts: 4, accepted: true },
+        { restarts: -1, accepted: false },
+        { restarts: Number.MAX_SAFE_INTEGER + 1, accepted: false },
+    ])(
+        'validates recovery observations without duplicating the native restart budget: %j',
+        async ({ restarts, accepted }) => {
+            process.env.RENTNERPROXY_CONTROLLER_URL = 'https://controller.example:8081'
+            process.env.RENTNERPROXY_CONTROLLER_TOKEN = 'A'.repeat(32)
+            const recovery = {
+                workerRunning: true,
+                completedTicks: 10,
+                lastCompletedAgeSeconds: 1,
+                circuitOpen: false,
+                restartsInWindow: restarts,
+                faults: 2,
+                consecutiveProbeFailures: 1,
+            }
+            const fetchMock = spyOn(globalThis, 'fetch').mockResolvedValue(
+                Response.json({
+                    available: true,
+                    running: true,
+                    activeRevision: snapshot().revision,
+                    lastApplyAt: null,
+                    recovery,
+                }),
+            )
+            try {
+                const status = await getProxyRuntimeStatus()
+                if (accepted) expect(status?.recovery).toEqual(recovery)
+                else expect(status).toBeNull()
+            } finally {
+                fetchMock.mockRestore()
+            }
+        },
+    )
+
     test('keeps health unauthenticated while authenticating every internal endpoint', async () => {
         process.env.RENTNERPROXY_CONTROLLER_URL = 'https://controller.example:8081'
         process.env.RENTNERPROXY_CONTROLLER_TOKEN = 'A'.repeat(32)

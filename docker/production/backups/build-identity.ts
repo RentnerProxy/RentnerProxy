@@ -23,6 +23,7 @@ for (const path of [
     '/usr/local/bin/rentnerproxy-controller',
     '/usr/local/bin/rentnerproxy-production',
     '/usr/local/lib/rentnerproxy-backups.sh',
+    '/usr/local/lib/rentnerproxy-fault-supervisor.sh',
     root + '/backup-agent.js',
     root + '/backup-export.js',
     root + '/backup-maintenance.js',

@@ -17,23 +17,36 @@ use tracing::{info, warn};
 mod shutdown_tests;
 
 impl ProxyRuntime {
+    /// Serializes startup and records an unavailable state when ownership or initialization cannot be proven.
     pub(crate) async fn initialize(&self) {
         let _guard = self.apply_lock.lock().await;
         if let Err(error) = self.initialize_locked().await {
             self.mark_unavailable().await;
-            warn!(
-                stage = "startup",
-                ?error,
-                "Caddy runtime unavailable; recovery will retry"
-            );
+            warn!(stage = "startup", ?error, "Caddy runtime unavailable");
         }
     }
 
+    /// Chooses initial-start or recovery semantics before restoring persisted proxy state.
     pub(super) async fn initialize_locked(&self) -> Result<(), RuntimeError> {
+        let recovering = self.initialization_started.swap(true, Ordering::SeqCst);
+        self.initialize_with_restart_budget(recovering).await
+    }
+
+    /// Validates state, claims the engine, and starts the restored or baseline configuration within the restart budget.
+    async fn initialize_with_restart_budget(&self, recovering: bool) -> Result<(), RuntimeError> {
+        self.initialization_started.store(true, Ordering::SeqCst);
         if self.stopping.load(Ordering::SeqCst) {
             return Err(RuntimeError::Unavailable);
         }
         prepare_state_dir(&self.settings.state_dir).map_err(|_| RuntimeError::Unavailable)?;
+        if let Some(engine) = &self.engine
+            && let Err(error) = self.run_stage(engine.claim_ownership()).await
+        {
+            if error == EngineError::OwnershipUncertain {
+                self.recovery_health.open_circuit();
+            }
+            return Err(RuntimeError::Unavailable);
+        }
         let caddy = state_dir(&self.settings.state_dir)
             .and_then(|dir| dir.ensure_dir("caddy"))
             .map_err(|_| RuntimeError::Unavailable)?;
@@ -108,21 +121,40 @@ impl ProxyRuntime {
         let Some(engine) = &self.engine else {
             return Err(RuntimeError::Unavailable);
         };
-        let started = self
-            .start_engine(engine, &json, expected, provider.environment())
-            .await;
+        let started = if recovering {
+            self.replace_engine(engine, &json, expected, provider.environment())
+                .await
+        } else {
+            self.start_engine(engine, &json, expected, provider.environment())
+                .await
+        };
         let (configuration, json) = if started.is_ok() {
             (configuration, json)
         } else {
-            let _ = engine.shutdown().await;
-            self.start_engine(
-                engine,
-                &baseline,
-                BASELINE_PROBE_REVISION,
-                provider.environment(),
-            )
-            .await
-            .map_err(|_| RuntimeError::Unavailable)?;
+            if self.recovery_health.snapshot(Instant::now()).circuit_open {
+                return Err(RuntimeError::Unavailable);
+            }
+            let fallback = if recovering {
+                self.replace_engine(
+                    engine,
+                    &baseline,
+                    BASELINE_PROBE_REVISION,
+                    provider.environment(),
+                )
+                .await
+            } else {
+                self.stop_engine_for_restart(engine)
+                    .await
+                    .map_err(|_| RuntimeError::Unavailable)?;
+                self.start_engine(
+                    engine,
+                    &baseline,
+                    BASELINE_PROBE_REVISION,
+                    provider.environment(),
+                )
+                .await
+            };
+            fallback.map_err(|_| RuntimeError::Unavailable)?;
             (None, baseline)
         };
         let host_sources = configuration
@@ -142,13 +174,17 @@ impl ProxyRuntime {
         Ok(())
     }
 
+    /// Runs the sole serialized recovery loop and updates worker liveness after each bounded attempt.
     pub(crate) async fn start_recovery_worker(self: &Arc<Self>) {
         let mut slot = self.recovery_task.lock().await;
         if slot.is_some() {
             return;
         }
         let runtime = Arc::clone(self);
+        runtime.recovery_health.worker_started();
+        let progress = super::recovery_health::WorkerProgress(Arc::clone(&runtime.recovery_health));
         *slot = Some(tokio::spawn(async move {
+            let _progress = progress;
             let mut failures = 0u32;
             loop {
                 let delay = if failures == 0 {
@@ -160,7 +196,9 @@ impl ProxyRuntime {
                 if runtime.stopping.load(Ordering::SeqCst) {
                     break;
                 }
-                if runtime.recover().await.is_ok() {
+                let result = runtime.recover().await;
+                runtime.recovery_health.completed();
+                if result.is_ok() || result == Err(RuntimeError::Busy) {
                     failures = 0;
                 } else {
                     failures = failures.saturating_add(1);
@@ -169,6 +207,7 @@ impl ProxyRuntime {
         }));
     }
 
+    /// Checks child ownership and active-revision serviceability before deciding whether recovery is needed.
     pub(crate) async fn recover(&self) -> Result<(), RuntimeError> {
         let Some(engine) = &self.engine else {
             return Err(RuntimeError::Unavailable);
@@ -176,20 +215,60 @@ impl ProxyRuntime {
         if self.stopping.load(Ordering::SeqCst) {
             return Err(RuntimeError::Unavailable);
         }
-        if engine.is_running().await && self.state.lock().await.engine_available {
-            return Ok(());
+        if self.recovery_health.snapshot(Instant::now()).circuit_open {
+            return Err(RuntimeError::Unavailable);
         }
         let _guard = timeout(self.settings.lock_wait, self.apply_lock.lock())
             .await
             .map_err(|_| RuntimeError::Busy)?;
         if !self.state.lock().await.initialized {
-            return self.initialize_locked().await;
+            return self.initialize_with_restart_budget(true).await;
+        }
+        let running = match timeout(self.settings.lock_wait, engine.is_running()).await {
+            Ok(running) => running,
+            Err(_) => {
+                self.recovery_health.open_circuit();
+                return Err(RuntimeError::Unavailable);
+            }
+        };
+        if !running {
+            self.recovery_health.fault();
+            self.mark_unavailable().await;
+            return self.ensure_running_locked().await;
+        }
+        let revision = self
+            .state
+            .lock()
+            .await
+            .active_revision
+            .clone()
+            .unwrap_or_else(|| BASELINE_PROBE_REVISION.to_owned());
+        // A live PID is not proof that Caddy can serve the active revision.
+        // Tolerate brief saturation without spending a restart attempt. Only
+        // this serialized worker advances the consecutive-failure threshold.
+        let probed = self.run_stage(engine.probe(&revision)).await;
+        if probed == Err(EngineError::OwnershipUncertain) {
+            self.recovery_health.fault();
+            self.mark_unavailable().await;
+            self.recovery_health.open_circuit();
+            return Err(RuntimeError::Unavailable);
+        }
+        if probed.is_err() {
+            if !self.recovery_health.probe_failed() {
+                return Ok(());
+            }
+            self.mark_unavailable().await;
+        } else {
+            self.recovery_health.probe_verified();
         }
         self.ensure_running_locked().await
     }
 
+    /// Replaces an unavailable engine only after its prior child is confirmed stopped.
     pub(super) async fn ensure_running_locked(&self) -> Result<(), RuntimeError> {
-        if self.stopping.load(Ordering::SeqCst) {
+        if self.stopping.load(Ordering::SeqCst)
+            || self.recovery_health.snapshot(Instant::now()).circuit_open
+        {
             return Err(RuntimeError::Unavailable);
         }
         let Some(engine) = &self.engine else {
@@ -210,13 +289,19 @@ impl ProxyRuntime {
         if !initialized {
             return Err(RuntimeError::Unavailable);
         }
-        if engine.is_running().await && available {
+        let running = match timeout(self.settings.lock_wait, engine.is_running()).await {
+            Ok(running) => running,
+            Err(_) => {
+                self.recovery_health.open_circuit();
+                return Err(RuntimeError::Unavailable);
+            }
+        };
+        if running && available {
             return Ok(());
         }
-        let _ = engine.shutdown().await;
         let environment = self.active_crowdsec_provider().await.environment();
         if self
-            .start_engine(engine, &json, &revision, environment)
+            .replace_engine(engine, &json, &revision, environment)
             .await
             .is_err()
         {
@@ -228,6 +313,7 @@ impl ProxyRuntime {
         Ok(())
     }
 
+    /// Returns runtime state together with recovery circuit and worker telemetry.
     pub(crate) async fn status(&self) -> ProxyRuntimeStatus {
         let state = self.state.lock().await;
         let (active_revision, last_apply_at, available) = (
@@ -240,15 +326,21 @@ impl ProxyRuntime {
             Some(engine) => engine.is_running().await,
             None => false,
         };
+        let recovery = self.recovery_health.snapshot(Instant::now());
         ProxyRuntimeStatus {
-            available,
+            available: available && !recovery.circuit_open,
             running,
             active_revision,
             last_apply_at,
+            recovery,
         }
     }
 
+    /// Requires healthy certificate storage, an available child, and a successful active-revision probe.
     pub(crate) async fn is_ready(&self) -> bool {
+        if self.recovery_health.snapshot(Instant::now()).circuit_open {
+            return false;
+        }
         if self.certificate_store.readiness().await != CertificateStoreReadiness::Ready {
             return false;
         }
@@ -262,23 +354,41 @@ impl ProxyRuntime {
         let Some(engine) = &self.engine else {
             return false;
         };
-        let ready = self
-            .run_stage(
-                engine.probe(
-                    status
-                        .active_revision
-                        .as_deref()
-                        .unwrap_or(BASELINE_PROBE_REVISION),
-                ),
-            )
-            .await
-            .is_ok();
-        if !ready {
-            self.mark_unavailable().await;
-        }
-        ready
+        self.run_stage(
+            engine.probe(
+                status
+                    .active_revision
+                    .as_deref()
+                    .unwrap_or(BASELINE_PROBE_REVISION),
+            ),
+        )
+        .await
+        .is_ok()
     }
 
+    /// Reports recent recovery-worker completion without claiming that proxy traffic is ready.
+    pub(crate) fn recovery_progressing(&self) -> bool {
+        !self.stopping.load(Ordering::SeqCst) && self.recovery_health.progressing(Instant::now())
+    }
+
+    /// Allows a replacement only after graceful shutdown has left no owned child running.
+    pub(super) async fn stop_engine_for_restart(
+        &self,
+        engine: &Arc<dyn ProxyEngine>,
+    ) -> Result<(), EngineError> {
+        // Give Caddy's existing graceful + forced-reap phases their full bound.
+        // A graceful error is safe only if the owned child is proven gone.
+        let _ = timeout(Duration::from_secs(24), engine.shutdown()).await;
+        match timeout(self.settings.lock_wait, engine.is_running()).await {
+            Ok(false) => Ok(()),
+            _ => {
+                self.recovery_health.open_circuit();
+                Err(EngineError::Unavailable)
+            }
+        }
+    }
+
+    /// Signals background subsystems to reject new work before the bounded shutdown drains them.
     pub(crate) fn begin_shutdown(&self) {
         self.stopping.store(true, Ordering::SeqCst);
         self.ddns_automation.stop_accepting();
@@ -291,6 +401,7 @@ impl ProxyRuntime {
             .await;
     }
 
+    /// Stops workers and the engine within the caller's single shutdown deadline.
     pub(crate) async fn shutdown_until(&self, deadline: Instant) {
         self.begin_shutdown();
         // Background workers share a short phase, leaving the rest of the one
@@ -339,7 +450,45 @@ impl ProxyRuntime {
         let _ = timeout_at(deadline, self.mark_unavailable()).await;
     }
 
-    pub(super) async fn start_engine(
+    /// Admits a fault-recovery replacement through the shared rolling restart budget.
+    pub(super) async fn replace_engine(
+        &self,
+        engine: &Arc<dyn ProxyEngine>,
+        json: &str,
+        revision: &str,
+        environment: super::EngineEnvironment,
+    ) -> Result<(), EngineError> {
+        if self.stopping.load(Ordering::SeqCst)
+            || !self.recovery_health.admit_restart(Instant::now())
+        {
+            self.mark_unavailable().await;
+            return Err(EngineError::Unavailable);
+        }
+        self.reconfigure_engine(engine, json, revision, environment)
+            .await
+    }
+
+    /// Restarts for an intentional provider change without charging that change as a runtime fault.
+    pub(super) async fn reconfigure_engine(
+        &self,
+        engine: &Arc<dyn ProxyEngine>,
+        json: &str,
+        revision: &str,
+        environment: super::EngineEnvironment,
+    ) -> Result<(), EngineError> {
+        // A deliberate provider change is not a runtime fault. Its failure
+        // rollback uses replace_engine and shares the fault-recovery budget.
+        if self.stopping.load(Ordering::SeqCst)
+            || self.recovery_health.snapshot(Instant::now()).circuit_open
+        {
+            return Err(EngineError::Unavailable);
+        }
+        self.stop_engine_for_restart(engine).await?;
+        self.start_engine(engine, json, revision, environment).await
+    }
+
+    /// Starts and probes a child, opening the circuit when ownership cannot be established.
+    async fn start_engine(
         &self,
         engine: &Arc<dyn ProxyEngine>,
         json: &str,
@@ -348,8 +497,13 @@ impl ProxyRuntime {
     ) -> Result<(), EngineError> {
         engine.set_environment(environment);
         let result = self.run_stage(engine.start(json, revision)).await;
+        if result == Err(EngineError::OwnershipUncertain) {
+            self.recovery_health.open_circuit();
+        }
         if result.is_err() {
-            let _ = engine.shutdown().await;
+            let _ = self.stop_engine_for_restart(engine).await;
+        } else {
+            self.recovery_health.probe_verified();
         }
         result
     }

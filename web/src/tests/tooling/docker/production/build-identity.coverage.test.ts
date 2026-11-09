@@ -15,6 +15,7 @@ test('backup build identity is deterministic, responds to deployed content chang
         'bin/rentnerproxy-controller',
         'bin/rentnerproxy-production',
         'lib/rentnerproxy-backups.sh',
+        'lib/rentnerproxy-fault-supervisor.sh',
         'web/backup-agent.js',
         'web/backup-export.js',
         'web/backup-maintenance.js',
@@ -87,6 +88,14 @@ test('backup build identity is deterministic, responds to deployed content chang
         const changed = JSON.parse(await readFile(receipt, 'utf8')) as Record<string, unknown>
         expect(changed.buildSha256).not.toBe(first.buildSha256)
         expect(changed.revision).toBe(first.revision)
+        await rm(receipt)
+        await writeFile(path('lib/rentnerproxy-fault-supervisor.sh'), 'changed recovery policy')
+        expect((await run()).code).toBe(0)
+        const changedRecovery = JSON.parse(await readFile(receipt, 'utf8')) as Record<
+            string,
+            unknown
+        >
+        expect(changedRecovery.buildSha256).not.toBe(changed.buildSha256)
     } finally {
         await rm(directory, { recursive: true, force: true })
     }
