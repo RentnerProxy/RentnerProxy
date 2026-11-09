@@ -117,6 +117,7 @@ async fn respond(
 }
 
 #[tokio::test]
+/// Confirms startup waits for a matching probe revision and reuses only the verified child.
 async fn owned_start_passes_configuration_and_private_environment_and_reuses_verified_child() {
     let fixture = Fixture::new(
         "/bin/cat > captured.json\nprintf '%s\\n%s\\n%s' \"$XDG_CONFIG_HOME\" \"$XDG_DATA_HOME\" \"$RENTNERPROXY_CROWDSEC_BOUNCER_KEY\" > captured.env\n: > started\nexec /bin/sleep 60",
@@ -231,6 +232,7 @@ async fn unverified_owned_start_times_out_and_reaps_the_child() {
 }
 
 #[tokio::test]
+/// Rejects missing, nonexecutable, and already-exited child programs without retaining them.
 async fn owned_start_rejects_missing_nonexecutable_and_prematurely_exited_children() {
     let fixture = Fixture::new("exit 0");
     let missing_fixture = Fixture::new("exit 0");

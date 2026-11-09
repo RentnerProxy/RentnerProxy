@@ -17,6 +17,7 @@ use tracing::{info, warn};
 mod shutdown_tests;
 
 impl ProxyRuntime {
+    /// Serializes startup and records an unavailable state when ownership or initialization cannot be proven.
     pub(crate) async fn initialize(&self) {
         let _guard = self.apply_lock.lock().await;
         if let Err(error) = self.initialize_locked().await {
@@ -25,11 +26,13 @@ impl ProxyRuntime {
         }
     }
 
+    /// Chooses initial-start or recovery semantics before restoring persisted proxy state.
     pub(super) async fn initialize_locked(&self) -> Result<(), RuntimeError> {
         let recovering = self.initialization_started.swap(true, Ordering::SeqCst);
         self.initialize_with_restart_budget(recovering).await
     }
 
+    /// Validates state, claims the engine, and starts the restored or baseline configuration within the restart budget.
     async fn initialize_with_restart_budget(&self, recovering: bool) -> Result<(), RuntimeError> {
         self.initialization_started.store(true, Ordering::SeqCst);
         if self.stopping.load(Ordering::SeqCst) {
@@ -171,6 +174,7 @@ impl ProxyRuntime {
         Ok(())
     }
 
+    /// Runs the sole serialized recovery loop and updates worker liveness after each bounded attempt.
     pub(crate) async fn start_recovery_worker(self: &Arc<Self>) {
         let mut slot = self.recovery_task.lock().await;
         if slot.is_some() {
@@ -203,6 +207,7 @@ impl ProxyRuntime {
         }));
     }
 
+    /// Checks child ownership and active-revision serviceability before deciding whether recovery is needed.
     pub(crate) async fn recover(&self) -> Result<(), RuntimeError> {
         let Some(engine) = &self.engine else {
             return Err(RuntimeError::Unavailable);
@@ -259,6 +264,7 @@ impl ProxyRuntime {
         self.ensure_running_locked().await
     }
 
+    /// Replaces an unavailable engine only after its prior child is confirmed stopped.
     pub(super) async fn ensure_running_locked(&self) -> Result<(), RuntimeError> {
         if self.stopping.load(Ordering::SeqCst)
             || self.recovery_health.snapshot(Instant::now()).circuit_open
@@ -307,6 +313,7 @@ impl ProxyRuntime {
         Ok(())
     }
 
+    /// Returns runtime state together with recovery circuit and worker telemetry.
     pub(crate) async fn status(&self) -> ProxyRuntimeStatus {
         let state = self.state.lock().await;
         let (active_revision, last_apply_at, available) = (
@@ -329,6 +336,7 @@ impl ProxyRuntime {
         }
     }
 
+    /// Requires healthy certificate storage, an available child, and a successful active-revision probe.
     pub(crate) async fn is_ready(&self) -> bool {
         if self.recovery_health.snapshot(Instant::now()).circuit_open {
             return false;
@@ -358,10 +366,12 @@ impl ProxyRuntime {
         .is_ok()
     }
 
+    /// Reports recent recovery-worker completion without claiming that proxy traffic is ready.
     pub(crate) fn recovery_progressing(&self) -> bool {
         !self.stopping.load(Ordering::SeqCst) && self.recovery_health.progressing(Instant::now())
     }
 
+    /// Allows a replacement only after graceful shutdown has left no owned child running.
     pub(super) async fn stop_engine_for_restart(
         &self,
         engine: &Arc<dyn ProxyEngine>,
@@ -378,6 +388,7 @@ impl ProxyRuntime {
         }
     }
 
+    /// Signals background subsystems to reject new work before the bounded shutdown drains them.
     pub(crate) fn begin_shutdown(&self) {
         self.stopping.store(true, Ordering::SeqCst);
         self.ddns_automation.stop_accepting();
@@ -390,6 +401,7 @@ impl ProxyRuntime {
             .await;
     }
 
+    /// Stops workers and the engine within the caller's single shutdown deadline.
     pub(crate) async fn shutdown_until(&self, deadline: Instant) {
         self.begin_shutdown();
         // Background workers share a short phase, leaving the rest of the one
@@ -438,6 +450,7 @@ impl ProxyRuntime {
         let _ = timeout_at(deadline, self.mark_unavailable()).await;
     }
 
+    /// Admits a fault-recovery replacement through the shared rolling restart budget.
     pub(super) async fn replace_engine(
         &self,
         engine: &Arc<dyn ProxyEngine>,
@@ -455,6 +468,7 @@ impl ProxyRuntime {
             .await
     }
 
+    /// Restarts for an intentional provider change without charging that change as a runtime fault.
     pub(super) async fn reconfigure_engine(
         &self,
         engine: &Arc<dyn ProxyEngine>,
@@ -473,6 +487,7 @@ impl ProxyRuntime {
         self.start_engine(engine, json, revision, environment).await
     }
 
+    /// Starts and probes a child, opening the circuit when ownership cannot be established.
     async fn start_engine(
         &self,
         engine: &Arc<dyn ProxyEngine>,

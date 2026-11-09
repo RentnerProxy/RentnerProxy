@@ -12,22 +12,27 @@ type NativeStatus = {
     recovery: { circuitOpen: boolean; workerRunning: boolean; restartsInWindow: number }
 }
 
+/** Distinguish a surviving native owner from a replacement even when its PID is reused. */
 function identity(row: RuntimeProcess): string {
     return row.pid + ':' + row.startTicks
 }
 
+/** Reject missing or duplicate owners before using a role's process identity as evidence. */
 function singleRole(rows: RuntimeProcess[], role: 'controller' | 'caddy'): RuntimeProcess {
     const matches = rows.filter((row) => row.role === role)
     assert.equal(matches.length, 1, 'exactly one native process owns ' + role)
     return matches[0]!
 }
 
+/** Verify Caddy's restart budget and controller fail-stop against restored revision and real traffic. */
 export async function verifyApplianceNativeRuntimeFaults(
     context: ApplianceRuntimeFaultContext,
 ): Promise<void> {
     const id = context.recreatedId
+    /** Bound inspection and identify appliance restarts consistently under Docker and Podman. */
     const inspectStartedAt = () =>
         context.command(['docker', 'inspect', '--format', '{{.State.StartedAt}}', id], 5_000)
+    /** Capture PID/start-tick ownership without inspecting process environments or secret contents. */
     const processes = async () =>
         JSON.parse(
             await context.command(
@@ -35,6 +40,7 @@ export async function verifyApplianceNativeRuntimeFaults(
                 5_000,
             ),
         ) as RuntimeProcess[]
+    /** Read authenticated runtime state with bounded requests while keeping the bearer token inside the appliance. */
     const status = async () =>
         JSON.parse(
             await context.command(
@@ -73,6 +79,7 @@ export async function verifyApplianceNativeRuntimeFaults(
         const target = scenario.role === 'controller' ? oldController : oldCaddy
         const traffic = { http: { requests: 0, errors: 0 }, https: { requests: 0, errors: 0 } }
         const sampling = new AbortController()
+        /** Measure expected interruptions through published ports until recovery or the scenario deadline. */
         const sample = async (protocol: 'http' | 'https') => {
             while (!sampling.signal.aborted) {
                 traffic[protocol].requests += 1

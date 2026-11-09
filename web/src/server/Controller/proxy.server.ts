@@ -56,6 +56,7 @@ const applySchema = z.object({
     lastApplyAt: timestampSchema,
 })
 
+/** Reads privileged runtime observations without duplicating the controller's recovery policy. */
 export async function getProxyRuntimeStatus(): Promise<ProxyRuntimeStatus | null> {
     const payload = await controllerRequest('/internal/v1/proxy/status', {
         timeoutMs: STATUS_TIMEOUT_MS,

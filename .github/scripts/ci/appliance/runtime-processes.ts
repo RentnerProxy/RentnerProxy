@@ -1,4 +1,5 @@
 // oxlint-disable no-await-in-loop -- Read each process identity without spawning a subprocess per PID.
+/** Census native owners and all web UID processes using confirmed start ticks; tolerate only vanished processes. */
 export async function readRuntimeProcesses(procRoot = '/proc') {
     const { readdir, readFile } = await import('node:fs/promises')
     const processes: {
@@ -64,10 +65,12 @@ export async function readRuntimeProcesses(procRoot = '/proc') {
     return processes.toSorted((left, right) => left.pid - right.pid)
 }
 
+/** Serialize the same census implementation for execution inside an appliance or a synthetic proc fixture. */
 export function runtimeProcessesProbe(procRoot = '/proc'): string {
     return `process.stdout.write(JSON.stringify(await (${readRuntimeProcesses.toString()})(${JSON.stringify(procRoot)})));`
 }
 
+/** Produce numeric descriptor counts without reading descriptor targets or their potentially sensitive contents. */
 export function runtimeFdCountsProbe(procRoot = '/proc'): string {
     // Count directory entries only; descriptor targets and their contents may contain secrets.
     return `const {readdir}=await import('node:fs/promises');const rows=await (${readRuntimeProcesses.toString()})(${JSON.stringify(procRoot)});const counts=await Promise.all(rows.map(async row=>({role:row.role,pid:row.pid,startTicks:row.startTicks,openFds:(await readdir(${JSON.stringify(procRoot)}+'/'+row.pid+'/fd')).length})));process.stdout.write(JSON.stringify(counts));`

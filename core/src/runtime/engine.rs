@@ -82,6 +82,7 @@ impl std::fmt::Debug for EngineEnvironment {
 }
 
 pub(crate) trait ProxyEngine: Send + Sync {
+    /// Claims exclusive runtime ownership before any implementation starts a managed process.
     fn claim_ownership(&self) -> EngineFuture<'_> {
         Box::pin(async { Ok(()) })
     }
@@ -145,6 +146,7 @@ pub(crate) struct CaddyProcess {
 }
 
 impl CaddyProcess {
+    /// Creates a process manager with private control sockets and no inherited ownership claim.
     pub(crate) fn new(binary: PathBuf, state_dir: PathBuf) -> Self {
         Self {
             binary,
@@ -159,11 +161,13 @@ impl CaddyProcess {
         }
     }
 
+    /// Treats indeterminate child state as running so recovery cannot launch a duplicate.
     async fn child_running(&self) -> bool {
         // Unknown child state must retain ownership and prevent a replacement.
         self.owned_child_running().await.unwrap_or(true)
     }
 
+    /// Reaps a confirmed exit and reports wait errors as uncertain ownership.
     async fn owned_child_running(&self) -> Result<bool, EngineError> {
         let mut slot = self.child.lock().await;
         match slot.as_mut().map(Child::try_wait) {
@@ -261,6 +265,7 @@ impl CaddyProcess {
             .map_err(|_| EngineError::TimedOut)?
     }
 
+    /// Starts Caddy only after claiming state ownership and verifies the requested revision before success.
     async fn start_owned(&self, configuration: &str, revision: &str) -> Result<(), EngineError> {
         if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(EngineError::Unavailable);
@@ -361,6 +366,7 @@ impl CaddyProcess {
             .await
     }
 
+    /// Sends a forced stop and retains the child handle until exit has been reaped or ownership remains uncertain.
     async fn terminate_child_until(&self, deadline: Instant) -> Result<(), EngineError> {
         let mut slot = timeout_at(deadline, self.child.lock())
             .await
@@ -395,6 +401,7 @@ impl CaddyProcess {
             .await
     }
 
+    /// Shares one deadline across graceful control, child drain, and forced reaping.
     async fn shutdown_owned_until(
         &self,
         budget: ShutdownBudget,
@@ -475,6 +482,7 @@ impl CaddyProcess {
 }
 
 impl ProxyEngine for CaddyProcess {
+    /// Holds the state-directory lock before the controller can spawn or adopt Caddy.
     fn claim_ownership(&self) -> EngineFuture<'_> {
         Box::pin(async {
             #[cfg(unix)]
@@ -494,6 +502,7 @@ impl ProxyEngine for CaddyProcess {
     fn start<'a>(&'a self, configuration: &'a str, revision: &'a str) -> EngineFuture<'a> {
         Box::pin(self.start_owned(configuration, revision))
     }
+    /// Sends a bounded configuration update only while this manager still owns a live child.
     fn load<'a>(&'a self, configuration: &'a str) -> EngineFuture<'a> {
         Box::pin(async move {
             if !self.owned_child_running().await? {
@@ -538,6 +547,7 @@ impl ProxyEngine for CaddyProcess {
     fn is_running<'a>(&'a self) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
         Box::pin(self.child_running())
     }
+    /// Reads bounded metrics only from the control socket of the owned live process.
     fn metrics<'a>(
         &'a self,
     ) -> Pin<Box<dyn Future<Output = Result<Bytes, EngineError>> + Send + 'a>> {

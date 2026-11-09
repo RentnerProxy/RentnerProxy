@@ -18,6 +18,7 @@ load_function() {
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 fatal() { exit 1; }
 
+# Verify public-origin validation and child-specific credential exports using extracted production launch functions.
 test_environment() (
     local variant role expected
     load_function "$entrypoint" require_public_origin

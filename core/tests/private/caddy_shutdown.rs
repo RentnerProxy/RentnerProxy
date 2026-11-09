@@ -228,6 +228,7 @@ async fn forced_termination_reaps_the_child_and_is_idempotent() {
 }
 
 #[tokio::test]
+/// Reserves time for forced child reaping when the graceful shutdown phase consumes its budget.
 async fn expired_graceful_phase_keeps_the_forced_reap_reserve() {
     let fixture = ShutdownFixture::new("exec sleep 60", Duration::ZERO, 200, false).await;
     let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
@@ -244,6 +245,7 @@ async fn expired_graceful_phase_keeps_the_forced_reap_reserve() {
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
+/// Ensures an externally reaped child remains uncertain and cannot authorize a replacement.
 async fn externally_reaped_child_remains_unknown_and_never_authorizes_replacement() {
     let root = std::env::temp_dir().join(format!(
         "rp-external-reap-{}-{}",

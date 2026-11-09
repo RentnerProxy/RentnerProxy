@@ -1,5 +1,6 @@
 import type { ApplianceRuntimeFaultContext } from './Types/runtime-faults.types.ts'
 
+/** Check the expected body through a published port; treat bounded transport or HTTP failures as failed samples. */
 export async function samplePublishedRuntimeTraffic(
     context: ApplianceRuntimeFaultContext,
     protocol: 'http' | 'https',

@@ -47,6 +47,7 @@ impl AppState {
     }
 }
 
+/// Builds the controller router with health probes public and control routes bound to the supplied state.
 pub(crate) fn app_with_state(state: AppState) -> Router {
     let certificates = Router::new()
         .route(

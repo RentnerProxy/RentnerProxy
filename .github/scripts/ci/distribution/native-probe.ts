@@ -20,6 +20,7 @@ import type { ApplianceRuntimeFaultContext } from '../appliance/Types/runtime-fa
 
 const container = 'rentnerproxy'
 let stage = 'image identity'
+/** Adapt shared Docker probes to Podman and expose only fixed failure context, except anonymous TLS diagnostics. */
 async function command(args: string[], timeoutMs?: number) {
     try {
         return (
@@ -43,6 +44,7 @@ async function command(args: string[], timeoutMs?: number) {
         })
     }
 }
+/** Call the authenticated controller inside the guest without returning or logging its bearer token. */
 async function controller(path: string, method = 'GET', body?: unknown): Promise<unknown> {
     const script = `const token=await Bun.file('/run/rentnerproxy/controller-token/value').text();const response=await fetch('http://127.0.0.1:8081'+${JSON.stringify(path)},{method:${JSON.stringify(method)},headers:{authorization:'Bearer '+token,'content-type':'application/json'},${body === undefined ? '' : 'body:' + JSON.stringify(JSON.stringify(body)) + ','}});if(!response.ok)process.exit(1);process.stdout.write(await response.text())`
     return JSON.parse(
@@ -60,6 +62,7 @@ async function controller(path: string, method = 'GET', body?: unknown): Promise
     )
 }
 
+/** Keep the real upstream alive for protocol and optional fault checks against the same certificate and revision. */
 async function traffic(verifyPersisted = false, verifyRuntimeFaults = false) {
     const backend = Bun.serve({
         hostname: '0.0.0.0',
@@ -83,6 +86,7 @@ async function traffic(verifyPersisted = false, verifyRuntimeFaults = false) {
             httpSettings: {},
             trustedCas: [],
         }
+        /** Apply a content-addressed revision so recovery checks can detect configuration substitution. */
         const install = () =>
             controller('/internal/v1/proxy/config', 'PUT', {
                 ...config,
@@ -173,6 +177,7 @@ async function traffic(verifyPersisted = false, verifyRuntimeFaults = false) {
     }
 }
 
+/** Provision an isolated test certificate and route using the guest's existing appliance storage. */
 async function initializeTraffic() {
     await command([
         'podman',
@@ -214,6 +219,7 @@ async function initializeTraffic() {
     )
 }
 
+/** Wait for certificate events to settle before recording the persistence and backup baseline. */
 async function waitForCertificateCursor() {
     for (let attempt = 0; attempt < 120; attempt++) {
         const page = (await controller('/internal/v1/certificates/events?limit=200')) as {
@@ -234,6 +240,7 @@ async function waitForCertificateCursor() {
     }
 }
 
+/** Bind guest execution to the candidate's exact architecture, image identity and source revision. */
 export async function verifyNativeCandidateImage(
     directory: string,
     architecture: string | undefined,
@@ -254,6 +261,7 @@ export async function verifyNativeCandidateImage(
     assert.equal(revision, candidate.revision)
 }
 
+/** Execute only recognized lifecycle phases inside the explicitly marked disposable distribution guest. */
 async function run() {
     assert.equal(process.platform, 'linux')
     assert.equal(process.getuid?.(), 0)

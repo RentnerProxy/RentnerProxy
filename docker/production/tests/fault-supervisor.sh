@@ -5,10 +5,14 @@ set -Eeuo pipefail
 readonly production_directory=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 readonly supervisor="$production_directory/fault-supervisor.sh"
 
+# Distinguish a broken regression assertion from the expected production fail-stop status.
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+# Model appliance teardown with a recognizable status that rejection fixtures can assert.
 fatal() { printf '%s\n' "$*" >&2; exit 77; }
+# Keep production progress messages out of the fixture's admission-order evidence.
 log() { :; }
 
+# Isolate lifecycle state and scratch files while preserving real kernel process identity checks.
 setup() {
     scratch=$(mktemp -d "${TMPDIR:-/tmp}/rentnerproxy-fault-supervisor.XXXXXX")
     cleanup_pids=()
@@ -36,6 +40,7 @@ setup() {
     SECONDS=0
 }
 
+# Resume, kill and reap only fixture-owned processes, including children intentionally stopped by tests.
 cleanup() {
     local pid
     for pid in "${cleanup_pids[@]}"; do
@@ -60,12 +65,14 @@ sleep() {
     esac
 }
 
+# Verify every external probe retains its production timeout contract before invoking its stub.
 timeout() {
     [[ $1 == --signal=TERM && $2 == --kill-after=1s && ( $3 == 4s || $3 == 2s ) ]] || fail 'unbounded probe'
     shift 3
     "$@"
 }
 
+# Record private-journal admission checks and reject any command that bypasses the restart-safety contract.
 bun() {
     [[ $1 == --no-env-file && $2 == "$backup_exporter" && $3 == --assert-web-restart-safe ]] \
         || fail 'recovery did not consult the private journal'
@@ -73,6 +80,7 @@ bun() {
     return "$fixture_fence"
 }
 
+# Model controller progress and functional database/cache probes independently of web readiness.
 gosu() {
     case $* in
         'rentnerproxy /usr/local/bin/rentnerproxy-controller --healthcheck progress') return "$fixture_controller" ;;
@@ -88,6 +96,7 @@ gosu() {
     return 0
 }
 
+# Keep backup-agent socket health distinct from web liveness and reject readiness-dependent polling.
 curl() {
     if [[ ${*: -1} == http://localhost/status ]]; then
         [[ $* == *"--unix-socket $backup_control_directory/agent.sock"* ]] || fail 'backup probe escaped its socket'
@@ -98,6 +107,7 @@ curl() {
     return "$fixture_live"
 }
 
+# Launch a real child with normal, ignored-TERM or stopped signal behavior and retain its exact start time.
 spawn_web() {
     local mode=${1:-term} pid attempts
     case $mode in
@@ -122,19 +132,24 @@ spawn_web() {
     if [[ $mode == stopped ]]; then kill -STOP "$pid"; fi
 }
 
+# Record replacement admission before creating its real child so ordering assertions detect overlapping writers.
 start_web() {
     printf 'start\n' >> "$scratch/events"
     spawn_web
 }
 
+# Mark the readiness boundary without launching application services or depending on a real database.
 wait_for_web_readiness() { printf 'ready\n' >> "$scratch/events"; }
 
+# Require the production fail-stop path in a subshell while leaving parent-owned fixture cleanup intact.
 expect_rejected() {
     local status=0
     (trap - EXIT; "$@") > "$scratch/rejection" 2>&1 || status=$?
     [[ $status == 77 ]] || fail "expected fail-stop, got $status: $(cat "$scratch/rejection")"
 }
 
+# Prove exited, TERM-responsive, TERM-ignoring and stopped web children are reaped before replacement admission.
+# The retained controller child must keep its original ownership and remain alive.
 test_real_termination() (
     local mode old_pid critical_pid
     for mode in term ignore stopped exited; do
@@ -164,6 +179,8 @@ test_real_termination() (
     printf 'PASS: crashed, TERM, ignored TERM and STOP web children are reaped before isolated admission\n'
 )
 
+# Reject recovery across lifecycle transitions, maintenance selectors, unsafe journals and unknown process ownership.
+# A request arriving during backoff must still prevent replacement admission.
 test_recovery_fences() (
     local variant pid
     for variant in starting maintenance stopping request active request-link recovery backup journal unknown-identity mismatched-identity delayed-request; do
@@ -193,6 +210,7 @@ test_recovery_fences() (
     printf 'PASS: lifecycle, maintenance, persisted journal and exact process identity fences reject recovery\n'
 )
 
+# Verify successful replacements retain the three-attempt budget and use 1/2/4-second backoff with at most 249ms jitter.
 test_restart_budget() (
     local attempt index
     setup
@@ -212,6 +230,7 @@ test_restart_budget() (
     printf 'PASS: three successful admissions retain the rolling budget and bounded jitter/backoff\n'
 )
 
+# Prove rolling-window expiry removes only attempts that have reached 300 seconds.
 test_budget_boundary() (
     setup
     web_restart_times=(100 101 102)
@@ -223,6 +242,7 @@ test_budget_boundary() (
     printf 'PASS: retry attempts expire individually at the 300-second boundary\n'
 )
 
+# A real controller exit during web termination must fail the appliance before replacement admission.
 test_critical_child_failure() (
     setup
     local critical
@@ -239,6 +259,8 @@ test_critical_child_failure() (
     printf 'PASS: critical process exit during web termination fails the appliance boundary\n'
 )
 
+# Keep healthy web liveness independent of readiness and recover after three liveness misses.
+# Controller progress failures must reset after success and fail-stop after three consecutive misses.
 test_health() (
     setup
     spawn_web
@@ -268,6 +290,8 @@ test_health() (
     printf 'PASS: independent liveness recovers web; three consecutive controller progress misses fail-stop\n'
 )
 
+# Verify database, cache and backup-agent failures never spend the web restart budget.
+# Consecutive misses reset after success, while a RESP error remains unhealthy despite CLI exit success.
 test_dependency_health() (
     local role attempt
     for role in PostgreSQL Valkey backups; do
@@ -303,6 +327,7 @@ test_dependency_health() (
     printf 'PASS: dependency misses reset on success and fail-stop after three misses without restarting web\n'
 )
 
+# Ensure health polling cannot initiate recovery during startup, maintenance, shutdown or an existing recovery.
 test_monitor_lifecycle() (
     local phase
     setup
@@ -319,6 +344,7 @@ test_monitor_lifecycle() (
     printf 'PASS: runtime health supervision is suppressed during startup, maintenance, shutdown and active recovery\n'
 )
 
+# Verify the full process scan blocks admission for a real untracked UID 10002 writer without signaling it.
 test_orphan_writer() (
     setup
     if [[ $(id -u) != 0 ]] || ! command -v setpriv >/dev/null; then
@@ -341,6 +367,8 @@ test_orphan_writer() (
     printf 'PASS: full process scan blocks admission for an unowned UID 10002 writer\n'
 )
 
+# Reproduce vanished status entries and surviving unreadable identities deterministically.
+# Check fail-closed UID parsing in every credential field while retaining zombie exclusion.
 test_process_status_visibility() (
     setup
     local field variant

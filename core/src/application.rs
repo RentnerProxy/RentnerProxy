@@ -32,6 +32,7 @@ fn controller_connect_addr(listen_addr: SocketAddr) -> SocketAddr {
     }
 }
 
+/// Runs one bounded local controller probe and maps the selected endpoint to a process exit code.
 pub async fn healthcheck(endpoint: &str) -> ExitCode {
     let path = match endpoint {
         "health" => "/health",

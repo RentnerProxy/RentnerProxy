@@ -11,6 +11,7 @@ next_health_check=0
 declare -a web_restart_times=()
 declare -A dependency_health_failures=()
 
+# Return the kernel start time used with a PID to prove ownership across recovery.
 supervisor_process_start() {
     local value
     IFS= read -r value 2>/dev/null < "/proc/$1/stat" || return 1
@@ -23,6 +24,7 @@ supervisor_process_start() {
     printf '%s\n' "${fields[19]}"
 }
 
+# Treat zombies and exited tasks as stopped even when their PID still exists.
 supervisor_process_live() {
     local state remainder
     [[ -r /proc/$1/stat ]] || return 1
@@ -32,6 +34,7 @@ supervisor_process_live() {
     [[ $state != Z && $state != X ]] && kill -0 "$1" 2>/dev/null
 }
 
+# Loss of any owned non-web service requires appliance teardown, including during web drain.
 assert_critical_children_running() {
     local index
     for index in "${!child_pids[@]}"; do
@@ -41,6 +44,8 @@ assert_critical_children_running() {
     done
 }
 
+# Require steady-state ownership and both transient and persisted maintenance fences
+# before admitting replacement web writers; the private journal probe is bounded to four seconds.
 assert_web_restart_allowed() {
     [[ $supervisor_phase == running && -z ${backup_recovery_job:-} && -z ${backup_maintenance_id:-} ]] \
         || fatal 'independent web recovery is unavailable during lifecycle transitions'
@@ -54,6 +59,8 @@ assert_web_restart_allowed() {
         || fatal 'web recovery cannot prove the persisted maintenance fence safe'
 }
 
+# Prove that a surviving process has no web UID in any credential field.
+# Missing status is safe only after the process directory disappears; unreadable live identities fail closed.
 assert_web_process_stopped() {
     local status_file=$1 field real effective saved filesystem remainder
     local inspected=false writer=false
@@ -79,6 +86,7 @@ assert_web_process_stopped() {
     fatal 'web recovery cannot inspect a surviving process identity'
 }
 
+# Inspect every visible process, including untracked descendants, before a second web writer starts.
 assert_web_writers_stopped() {
     local status_file
     [[ -r /proc/self/status ]] || fatal 'web recovery requires process identity visibility'
@@ -87,6 +95,8 @@ assert_web_writers_stopped() {
     done
 }
 
+# Spend one of three restart attempts in a rolling 300-second window.
+# Successful recoveries retain their attempts so repeated crashes cannot evade the circuit breaker.
 reserve_web_restart() {
     local started
     local -a recent=()
@@ -97,6 +107,8 @@ reserve_web_restart() {
     web_restart_times=("${recent[@]}" "$SECONDS")
 }
 
+# Stop and reap the exact owned web process with an 18-second TERM and two-second KILL budget.
+# Recheck writer and maintenance fences around bounded backoff before readiness admits the replacement.
 recover_web() {
     local index=$1 reason=$2 pid=${child_pids[$1]} deadline current_start backoff status=0
     assert_web_restart_allowed
@@ -143,6 +155,8 @@ recover_web() {
     log "web isolated recovery completed (previous exit $status); controller and Caddy retained"
 }
 
+# Sample controller progress, dependency functionality and web liveness every five seconds in steady state.
+# Three web misses permit isolated recovery; three controller or dependency misses require appliance teardown.
 monitor_runtime_health() {
     [[ $supervisor_phase == running && $web_recovery_active == false ]] || return 0
     ((SECONDS >= next_health_check)) || return 0
@@ -179,6 +193,7 @@ monitor_runtime_health() {
     fi
 }
 
+# Require an actual PONG within two seconds; CLI success alone can conceal a RESP server error.
 probe_valkey_health() {
     local response
     response=$(timeout --signal=TERM --kill-after=1s 2s \
@@ -186,6 +201,8 @@ probe_valkey_health() {
     [[ $response == PONG ]]
 }
 
+# Reset a dependency's consecutive-miss count after success and fail closed on its third failure.
+# Restarting Bun cannot repair a broken state service or backup agent.
 check_dependency_health() {
     local role=$1 failures
     shift

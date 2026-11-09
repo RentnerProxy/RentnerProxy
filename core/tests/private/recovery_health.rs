@@ -1,6 +1,7 @@
 use super::*;
 
 #[test]
+/// Confirms successful ticks do not replenish the rolling restart budget or clear its open circuit.
 fn restart_budget_survives_successes_and_circuit_is_latched() {
     let health = RecoveryHealth::default();
     let now = Instant::now();
@@ -14,6 +15,7 @@ fn restart_budget_survives_successes_and_circuit_is_latched() {
 }
 
 #[test]
+/// Checks old restart attempts expire only while the circuit is still closed.
 fn restart_window_expires_only_before_circuit_is_opened() {
     let health = RecoveryHealth::default();
     let now = Instant::now();
@@ -28,6 +30,7 @@ fn restart_window_expires_only_before_circuit_is_opened() {
 }
 
 #[test]
+/// Requires live worker progress, a fresh completion, and a closed circuit simultaneously.
 fn progress_requires_a_running_worker_recent_completion_and_closed_circuit() {
     let health = RecoveryHealth::default();
     let now = Instant::now();

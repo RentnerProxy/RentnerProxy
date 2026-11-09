@@ -9,6 +9,7 @@ use std::{
 };
 
 impl CaddyProcess {
+    /// Acquires the private inode lock and passes its open-file description to the child.
     pub(super) fn claim_state_ownership(&self) -> Result<RawFd, EngineError> {
         let mut slot = self
             .ownership
@@ -47,6 +48,7 @@ impl CaddyProcess {
         Ok(fd)
     }
 
+    /// Refuses startup when either control socket may still belong to another Caddy process.
     pub(super) async fn require_unoccupied_sockets(&self) -> Result<(), EngineError> {
         for path in [&self.admin_socket, &self.probe_socket] {
             match std::fs::symlink_metadata(path) {

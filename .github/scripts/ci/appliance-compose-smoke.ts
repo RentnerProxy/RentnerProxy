@@ -12,6 +12,7 @@ import { verifyApplianceBackup } from './appliance/backup.ts'
 import { verifyApplianceRestore } from './appliance/restore.ts'
 import { verifyApplianceRestoreSafety } from './appliance/restore-safety.ts'
 
+/** Run the real appliance lifecycle and fault checks, releasing owned containers and fixtures even after failure. */
 async function runSmoke(): Promise<void> {
     const context = await createApplianceSmokeContext()
     try {

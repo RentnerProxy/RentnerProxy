@@ -29,6 +29,7 @@ log() {
     printf '%s\n' "[rentnerproxy] $*" >&2
 }
 
+# Enter the stopping phase before draining owned consumers so shutdown cannot trigger isolated recovery.
 shutdown_children() {
     local deadline consumer_deadline pid index
 
@@ -117,6 +118,7 @@ start_child() {
     child_names+=("$name")
 }
 
+# Recover an exited web child only in steady state; other owned-child exits fail the appliance boundary.
 assert_children_running() {
     local index
     for index in "${!child_pids[@]}"; do
@@ -368,11 +370,14 @@ run_web() {
         gosu rentnerproxy-web bun "$app_directory/docker/web/serve.ts"
 }
 
+# Capture the new child's kernel start time so recovery cannot signal a recycled PID.
 start_web() {
     start_child web run_web
     web_process_start=$(supervisor_process_start "${child_pids[-1]}") || web_process_start=''
 }
 
+# Allow at most 60 seconds for dependency-aware readiness, with each probe bounded to the remaining budget.
+# Continue checking owned children while waiting so startup or recovery cannot hide a service exit.
 wait_for_web_readiness() {
     local deadline=$((SECONDS + 60)) remaining budget
     while ((SECONDS < deadline)); do
@@ -389,6 +394,7 @@ wait_for_web_readiness() {
     fatal 'timed out waiting for web readiness within 60 seconds'
 }
 
+# Give managed maintenance exclusive lifecycle ownership and run fault health probes only between requests.
 monitor_children() {
     while :; do
         assert_children_running

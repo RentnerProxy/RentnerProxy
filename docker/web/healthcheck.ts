@@ -1,3 +1,4 @@
+/** Check dependency-aware readiness within three seconds and release the response body before exiting. */
 async function isWebReady(): Promise<boolean> {
     try {
         const response = await fetch('http://127.0.0.1:3000/health/ready', {

@@ -52,6 +52,7 @@ export const smokeSuites = {
 
 // Raw child output can contain assertion operands, generated credentials or PEM material.
 
+/** Reduce child output to counted checks and allowlisted diagnostics without exposing raw assertion operands. */
 export function smokeProgress(suite: Suite) {
     let checks = 0
     let reportedChecks: number | undefined
@@ -95,6 +96,7 @@ export function smokeProgress(suite: Suite) {
             : []),
     ])
     return {
+        /** Forward only recognized scalar facts or fixed stages and retain approved source locations. */
         consume(line: string): string | undefined {
             if (
                 suite === 'production' &&
@@ -222,6 +224,7 @@ export function smokeProgress(suite: Suite) {
             }
             return undefined
         },
+        /** Require successful exit and matching observed completion counts before declaring the suite passed. */
         result(exitCode: number) {
             return {
                 checks,
@@ -232,10 +235,12 @@ export function smokeProgress(suite: Suite) {
     }
 }
 
+/** Keep each smoke run's fixtures and result files under its own temporary directory. */
 function temporaryRoot(scope: string): string {
     return resolve(process.env.RUNNER_TEMP ?? tmpdir(), 'rentnerproxy-smokes-' + scope)
 }
 
+/** Run one isolated suite, sanitize both output streams, and persist only its summarized outcome. */
 async function runSuite(suite: Suite, root: string): Promise<number> {
     await mkdir(root, { recursive: true, mode: 0o700 })
     const fixtures = join(root, 'fixtures')
@@ -251,6 +256,7 @@ async function runSuite(suite: Suite, root: string): Promise<number> {
         stdout: 'pipe',
         stderr: 'pipe',
     })
+    /** Discard oversized lines before sending complete bounded lines through the diagnostic allowlist. */
     async function drain(stream: ReadableStream<Uint8Array>): Promise<void> {
         let pending = ''
         let oversized = false
@@ -302,6 +308,7 @@ async function runSuite(suite: Suite, root: string): Promise<number> {
     return outcome.passed ? 0 : 1
 }
 
+/** Bound cleanup commands and suppress raw Docker failure output, which may contain private metadata. */
 async function docker(args: string[]): Promise<string> {
     const child = Bun.spawn({ cmd: ['docker', ...args], stdout: 'pipe', stderr: 'pipe' })
     const timer = setTimeout(() => child.kill(), 60_000)
@@ -318,6 +325,7 @@ async function docker(args: string[]): Promise<string> {
     }
 }
 
+/** Remove only label-scoped resources and report incomplete cleanup alongside saved suite outcomes. */
 async function cleanup(scope: string, root: string): Promise<void> {
     const rows = ['| Smoke | Result | Checks | Duration |', '| --- | --- | ---: | ---: |']
     for (const suite of Object.keys(smokeSuites) as Suite[]) {

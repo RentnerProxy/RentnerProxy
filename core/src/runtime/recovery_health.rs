@@ -34,18 +34,21 @@ struct State {
 pub(super) struct RecoveryHealth(Mutex<State>);
 
 impl RecoveryHealth {
+    /// Marks the single recovery worker as active for progress reporting.
     pub(super) fn worker_started(&self) {
         if let Ok(mut state) = self.0.lock() {
             state.worker_running = true;
         }
     }
 
+    /// Clears worker liveness when its task exits or is cancelled.
     pub(super) fn worker_stopped(&self) {
         if let Ok(mut state) = self.0.lock() {
             state.worker_running = false;
         }
     }
 
+    /// Records a completed recovery tick and refreshes the public progress timestamp.
     pub(super) fn completed(&self) {
         if let Ok(mut state) = self.0.lock() {
             state.last_completed = Some(Instant::now());
@@ -53,12 +56,14 @@ impl RecoveryHealth {
         }
     }
 
+    /// Counts a confirmed runtime fault independently of restart attempts.
     pub(super) fn fault(&self) {
         if let Ok(mut state) = self.0.lock() {
             state.faults = state.faults.saturating_add(1);
         }
     }
 
+    /// Advances the serialized probe-failure streak and says when it reaches recovery threshold.
     pub(super) fn probe_failed(&self) -> bool {
         let Ok(mut state) = self.0.lock() else {
             return true;
@@ -68,12 +73,14 @@ impl RecoveryHealth {
         state.consecutive_probe_failures >= MAX_CONSECUTIVE_PROBE_FAILURES
     }
 
+    /// Clears transient probe failures after the active revision has been verified.
     pub(super) fn probe_verified(&self) {
         if let Ok(mut state) = self.0.lock() {
             state.consecutive_probe_failures = 0;
         }
     }
 
+    /// Latches fail-closed recovery after process ownership or shutdown becomes uncertain.
     pub(super) fn open_circuit(&self) {
         if let Ok(mut state) = self.0.lock() {
             if !state.circuit_open {
@@ -86,6 +93,7 @@ impl RecoveryHealth {
         }
     }
 
+    /// Admits at most the configured number of replacement starts in the rolling window.
     pub(super) fn admit_restart(&self, now: Instant) -> bool {
         let Ok(mut state) = self.0.lock() else {
             return false;
@@ -114,6 +122,7 @@ impl RecoveryHealth {
         true
     }
 
+    /// Copies health counters into a serializable snapshot, failing closed if the mutex is poisoned.
     pub(super) fn snapshot(&self, now: Instant) -> RecoveryStatus {
         match self.0.lock() {
             Ok(state) => RecoveryStatus {
@@ -143,6 +152,7 @@ impl RecoveryHealth {
         }
     }
 
+    /// Requires a live worker, a recent completed tick, and a closed recovery circuit.
     pub(super) fn progressing(&self, now: Instant) -> bool {
         let Ok(state) = self.0.lock() else {
             return false;
@@ -158,6 +168,7 @@ impl RecoveryHealth {
 pub(super) struct WorkerProgress(pub(super) std::sync::Arc<RecoveryHealth>);
 
 impl Drop for WorkerProgress {
+    /// Releases the progress signal when its recovery task exits for any reason.
     fn drop(&mut self) {
         self.0.worker_stopped();
     }

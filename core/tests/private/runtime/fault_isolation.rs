@@ -1,6 +1,7 @@
 use super::*;
 
 #[tokio::test]
+/// Recovers a live but unresponsive Caddy process and keeps worker progress distinct from readiness.
 async fn live_but_hung_caddy_is_recovered_by_the_owned_worker() {
     let engine = FakeCaddy::new();
     let (runtime, _) = runtime(Some(engine.clone()));
@@ -28,6 +29,7 @@ async fn live_but_hung_caddy_is_recovered_by_the_owned_worker() {
 }
 
 #[tokio::test]
+/// Confirms repeated successful recoveries still exhaust the shared rolling restart allowance.
 async fn repeated_short_successes_exhaust_the_same_restart_budget() {
     let engine = FakeCaddy::new();
     let (runtime, _) = runtime(Some(engine.clone()));
@@ -47,6 +49,7 @@ async fn repeated_short_successes_exhaust_the_same_restart_budget() {
 }
 
 #[tokio::test]
+/// Refuses to spawn over a child whose shutdown outcome cannot be verified and latches failure.
 async fn uncertain_shutdown_never_spawns_a_replacement_and_latches_failure() {
     let engine = FakeCaddy::new();
     let (runtime, _) = runtime(Some(engine.clone()));
@@ -70,6 +73,7 @@ async fn uncertain_shutdown_never_spawns_a_replacement_and_latches_failure() {
 }
 
 #[tokio::test]
+/// Accounts for both startup fallback and subsequent replacements in the same recovery budget.
 async fn failed_initialization_fallbacks_each_consume_a_recovery_attempt() {
     let engine = FakeCaddy::new();
     engine
@@ -93,6 +97,7 @@ async fn failed_initialization_fallbacks_each_consume_a_recovery_attempt() {
 }
 
 #[tokio::test]
+/// Prevents repeated failed configuration requests from bypassing the runtime restart limit.
 async fn failed_configuration_requests_cannot_bypass_the_shared_restart_budget() {
     let engine = FakeCaddy::new();
     let (runtime, _) = runtime(Some(engine.clone()));
@@ -126,6 +131,7 @@ async fn failed_configuration_requests_cannot_bypass_the_shared_restart_budget()
 }
 
 #[tokio::test]
+/// Keeps an unconfirmed old process from surviving a CrowdSec provider switch.
 async fn crowdsec_switch_never_accepts_an_old_process_with_unconfirmed_shutdown() {
     const KEY: &str = "0123456789abcdef0123456789abcdef";
     let (api_url, lapi) = crowdsec_lapi(KEY).await;
@@ -159,6 +165,7 @@ async fn crowdsec_switch_never_accepts_an_old_process_with_unconfirmed_shutdown(
 }
 
 #[tokio::test]
+/// Verifies intentional provider changes do not spend the fault-triggered restart allowance.
 async fn intentional_provider_changes_do_not_spend_the_fault_recovery_budget() {
     const KEY: &str = "0123456789abcdef0123456789abcdef";
     let (api_url, lapi) = crowdsec_lapi(KEY).await;
@@ -204,6 +211,7 @@ async fn intentional_provider_changes_do_not_spend_the_fault_recovery_budget() {
 }
 
 #[tokio::test]
+/// Ensures intermittent probe failures preserve live traffic and a verified probe clears the streak.
 async fn intermittent_probe_failures_preserve_live_caddy_and_success_resets_the_streak() {
     let engine = FakeCaddy::new();
     let (runtime, _) = runtime(Some(engine.clone()));
@@ -242,6 +250,7 @@ async fn intermittent_probe_failures_preserve_live_caddy_and_success_resets_the_
 }
 
 #[tokio::test]
+/// Confirms a proven child exit bypasses hung probes and recovers within the bounded call.
 async fn confirmed_child_exit_recovers_without_waiting_for_failed_live_probes() {
     let engine = FakeCaddy::new();
     let (runtime, _) = runtime(Some(engine.clone()));
@@ -263,6 +272,7 @@ async fn confirmed_child_exit_recovers_without_waiting_for_failed_live_probes() 
 }
 
 #[tokio::test]
+/// Opens the circuit immediately when a failed probe also makes process ownership uncertain.
 async fn unknown_ownership_opens_the_circuit_on_the_first_probe_failure() {
     let engine = FakeCaddy::new();
     let (runtime, _) = runtime(Some(engine.clone()));
@@ -282,6 +292,7 @@ async fn unknown_ownership_opens_the_circuit_on_the_first_probe_failure() {
 }
 
 #[tokio::test]
+/// Confirms a verified in-place reload clears probe failures without restarting Caddy.
 async fn verified_configuration_reload_clears_the_failure_streak_without_a_restart() {
     let engine = FakeCaddy::new();
     let (runtime, _) = runtime(Some(engine.clone()));
@@ -306,6 +317,7 @@ async fn verified_configuration_reload_clears_the_failure_streak_without_a_resta
 }
 
 #[tokio::test]
+/// Ensures failed provider changes and their rollback share the same restart allowance.
 async fn failed_provider_changes_share_the_fault_rollback_budget() {
     const KEY: &str = "0123456789abcdef0123456789abcdef";
     let (api_url, lapi) = crowdsec_lapi(KEY).await;

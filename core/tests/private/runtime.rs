@@ -139,6 +139,7 @@ impl ProxyEngine for FakeCaddy {
             result
         })
     }
+    /// Injects configured hangs before answering queued probes to model a live but stalled process.
     fn probe<'a>(&'a self, revision: &'a str) -> EngineFuture<'a> {
         Box::pin(async move {
             self.probe_count.fetch_add(1, Ordering::SeqCst);
@@ -161,6 +162,7 @@ impl ProxyEngine for FakeCaddy {
             }
         })
     }
+    /// Can leave the fake child running after a timed-out shutdown to test fail-closed replacement.
     fn shutdown<'a>(&'a self) -> EngineFuture<'a> {
         Box::pin(async move {
             if self.shutdown_uncertain.load(Ordering::SeqCst) {
@@ -1593,6 +1595,7 @@ fn timestamps_are_utc() {
 }
 
 #[tokio::test]
+/// Keeps transient readiness probe failures from restarting a still-running child or changing recovery state.
 async fn readiness_probe_failure_does_not_restart_or_change_recovery_state() {
     let engine = FakeCaddy::new();
     let (runtime, _) = runtime(Some(engine.clone()));

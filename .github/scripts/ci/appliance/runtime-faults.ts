@@ -33,10 +33,12 @@ type RuntimeStatus = {
     }
 }
 
+/** Include kernel start ticks so a recycled PID cannot masquerade as the original process. */
 function identity(process: RuntimeProcess): string {
     return process.pid + ':' + process.startTicks
 }
 
+/** Compare native owners independently of process enumeration order and web replacement. */
 function stableRoles(rows: RuntimeProcess[]): string[] {
     return rows
         .filter((row) => row.role !== 'web')
@@ -44,10 +46,12 @@ function stableRoles(rows: RuntimeProcess[]): string[] {
         .toSorted()
 }
 
+/** Exercise isolated web recovery and report only a fixed stage when an assertion fails. */
 export async function verifyApplianceRuntimeFaults(
     context: ApplianceRuntimeFaultContext,
 ): Promise<void> {
     let stage: RuntimeStage = 'baseline-container'
+    /** Emit allowlisted checkpoints without including command output or assertion operands. */
     const setStage = (value: RuntimeStage) => {
         stage = value
         console.log('Runtime web stage=' + stage)
@@ -60,11 +64,13 @@ export async function verifyApplianceRuntimeFaults(
     }
 }
 
+/** Preserve native identities and traffic across three web faults; prove progress during STOP. */
 async function runApplianceRuntimeFaults(
     context: ApplianceRuntimeFaultContext,
     setStage: (value: RuntimeStage) => void,
 ): Promise<void> {
     const id = context.recreatedId
+    /** Read a bounded census including every web UID process, not just the expected main PID. */
     const processes = async () =>
         JSON.parse(
             await context.command(
@@ -72,6 +78,7 @@ async function runApplianceRuntimeFaults(
                 5_000,
             ),
         ) as RuntimeProcess[]
+    /** Require a healthy native worker, allowing its first tick to be pending only during startup. */
     const status = async (allowInitialPending = false): Promise<RuntimeStatus> => {
         const source = `const token=await Bun.file('/run/rentnerproxy/controller-token/value').text();const response=await fetch('http://127.0.0.1:8081/internal/v1/proxy/status',{headers:{authorization:'Bearer '+token},signal:AbortSignal.timeout(2000)});process.stdout.write(JSON.stringify({status:response.status,body:await response.text()}));`
         const response = JSON.parse(
@@ -147,6 +154,7 @@ async function runApplianceRuntimeFaults(
             original.recovery.completedTicks > 0,
         'initial native recovery worker completes a tick within 15 seconds',
     )
+    /** Record appliance totals, descriptor counts and database clients without claiming a leak benchmark. */
     const resourceSample = async (label: string) => {
         setStage('resource-stats')
         const sample = await context.command(
@@ -208,6 +216,7 @@ async function runApplianceRuntimeFaults(
         const beforeStatus = await status()
         const sampling = new AbortController()
         const traffic = { http: { requests: 0, errors: 0 }, https: { requests: 0, errors: 0 } }
+        /** Count published-port responses throughout the fault until the owning scenario cancels sampling. */
         const sampleTraffic = async (protocol: 'http' | 'https') => {
             const counts = traffic[protocol]
             while (!sampling.signal.aborted) {

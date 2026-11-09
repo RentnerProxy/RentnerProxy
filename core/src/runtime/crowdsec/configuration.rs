@@ -15,6 +15,7 @@ use tokio::time::timeout;
 use tracing::{info, warn};
 
 impl ProxyRuntime {
+    /// Switches CrowdSec providers transactionally, rolling back through the shared restart budget.
     pub(crate) async fn apply_crowdsec(
         self: &Arc<Self>,
         request: CrowdSecConfigRequest,

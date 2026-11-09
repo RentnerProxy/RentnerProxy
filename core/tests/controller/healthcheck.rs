@@ -7,6 +7,7 @@ use tokio::{
 };
 
 #[tokio::test]
+/// Confirms CLI probes accept only an exact 200 response from the requested path.
 async fn binary_healthcheck_requires_an_exact_success_status_and_uses_the_requested_endpoint() {
     for (endpoint, response, success) in [
         ("health", "HTTP/1.1 200 OK\r\n\r\n", true),
@@ -58,6 +59,7 @@ async fn binary_healthcheck_requires_an_exact_success_status_and_uses_the_reques
 }
 
 #[test]
+/// Rejects malformed targets and connection failures without emitting probe output.
 fn binary_healthcheck_rejects_invalid_addresses_and_connection_failures() {
     for address in ["invalid address", "127.0.0.1:0"] {
         let output = isolated_command()

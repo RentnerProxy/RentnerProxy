@@ -13,6 +13,7 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Fixture(std::path::PathBuf);
 
 impl Fixture {
+    /// Creates an isolated state directory whose files can safely be removed after each ownership test.
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
             "rp-owner-{}-{}",
@@ -23,17 +24,20 @@ impl Fixture {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
         Self(path)
     }
+    /// Constructs an engine that competes for this fixture's state-directory lock and sockets.
     fn engine(&self) -> CaddyProcess {
         CaddyProcess::new(self.0.join("caddy-fixture"), self.0.clone())
     }
 }
 
 impl Drop for Fixture {
+    /// Removes only the private temporary directory created by this fixture.
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
+/// Proves a second controller can claim state only after every prior lock owner closes.
 async fn claim_after_prior_owners_close(engine: &CaddyProcess) {
     // Other parallel fixtures can inherit an FD between fork and exec. Closing
     // all prior descriptions must eventually release the kernel's lock.
@@ -51,6 +55,7 @@ async fn claim_after_prior_owners_close(engine: &CaddyProcess) {
 }
 
 #[tokio::test]
+/// Ensures two independent controllers cannot both obtain ownership before spawning children.
 async fn independent_controllers_cannot_claim_the_same_state_before_spawning() {
     let fixture = Fixture::new();
     let first = fixture.engine();
@@ -67,6 +72,7 @@ async fn independent_controllers_cannot_claim_the_same_state_before_spawning() {
 }
 
 #[test]
+/// Rejects ownership files whose inode metadata could permit link or permission attacks.
 fn linked_or_nonprivate_ownership_inodes_are_rejected() {
     for kind in ["symlink", "hardlink", "public"] {
         let fixture = Fixture::new();
@@ -91,6 +97,7 @@ fn linked_or_nonprivate_ownership_inodes_are_rejected() {
 }
 
 #[tokio::test]
+/// Confirms a live private socket is never unlinked or treated as an owned Caddy endpoint.
 async fn occupied_private_sockets_are_not_unlinked_or_adopted() {
     for name in ["caddy-admin.sock", "runtime-probe.sock"] {
         let fixture = Fixture::new();
@@ -113,6 +120,7 @@ async fn occupied_private_sockets_are_not_unlinked_or_adopted() {
 }
 
 #[tokio::test]
+/// Allows stale socket inodes while preserving them through the ownership preflight.
 async fn stale_socket_inodes_are_allowed_without_destroying_them_during_preflight() {
     let fixture = Fixture::new();
     let mut identities = Vec::new();
@@ -150,6 +158,7 @@ async fn stale_socket_inodes_are_allowed_without_destroying_them_during_prefligh
 }
 
 #[tokio::test]
+/// Rejects socket paths redirected to regular files, directories, or symlinks.
 async fn socket_paths_must_not_alias_regular_files_directories_or_symlinks() {
     for name in ["caddy-admin.sock", "runtime-probe.sock"] {
         for kind in ["regular", "directory", "symlink"] {
@@ -180,6 +189,7 @@ async fn socket_paths_must_not_alias_regular_files_directories_or_symlinks() {
 
 #[tokio::test]
 #[cfg(target_os = "linux")]
+/// Verifies an inherited file lock prevents takeover after the controller releases its handle.
 async fn inherited_lock_blocks_takeover_after_controller_ownership_is_dropped() {
     let fixture = Fixture::new();
     std::fs::write(

@@ -248,6 +248,7 @@ async fn readiness_requires_a_running_runtime_but_is_public() {
 }
 
 #[tokio::test]
+/// Keeps public recovery progress minimal and unavailable when the worker stops, independent of traffic readiness.
 async fn recovery_progress_is_public_minimal_and_independent_of_readiness() {
     let mut settings = RuntimeSettings::new(
         std::env::temp_dir().join(format!(

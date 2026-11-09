@@ -43,6 +43,7 @@ struct RecoveryProgressResponse {
     scope: &'static str,
 }
 
+/// Exposes recovery-worker progress separately from readiness and reports stale or stopped work as unavailable.
 pub(in crate::server) async fn recovery_progress(state: AppState) -> Response {
     let progressing = state.runtime.recovery_progressing();
     no_store_status_json(
