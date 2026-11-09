@@ -7,8 +7,8 @@ Suite: beta
 Codename: beta
 Architectures: amd64 arm64
 Components: main
-Valid-Until: Sun, 13 Dec 2026 01:18:33 GMT
-Date: Sun, 08 Nov 2026 01:18:34 +0000
+Valid-Until: Mon, 14 Dec 2026 12:58:00 GMT
+Date: Mon, 09 Nov 2026 12:58:01 +0000
 MD5Sum:
  9d3134c71671fca7c908f7f1aaa65499             1778 main/binary-amd64/Packages
  14d565ecdcfd1aacbe9ea28b35e18a58              836 main/binary-amd64/Packages.gz
@@ -31,17 +31,17 @@ SHA512:
  f351ac405cacfc677282a5a8267c15373da0386d50a24c615fbfabca4fe35413c2e4e19b70354c98a547913f557eef49e5720663d5db42c31323236147cfded7              835 main/binary-arm64/Packages.gz
 -----BEGIN PGP SIGNATURE-----
 
-iQIzBAEBCgAdFiEEHDH7A2IKyeXyTyzwjhqMvhtoLLsFAmrvzeoACgkQjhqMvhto
-LLvkexAAqZRJ8LaQdJESsVr7tVTXWv7nFZ+OnTP3R6fV4l0q1+H1B/WidPZIkcTk
-WiFqcVI6giI77IQYEEBgK0h/LTxpfkePkjKqo6Ad2vQ5IK4CpwHpvW7J5G5h0iwn
-0zU/mhVbSgY1SaVloQ1hQFNwdPD5S5szR9o0bZGPTH3lZnuMu8EaVN5rLLIyM8Tz
-1DJkX0NWsFxaPnBiWq26bH/aISKe/yTmyiILeGsP3RtFW2Comqee81fqqavnwyEu
-dAMv757mhYE+7NMJ7XlXnAULwbkkA4mFpQr+cPLOHNFmbFuyHheo0FhesETmtUu/
-B+ckRtnCiKgN0igAkmMh76HtRGsXI4Uyv56Zm9d2fS1SxtRAdSy9DR6EWJyLVEWg
-VOhMOEc9qZxD2YvcMZtMTVoJ3YCcRnYncfzUgoOI6JD0+ttwZyCO7Gvghpf0B1Go
-e1sXsOTFUrRwqx5Wl9+UpaxanXsKpRyL1C23zrhwFQsQ3NSnLmWztG8sWmAMms4P
-RHN0NQcrpFIuqFL5ULYYFDDeNiuznrPpHMNkmslw1VDo3m1jmmH1H9gRFP+7Q7Bj
-pw+L/2InKtFpceUx3Tba3kLr+EKkRB5XeNKFPO96D7+SjKMCRdcjXQaRFW3Wh6Vg
-BxZxV+iksAtrOFoQDfmkm21BQPFRz1Gkr0rSQ6TwGHy1xolRUWc=
-=qgwg
+iQIzBAEBCgAdFiEEHDH7A2IKyeXyTyzwjhqMvhtoLLsFAmrxw1kACgkQjhqMvhto
+LLulgg/+OdmoeAsIuQZfVAlcHBxWbem/GedHLyFRBhtXRxo1WqNlEVQj1LMLKSXS
+QVU5N1IVTd1iOx8E4nHghFwL+pjSDI6zyHbRDMOOs+ELa398KWgiiZs5fZqbe15M
+YaDiDEFMJbKgeyDjboZO/SuXg7sWDKmEzNihIgELSf0qKFvjh8liqhXPy4jCEpFE
+XldrN7aOG3dUXAwyDTMkLQLHZCOxNAaHDczm0EOdjiW5jH5/2bBExYNTv+UZO6Cg
+VXwB7p7Oi3oZzgFavVjSq81dSSWfsWsDtch7dxC0wDSAr0Yg5x5a5fmdiKRK+46M
+KufiMuM3ER+t2/aLE4DnA3u20BHgjkcOEoHjRxKRix9PvZTaJoz/cWVDS4Bt7HfV
+3dZ7AEyQZtc1+Kd5o8aGndXVzTDy/5EbIk+lUvp9S8nHSBEiEwoC9AEXzsJm6/ZZ
+rPcRBJ8gJoLtarBqslgK+4X1mGpte6wjl0puKwf6myeR+EdpRQvOZ5KHTIHHP3ce
+0+ZIlmWmS+82VeK41gsbdmBDrhM2vYsdSg8JrZhzlzwa1wX6jouVFPQVsY5k3r5e
+eFGZDOiUYEBjVIFbKS2G10A9zyufdwXVXyf9AuxLGgNLX/ryVVTQjb7FRZaH62Ss
+m+E199IbGaDzCYYo6PZo2krwAaRHxdUp8W0PkOYV3felbQwQYps=
+=fB3L
 -----END PGP SIGNATURE-----

@@ -7,8 +7,8 @@ Suite: alpha
 Codename: alpha
 Architectures: amd64 arm64
 Components: main
-Valid-Until: Sun, 13 Dec 2026 01:18:33 GMT
-Date: Sun, 08 Nov 2026 01:18:34 +0000
+Valid-Until: Mon, 14 Dec 2026 12:58:00 GMT
+Date: Mon, 09 Nov 2026 12:58:00 +0000
 MD5Sum:
  9d3134c71671fca7c908f7f1aaa65499             1778 main/binary-amd64/Packages
  14d565ecdcfd1aacbe9ea28b35e18a58              836 main/binary-amd64/Packages.gz
@@ -31,17 +31,17 @@ SHA512:
  f351ac405cacfc677282a5a8267c15373da0386d50a24c615fbfabca4fe35413c2e4e19b70354c98a547913f557eef49e5720663d5db42c31323236147cfded7              835 main/binary-arm64/Packages.gz
 -----BEGIN PGP SIGNATURE-----
 
-iQIzBAEBCgAdFiEEHDH7A2IKyeXyTyzwjhqMvhtoLLsFAmrvzeoACgkQjhqMvhto
-LLulfBAAkrn28Be8oQCfw5G8QDpmBX2KPKUBIAM/5Z7uqjCidLKMOPFVpl78Hfeh
-hpcxVPDqAv/9KeRuWvDnK8wjybSCbH1tlmpkgkMNYDg2U5VBj+SKZ/zCwNA4aTCc
-nv4foL/92ZUxB7c9DTHCc1ScNSKubMdodCZsodtHu9p6RHceBAIL0+wtdt9r9Otg
-FI5qymKSEW6ISXFY+UBoCqlhHbloLBSymlr1L+PBOUfeok3pWYsnuTpyDQWDxKbH
-O+UwACYtREqF2wZsTUq0iyVJGu8fnp2krDxGRFQArDakYx95FeoJWXL5PLt2Xl6d
-0L26ihE2dYkQwJp5d/HzWcrKZP+v2FDSyc3i8bdTLA8HYl8rBMYFZLPaNJSk0v3w
-4uOWcLc3h5PCFKt6t/iMyg2aHiNFBU71VSGa9ONHsyu9bK1cYtYJGXEyGk/UBQ6X
-J0yp1+RyEYsXlSE8HDEa2QiSubYK3mYF4HKyscl+Oz/hZ68Wm0SlJQtcI8Uf10/s
-tZ3whHekZMbIjTKxM80Wmq5F4/3h3wBkv8hpkaiQ/26gMt2L8/mwPHVlOQV0coSG
-cZUwrd6ttrNFELxWfJn+0hT8l+2dEEAWUpcEDKiFVjeZes66E4BJEpoZ+05ZFlbk
-d5NksYz4TFzif4M2dtWuUX0qppOJklhv2hxJ/QOAw66rixNvFS8=
-=cVRl
+iQIzBAEBCgAdFiEEHDH7A2IKyeXyTyzwjhqMvhtoLLsFAmrxw1gACgkQjhqMvhto
+LLu4MBAAsLlmqwiYU5FntPE29bcfuuoaPvFlQU5pp9T5sVZjGeyiBo4+Mh0YcTWp
+e015xdgQfTryvEiVGT5zJN4+ZW76k70OeK8RBvH1MVBSvYiE2QVszU2ue/hCn4kJ
+8omHliwPo0NYozlJopNYppZGIdXLs34Hj8ZpiXLADZ9RVage+C11/F0TlVa84E1Q
+vymIZVUMuZrPNKYbS3B7Hh/oCc12S7oCffNdgQ33ItTo0O6+uxaJvW2KoPieozso
+SExe2Or8FhtZMna2qneX9UZl8T+2wqsIJjXFGe78WaMEDi/03iJrz7vPDSgSA1Zl
+ukU09glin+EBgMOQwC7sEzDhF0ggEKU1ylwsgKh3Dxy7PGRfzg+WOWL8tPEHV1Un
+lwvhuXl+sPBLIa3e1EbvwZobxWccMtBihBKrivYE6oCgz6MWbNq93ejUsyOk5fc5
+sJBS0uvmVwnde0i7V4OrHfrEStbp0yVihSroKHahKkBN2AOxJewOVPu34+PcI6ST
+zDP4zN3XcPTM2vrImRppBwHxDUuJsb8kod4BLbfHXE/L5dVGxZMgRc3yWYvWl7u8
+LQQhki1jzqQC+ww/FXzgYJV74uN36HGVvKXOC8fr7VOtJkc/1YuuvHV9s7JrSBNn
+TVip0xjf+092LBLKKIITTYQFac3PnoHuluMEJSPpKUQwxBO6vLw=
+=TAXw
 -----END PGP SIGNATURE-----
