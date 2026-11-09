@@ -1,5 +1,6 @@
 export interface HostMonitoringWorkerDependencies<Claim> {
-    readonly claim: () => Promise<Claim | null>
+    // Storage must return at most the requested number of claims.
+    readonly claim: (limit: number) => Promise<readonly Claim[]>
     // Owns durable completion and cancellation cleanup for an admitted probe.
     readonly runClaim: (claim: Claim, signal: AbortSignal) => Promise<void>
     readonly releaseCancelled: (claim: Claim) => Promise<void>

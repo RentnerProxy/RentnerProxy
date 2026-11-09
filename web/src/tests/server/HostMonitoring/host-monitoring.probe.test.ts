@@ -81,6 +81,7 @@ describe('host monitoring probe adapter', () => {
         const claim = fixture()
         const signal = new AbortController().signal
         let inspections = 0
+        let completions = 0
         const probe = harness({
             readContext: async (admitted) => {
                 expect(admitted).toBe(claim)
@@ -96,13 +97,24 @@ describe('host monitoring probe adapter', () => {
                 expect(options).toEqual({ upstreamOnly: true, timeoutMs: 2_000 })
                 return domainDiagnosticsFixture()
             },
+            complete: async (admitted, outcome, before, abortSignal) => {
+                completions++
+                expect(admitted).toBe(claim)
+                expect(before).toBe(context)
+                expect(abortSignal).toBe(signal)
+                expect(outcome).toEqual({
+                    status: 'healthy',
+                    code: 'expected_status',
+                    durationMs: 1,
+                    httpStatus: 200,
+                })
+                return true
+            },
         })
         await probe.run(claim, signal)
         expect(inspections).toBe(1)
-        expect(probe.outcomes).toEqual([
-            { status: 'healthy', code: 'expected_status', durationMs: 1, httpStatus: 200 },
-        ])
-        expect(probe.releases).toEqual([claim])
+        expect(completions).toBe(1)
+        expect(probe.releases).toEqual([])
     })
 
     test.each(['hostId', 'domain', 'hostType', 'revision'] as const)(
@@ -131,7 +143,7 @@ describe('host monitoring probe adapter', () => {
             expect(probe.outcomes).toEqual([
                 { status: 'unknown', code: 'invalid_response', durationMs: null, httpStatus: null },
             ])
-            expect(probe.releases).toHaveLength(1)
+            expect(probe.releases).toHaveLength(0)
         },
     )
 
@@ -152,7 +164,7 @@ describe('host monitoring probe adapter', () => {
                     httpStatus: null,
                 },
             ])
-            expect(probe.releases).toHaveLength(1)
+            expect(probe.releases).toHaveLength(0)
         },
     )
 
@@ -166,7 +178,7 @@ describe('host monitoring probe adapter', () => {
         expect(probe.outcomes).toEqual([
             { status: 'unknown', code: 'runtime_unavailable', durationMs: null, httpStatus: null },
         ])
-        expect(probe.releases).toHaveLength(1)
+        expect(probe.releases).toHaveLength(0)
     })
 
     test.each(['already', 'preflight', 'probe'] as const)(
@@ -244,6 +256,24 @@ describe('host monitoring probe adapter', () => {
         },
     )
 
+    test('a rejected durable completion releases its lease and receives the lifetime signal', async () => {
+        const claim = fixture()
+        const signal = new AbortController().signal
+        let completed = false
+        const probe = harness({
+            complete: async (admitted, _outcome, before, abortSignal) => {
+                expect(admitted).toBe(claim)
+                expect(before).toBe(context)
+                expect(abortSignal).toBe(signal)
+                completed = true
+                return false
+            },
+        })
+        await probe.run(claim, signal)
+        expect(completed).toBeTrue()
+        expect(probe.releases).toEqual([claim])
+    })
+
     test.each([
         [200, 307],
         [200, 308],
@@ -265,7 +295,7 @@ describe('host monitoring probe adapter', () => {
             expect(probe.outcomes).toEqual([
                 { status: 'healthy', code: 'expected_status', durationMs: 1, httpStatus },
             ])
-            expect(probe.releases).toEqual([claim])
+            expect(probe.releases).toEqual([])
         },
     )
 })

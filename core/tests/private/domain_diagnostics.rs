@@ -1576,10 +1576,10 @@ async fn active_host_guard_rejects_duplicates_allows_other_hosts_and_releases_on
         .await
         .unwrap();
     assert_eq!(http.requests.lock().await.len(), 2);
-    assert_eq!(fixture.runtime.diagnostics_admission.available_permits(), 0);
+    assert_eq!(fixture.runtime.monitoring_admission.available_permits(), 62);
     first.abort();
     let _ = first.await;
-    assert_eq!(fixture.runtime.diagnostics_admission.available_permits(), 1);
+    assert_eq!(fixture.runtime.monitoring_admission.available_permits(), 63);
     let runtime = fixture.runtime.clone();
     let replacement = tokio::spawn(async move { runtime.diagnose_domain(request).await });
     timeout(Duration::from_secs(2), http.started.notified())
@@ -1590,7 +1590,7 @@ async fn active_host_guard_rejects_duplicates_allows_other_hosts_and_releases_on
     second.abort();
     let _ = replacement.await;
     let _ = second.await;
-    assert_eq!(fixture.runtime.diagnostics_admission.available_permits(), 2);
+    assert_eq!(fixture.runtime.monitoring_admission.available_permits(), 64);
     assert!(
         fixture
             .runtime
@@ -1695,4 +1695,172 @@ async fn active_host_registry_contention_waits_for_the_short_lock_without_false_
             .unwrap()
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn scheduled_capacity_preserves_interactive_reservations_and_cleans_up_on_abort() {
+    let http = HttpFixture::new(200, None, true).await;
+    let fixture = Fixture::new(http.port).await;
+    let dns = DnsFixture::normal().await;
+    let mut requests = Vec::new();
+    {
+        let mut configuration = fixture.runtime.active_configuration.lock().await;
+        let configuration = configuration.as_mut().unwrap();
+        let template = configuration.proxy_hosts[0].clone();
+        configuration.proxy_hosts.clear();
+        for index in 0..67 {
+            let mut host = template.clone();
+            host.id = format!("0198d98a-0000-7000-8000-{index:012}");
+            let mut request = fixture.request();
+            request.host_id = host.id.clone();
+            request.upstream_only = index < 64;
+            requests.push(request);
+            configuration.proxy_hosts.push(host);
+        }
+    }
+    let mut checks = JoinSet::new();
+    for request in &requests[..64] {
+        let runtime = fixture.runtime.clone();
+        let request = request.clone();
+        checks.spawn(async move { runtime.diagnose_domain(request).await });
+    }
+    timeout(Duration::from_secs(2), async {
+        while http.requests.lock().await.len() < 64 {
+            http.started.notified().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(fixture.runtime.monitoring_admission.available_permits(), 0);
+    assert_eq!(fixture.runtime.diagnostics_admission.available_permits(), 2);
+    let mut overflow = requests[66].clone();
+    overflow.upstream_only = true;
+    assert!(matches!(
+        fixture.runtime.diagnose_domain(overflow).await,
+        Err(Error::Busy)
+    ));
+    let mut duplicate = requests[0].clone();
+    duplicate.upstream_only = false;
+    assert!(matches!(
+        fixture.runtime.diagnose_domain(duplicate).await,
+        Err(Error::Busy)
+    ));
+    assert_eq!(fixture.runtime.diagnostics_admission.available_permits(), 2);
+    for (index, request) in requests[64..66].iter().enumerate() {
+        let runtime = fixture.runtime.clone();
+        let request = request.clone();
+        let resolver = dns.resolver();
+        // Start sequentially to retain interactive try-lock admission behavior.
+        checks.spawn(async move { runtime.diagnose_domain_inner(request, Some(resolver)).await });
+        let expected = 65 + index;
+        timeout(Duration::from_secs(2), async {
+            while http.requests.lock().await.len() < expected {
+                http.started.notified().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+    assert_eq!(http.requests.lock().await.len(), 66);
+    assert_eq!(fixture.runtime.diagnostics_admission.available_permits(), 0);
+    assert!(matches!(
+        fixture.runtime.diagnose_domain(requests[66].clone()).await,
+        Err(Error::Busy)
+    ));
+    checks.abort_all();
+    while checks.join_next().await.is_some() {}
+    assert_eq!(fixture.runtime.monitoring_admission.available_permits(), 64);
+    assert_eq!(fixture.runtime.diagnostics_admission.available_permits(), 2);
+    assert!(
+        fixture
+            .runtime
+            .diagnostics_active
+            .0
+            .lock()
+            .unwrap()
+            .is_empty()
+    );
+    // A previously running scheduled host can be inspected interactively again.
+    http.release.add_permits(67);
+    let mut replacement = requests[0].clone();
+    replacement.upstream_only = false;
+    let result = fixture
+        .runtime
+        .diagnose_domain_inner(replacement, Some(dns.resolver()))
+        .await
+        .unwrap();
+    assert_eq!(result.stages.upstream.code, Code::UpstreamResponded);
+    fixture.assert_pure();
+}
+
+#[tokio::test]
+async fn scheduled_timeout_includes_snapshot_wait_and_releases_both_guards() {
+    let http = HttpFixture::new(200, None, false).await;
+    let fixture = Fixture::new(http.port).await;
+    let active = fixture.runtime.active_configuration.lock().await;
+    let mut request = fixture.request();
+    request.upstream_only = true;
+    request.timeout_ms = Some(1000);
+    let start = Instant::now();
+    let result = fixture.runtime.diagnose_domain(request.clone()).await;
+    assert!(matches!(result, Err(Error::Unavailable)));
+    assert!(start.elapsed() < Duration::from_millis(1800));
+    assert!(http.requests.lock().await.is_empty());
+    assert_eq!(fixture.runtime.monitoring_admission.available_permits(), 64);
+    assert_eq!(fixture.runtime.diagnostics_admission.available_permits(), 2);
+    assert!(
+        fixture
+            .runtime
+            .diagnostics_active
+            .0
+            .lock()
+            .unwrap()
+            .is_empty()
+    );
+    drop(active);
+    let result = fixture.runtime.diagnose_domain(request).await.unwrap();
+    assert_eq!(result.stages.upstream.code, Code::UpstreamResponded);
+    fixture.assert_pure();
+}
+
+#[tokio::test]
+async fn host_exclusion_is_shared_in_both_admission_directions() {
+    let http = HttpFixture::new(200, None, true).await;
+    let fixture = Fixture::new(http.port).await;
+    let dns = DnsFixture::normal().await;
+    for scheduled in [false, true] {
+        let mut request = fixture.request();
+        request.upstream_only = scheduled;
+        let runtime = fixture.runtime.clone();
+        let first_request = request.clone();
+        let resolver = dns.resolver();
+        let check = tokio::spawn(async move {
+            runtime
+                .diagnose_domain_inner(first_request, Some(resolver))
+                .await
+        });
+        timeout(Duration::from_secs(2), http.started.notified())
+            .await
+            .unwrap();
+        request.upstream_only = !scheduled;
+        assert!(matches!(
+            fixture.runtime.diagnose_domain(request).await,
+            Err(Error::Busy)
+        ));
+        check.abort();
+        let _ = check.await;
+        assert_eq!(fixture.runtime.monitoring_admission.available_permits(), 64);
+        assert_eq!(fixture.runtime.diagnostics_admission.available_permits(), 2);
+        assert!(
+            fixture
+                .runtime
+                .diagnostics_active
+                .0
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
+    }
+    assert_eq!(http.requests.lock().await.len(), 2);
+    fixture.assert_pure();
 }

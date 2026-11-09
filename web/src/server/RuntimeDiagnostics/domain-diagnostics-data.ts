@@ -3,12 +3,14 @@ import '@tanstack/react-start/server-only'
 import { sql } from 'drizzle-orm'
 import { PERMISSIONS } from '@/config/permissions.config.ts'
 import type { DomainDiagnosticsInput } from '@/lib/RuntimeDiagnostics/Types/domain-diagnostics.types.ts'
+import type { ProxyHostSummary } from '@/lib/Admin/ProxyHostManagement/Types/proxy-hosts.types.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
 import { getAuthDatabase } from '@/server/Auth/Core/database.server.ts'
 import { requirePermissionInTransaction } from '@/server/Auth/Access/rbac.service.ts'
 import { readProxyHostSummariesInTransaction } from '@/server/Admin/ProxyHostManagement/proxy-hosts.service.ts'
 import { readRedirectHostSummariesInTransaction } from '@/server/Admin/RedirectHostManagement/redirect-hosts.service.ts'
 import { readProxyRuntimeSnapshot } from '@/server/ProxyRuntime/proxy-runtime-data.ts'
+import type { ProxyRuntimeSnapshot } from '@/server/ProxyRuntime/Types/proxy-runtime.types.ts'
 import type { HostMonitoringProbeContext } from '@/server/HostMonitoring/Types/host-monitoring-probe.types.ts'
 import type { DomainDiagnosticsContext } from './Types/domain-diagnostics.types.ts'
 import { DomainDiagnosticsError } from './domain-diagnostics.errors.ts'
@@ -50,11 +52,40 @@ export async function readHostMonitoringContextInTransaction(
     input: DomainDiagnosticsInput,
 ): Promise<HostMonitoringProbeContext> {
     if (input.hostType !== 'proxy') throw new DomainDiagnosticsError('invalid_input')
-    const { host, snapshot, context } = await readDomainDiagnosticsStateInTransaction(
-        transaction,
-        input,
-    )
+    const { host, snapshot } = await readDomainDiagnosticsStateInTransaction(transaction, input)
     if (!('forwardHost' in host)) throw new DomainDiagnosticsError('invalid_input')
+    return createHostMonitoringContext(host, snapshot)
+}
+
+export async function readHostMonitoringContextsInTransaction(
+    transaction: AuthTransaction,
+    inputs: readonly DomainDiagnosticsInput[],
+): Promise<ReadonlyMap<string, HostMonitoringProbeContext | null>> {
+    if (inputs.some((input) => input.hostType !== 'proxy'))
+        throw new DomainDiagnosticsError('invalid_input')
+    const contexts = new Map<string, HostMonitoringProbeContext | null>()
+    if (inputs.length === 0) return contexts
+    const hosts = await readProxyHostSummariesInTransaction(transaction, [
+        ...new Set(inputs.map((input) => input.hostId)),
+    ])
+    const hostsById = new Map(hosts.map((host) => [host.id, host]))
+    const validInputs = inputs.filter((input) =>
+        hostsById.get(input.hostId)?.domains.includes(input.domain),
+    )
+    for (const input of inputs) contexts.set(input.hostId, null)
+    if (validInputs.length === 0) return contexts
+    const snapshot = await readProxyRuntimeSnapshot(transaction)
+    for (const input of validInputs) {
+        const host = hostsById.get(input.hostId)
+        if (host) contexts.set(input.hostId, createHostMonitoringContext(host, snapshot))
+    }
+    return contexts
+}
+
+function createHostMonitoringContext(
+    host: ProxyHostSummary,
+    snapshot: ProxyRuntimeSnapshot,
+): HostMonitoringProbeContext {
     // Only inputs observed by the upstream check define continuity across checks.
     // Inbound certificates, discovery/jobs, access policy and other hosts remain
     // within-probe fences, but cannot reset a host's availability history.
@@ -79,7 +110,9 @@ export async function readHostMonitoringContextInTransaction(
             ? snapshot.trustedCas.find((candidate) => candidate.id === upstreamTls.trustedCaId)
             : undefined
     return {
-        ...context,
+        enabled: host.enabled,
+        proof: contextHash(host),
+        revision: snapshot.revision,
         availability: {
             proof: contextHash(projection),
             revision: contextHash({

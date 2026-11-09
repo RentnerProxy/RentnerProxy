@@ -9,7 +9,8 @@ pub(crate) use models::{Request, Result};
 use std::{sync::atomic::Ordering, time::Duration};
 use tokio::time::{Instant, timeout_at};
 
-// Admission caps this registry at two entries. The key deliberately excludes
+// Admission caps this registry at 64 scheduled plus two interactive entries.
+// The key deliberately excludes
 // revision and domain so a host edit cannot bypass an executing check.
 #[derive(Default)]
 pub(super) struct ActiveChecks(std::sync::Mutex<std::collections::HashSet<(HostType, String)>>);
@@ -142,16 +143,33 @@ impl ProxyRuntime {
         budget: Duration,
     ) -> std::result::Result<Result, Error> {
         request.validate()?;
-        let _permit = self
-            .diagnostics_admission
-            .try_acquire()
-            .map_err(|_| Error::Busy)?;
-        let _active = self.diagnostics_active.acquire(&request)?;
         let start = Instant::now();
+        // Only the trusted monitoring caller sets upstream_only. Keep its pool
+        // separate so scheduled probes cannot consume interactive reservations.
+        let admission = if request.upstream_only {
+            &self.monitoring_admission
+        } else {
+            &self.diagnostics_admission
+        };
+        let _permit = admission.try_acquire().map_err(|_| Error::Busy)?;
+        let _active = self.diagnostics_active.acquire(&request)?;
+        let budget = if request.upstream_only {
+            request.timeout_ms.map_or(budget, |timeout| {
+                budget.min(Duration::from_millis(u64::from(timeout)))
+            })
+        } else {
+            budget
+        };
         let deadline = start + budget;
         let network_deadline = deadline - budget.div_f64(12.0).min(Duration::from_secs(1));
         let snapshot = timeout_at(network_deadline, async {
-            let _guard = self.apply_lock.try_lock().map_err(|_| Error::Busy)?;
+            let _guard = if request.upstream_only {
+                // Scheduled snapshots may briefly serialize with each other;
+                // this wait shares the request deadline and holds admission.
+                self.apply_lock.lock().await
+            } else {
+                self.apply_lock.try_lock().map_err(|_| Error::Busy)?
+            };
             Ok(self.diagnostic_snapshot(&request).await)
         })
         .await
