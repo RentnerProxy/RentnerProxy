@@ -11,6 +11,30 @@ next_health_check=0
 declare -a web_restart_times=()
 declare -A dependency_health_failures=()
 
+# Require a completed tick from this controller before startup or maintenance admits steady-state work.
+# A new ready process may still be waiting for its first recovery tick; old misses clear only after proof.
+wait_for_controller_progress() {
+    local deadline=$((SECONDS + 60)) remaining budget
+    while ((SECONDS < deadline)); do
+        assert_children_running
+        remaining=$((deadline - SECONDS))
+        ((remaining > 0)) || break
+        budget=$remaining
+        ((budget <= 4)) || budget=4
+        if timeout --signal=TERM --kill-after=1s "${budget}s" \
+            gosu rentnerproxy /usr/local/bin/rentnerproxy-controller --healthcheck progress >/dev/null 2>&1; then
+            ((SECONDS <= deadline)) || break
+            assert_children_running
+            controller_health_failures=0
+            return
+        fi
+        assert_children_running
+        ((SECONDS < deadline)) || break
+        sleep 1
+    done
+    fatal 'timed out waiting for controller recovery progress within 60 seconds'
+}
+
 # Return the kernel start time used with a PID to prove ownership across recovery.
 supervisor_process_start() {
     local value

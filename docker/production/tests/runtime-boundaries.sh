@@ -102,6 +102,126 @@ test_environment() (
     printf 'PASS: configured, empty and unset SMTP credentials stay in the web child\n'
 )
 
+# Exercise the real controller launch path without allowing proxy readiness to substitute for worker progress.
+test_controller_startup_progress() (
+    source "$source_directory/production/fault-supervisor.sh"
+    load_function "$entrypoint" start_controller
+    load_function "$entrypoint" wait_for_command
+    local controller_app_key_file=fixture-key controller_token_file=fixture-token
+    local proxy_directory=fixture-proxy generation progress_attempts=0 child_checks=0 admissions=0
+    local permanent=false budgets='' status probe_cost remaining
+    start_child() { [[ $1 == controller ]] || fail 'unexpected controller launch role'; }
+    assert_children_running() { child_checks=$((child_checks + 1)); }
+    sleep() { [[ $1 == 1 ]] || fail 'unexpected startup sleep'; SECONDS=$((SECONDS + 1)); }
+    gosu() {
+        case $* in
+            'rentnerproxy /usr/local/bin/rentnerproxy-controller --healthcheck ready') return 0 ;;
+            'rentnerproxy /usr/local/bin/rentnerproxy-controller --healthcheck progress')
+                [[ $controller_health_failures == 2 ]] || fail 'pending controller progress cleared prior misses'
+                progress_attempts=$((progress_attempts + 1))
+                if $permanent; then return 1; fi
+                ((progress_attempts >= 3)) ;;
+            *) fail 'unexpected controller startup probe' ;;
+        esac
+    }
+    timeout() {
+        [[ $1 == --signal=TERM && $2 == --kill-after=1s && $3 =~ ^[1-4]s$ ]] || fail 'controller progress probe is unbounded'
+        remaining=$((60 - SECONDS))
+        ((${3%s} <= remaining)) || fail 'controller progress probe exceeded remaining deadline'
+        budgets+=" $3"
+        shift 3
+        status=0
+        "$@" || status=$?
+        if $permanent; then
+            # Vary probe latency so the final attempt has less than the normal four-second budget.
+            probe_cost=$((progress_attempts % 2 == 0 ? 4 : 1))
+            ((probe_cost <= remaining)) || probe_cost=$remaining
+            SECONDS=$((SECONDS + probe_cost))
+        fi
+        return "$status"
+    }
+    start_web() {
+        [[ $controller_health_failures == 0 && $progress_attempts == 3 ]] || fail 'web admitted before verified controller progress'
+        admissions=$((admissions + 1))
+    }
+    for generation in 1 2; do
+        controller_health_failures=2
+        next_health_check=0
+        progress_attempts=0
+        SECONDS=0
+        start_controller
+        [[ $controller_health_failures == 0 && $progress_attempts == 3 && $next_health_check == 0 ]] \
+            || fail 'intentional controller replacement did not verify fresh progress without changing monitor cadence'
+        start_web
+    done
+    [[ $admissions == 2 && $child_checks -gt 0 ]] || fail 'repeated controller startup skipped ownership checks'
+    if (
+        permanent=true
+        progress_attempts=0
+        controller_health_failures=2
+        SECONDS=0
+        budgets=''
+        fatal() {
+            [[ $* == 'timed out waiting for controller recovery progress within 60 seconds' ]] || exit 88
+            [[ $SECONDS == 60 && $controller_health_failures == 2 && $budgets == *' 2s' ]] || exit 89
+            exit 77
+        }
+        start_controller
+        start_web
+        fail 'permanently stalled controller admitted web'
+    ); then
+        fail 'permanently stalled controller startup succeeded'
+    else
+        status=$?
+        [[ $status == 77 ]] || fail 'controller startup did not retain the real elapsed deadline and pending failure streak'
+    fi
+    local boundary
+    for boundary in expired-before-probe late-success; do
+        if (
+            progress_attempts=0
+            controller_health_failures=2
+            SECONDS=0
+            assert_children_running() {
+                # Model scheduling delay after the loop condition but before probe admission.
+                [[ $boundary != expired-before-probe ]] || SECONDS=60
+            }
+            timeout() {
+                [[ $boundary != expired-before-probe ]] || exit 88
+                [[ $3 =~ ^[1-4]s$ ]] || exit 89
+                progress_attempts=1
+                SECONDS=61
+                return 0
+            }
+            fatal() {
+                [[ $* == 'timed out waiting for controller recovery progress within 60 seconds' && $controller_health_failures == 2 ]] || exit 90
+                if [[ $boundary == expired-before-probe ]]; then
+                    [[ $progress_attempts == 0 && $SECONDS == 60 ]] || exit 91
+                else
+                    [[ $progress_attempts == 1 && $SECONDS == 61 ]] || exit 92
+                fi
+                exit 77
+            }
+            start_controller
+            start_web
+            exit 93
+        ); then
+            fail "$boundary admitted controller startup"
+        else
+            status=$?
+            [[ $status == 77 ]] || fail "$boundary bypassed the progress deadline or issued an unbounded probe"
+        fi
+    done
+    (
+        SECONDS=0
+        controller_health_failures=2
+        assert_children_running() { :; }
+        timeout() { SECONDS=60; return 0; }
+        start_controller
+        [[ $controller_health_failures == 0 ]] || fail 'verified progress exactly at the deadline was rejected'
+    )
+    printf 'PASS: repeated controller starts require fresh worker progress; pending work retains misses and permanent stalls fail closed within 60s\n'
+)
+
 test_filesystem() (
     [[ $(uname -s) == Linux && $(id -u) == 0 ]] \
         || { printf 'SKIP: filesystem cases require disposable Linux namespace root\n'; exit 77; }
@@ -324,7 +444,7 @@ test_shutdown() (
 )
 
 case ${1:-} in
-    --environment) test_environment ;;
+    --environment) test_environment; test_controller_startup_progress ;;
     --filesystem) test_filesystem ;;
     --shutdown) test_shutdown ;;
     *) printf 'usage: bash runtime-boundaries.sh --environment|--filesystem|--shutdown\n' >&2; exit 2 ;;

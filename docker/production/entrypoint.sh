@@ -344,6 +344,7 @@ start_controller() {
         gosu rentnerproxy /usr/local/bin/rentnerproxy-controller
     wait_for_command 'proxy controller' gosu rentnerproxy /usr/local/bin/rentnerproxy-controller \
         --healthcheck ready
+    wait_for_controller_progress
 }
 
 run_migrations() {
@@ -382,6 +383,7 @@ wait_for_web_readiness() {
     local deadline=$((SECONDS + 60)) remaining budget
     while ((SECONDS < deadline)); do
         remaining=$((deadline - SECONDS))
+        ((remaining > 0)) || break
         budget=$remaining
         ((budget <= 5)) || budget=5
         if timeout --signal=TERM --kill-after=1s "${budget}s" \
