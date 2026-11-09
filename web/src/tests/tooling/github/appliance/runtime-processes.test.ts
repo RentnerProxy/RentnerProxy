@@ -6,7 +6,7 @@ import {
     readRuntimeProcesses,
     runtimeFdCountsProbe,
     runtimeProcessesProbe,
-} from '../../../../../../.github/scripts/ci/appliance/runtime-processes.ts'
+} from '../../../../../../scripts/smoke/appliance-processes.ts'
 
 test('runtime census uses start ticks, exact executable names, and every web UID process', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'runtime-processes-'))

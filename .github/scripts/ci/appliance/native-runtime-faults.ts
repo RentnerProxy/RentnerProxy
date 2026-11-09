@@ -1,6 +1,9 @@
 // oxlint-disable no-await-in-loop -- Each bounded fault must settle before consuming another restart token.
 import assert from 'node:assert/strict'
-import { runtimeProcessesProbe, type readRuntimeProcesses } from './runtime-processes.ts'
+import {
+    runtimeProcessesProbe,
+    type readRuntimeProcesses,
+} from '../../../../scripts/smoke/appliance-processes.ts'
 import { samplePublishedRuntimeTraffic } from './runtime-traffic.ts'
 import type { ApplianceRuntimeFaultContext } from './Types/runtime-faults.types.ts'
 

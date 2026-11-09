@@ -1,4 +1,4 @@
-// oxlint-disable no-await-in-loop -- Read each process identity without spawning a subprocess per PID.
+// oxlint-disable no-await-in-loop -- Shared appliance probes read identities without spawning a subprocess per PID.
 /** Census native owners and all web UID processes using confirmed start ticks; tolerate only vanished processes. */
 export async function readRuntimeProcesses(procRoot = '/proc') {
     const { readdir, readFile } = await import('node:fs/promises')

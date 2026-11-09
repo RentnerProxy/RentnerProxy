@@ -4,7 +4,7 @@ import {
     runtimeFdCountsProbe,
     runtimeProcessesProbe,
     type readRuntimeProcesses,
-} from './runtime-processes.ts'
+} from '../../../../scripts/smoke/appliance-processes.ts'
 import type { ApplianceRuntimeFaultContext } from './Types/runtime-faults.types.ts'
 import { samplePublishedRuntimeTraffic } from './runtime-traffic.ts'
 

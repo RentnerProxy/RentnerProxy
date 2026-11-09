@@ -68,7 +68,6 @@ export function smokeProgress(suite: Suite) {
                   'management-and-persistence',
                   'proxy-traffic',
                   'runtime-faults',
-                  'runtime-processes',
                   'runtime-traffic',
                   'native-runtime-faults',
                   'crowdsec',
@@ -77,6 +76,7 @@ export function smokeProgress(suite: Suite) {
                   'restore-safety',
               ].map((name) => '.github/scripts/ci/appliance/' + name + '.ts')
             : []),
+        ...(suite === 'production' ? ['scripts/smoke/appliance-processes.ts'] : []),
         ...(suite === 'certificates'
             ? [
                   'context',

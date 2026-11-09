@@ -19,45 +19,16 @@ import type { ReliabilityCheck, ReliabilityFailure, ResourceSample } from './Typ
 import { createHarness, ReliabilityError } from './harness.ts'
 import type { ReliabilityContext, FixtureResult } from './Types/harness.types.ts'
 import type { TrafficDiagnostic } from './Types/fixture-transport.types.ts'
+import { runtimeProcessesProbe } from '../smoke/appliance-processes.ts'
+import { recoverReliabilityComponent } from './component-recovery.ts'
+import type {
+    ApplianceProcess,
+    ComponentRecoverySnapshot,
+    ComponentRecoveryDependencies,
+} from './Types/component-recovery.types.ts'
+import { postgresPauseProbe } from './postgres-pause.ts'
 
-async function processIds(
-    context: ReliabilityContext,
-    kind: 'caddy' | 'controller' | 'web' | 'postgres',
-    allowEmpty = false,
-) {
-    const script = `import {readdir,readFile} from 'node:fs/promises';const kind=process.argv[1];const ids=[];
-for(const pid of await readdir('/proc')) {if(!/^\\d+$/.test(pid)||Number(pid)===process.pid)continue;try{
-const name=(await readFile('/proc/'+pid+'/comm','utf8')).trim();
-const matches=kind==='controller'?name==='rentnerproxy-co':kind==='web'?name==='bun'&&(await readFile('/proc/'+pid+'/cmdline','utf8')).includes('/docker/web/serve.ts'):name===kind;
-if(matches)ids.push(Number(pid));}catch{}}console.log(JSON.stringify(ids));`
-    const ids = JSON.parse(
-        await context.docker([
-            'exec',
-            context.container,
-            'bun',
-            '--no-env-file',
-            '-e',
-            script,
-            kind,
-        ]),
-    ) as number[]
-    assert.ok((allowEmpty || ids.length > 0) && ids.every((id) => Number.isInteger(id) && id > 1))
-    return ids
-}
-async function signal(context: ReliabilityContext, ids: number[], name: 'TERM' | 'STOP' | 'CONT') {
-    if (name === 'TERM')
-        await context.docker([
-            'exec',
-            '--detach',
-            context.container,
-            'sh',
-            '-c',
-            'sleep 0.1; exec kill -TERM "$@"',
-            'fixture',
-            ...ids.map(String),
-        ])
-    else await context.docker(['exec', context.container, 'kill', '-' + name, ...ids.map(String)])
-}
+/** Check the route selected by the persisted desired revision against the fixture's expected upstream. */
 async function verifyProxy(context: ReliabilityContext, result: FixtureResult) {
     await context.synced(result)
     const response = await context.http()
@@ -71,44 +42,98 @@ async function verifyProxy(context: ReliabilityContext, result: FixtureResult) {
         )
     }
 }
+/** Bind bounded Docker observations and exact-identity signals to the shared recovery state machine. */
+function recoveryDependencies(context: ReliabilityContext): ComponentRecoveryDependencies {
+    /** Bracket the census with container identity reads; a stop/start race yields no usable snapshot. */
+    const snapshot = async (): Promise<ComponentRecoverySnapshot | undefined> => {
+        let state: string
+        let census: string
+        try {
+            state = await context.docker(
+                [
+                    'inspect',
+                    '--format',
+                    '{{.State.Running}}|{{.State.StartedAt}}',
+                    context.container,
+                ],
+                { timeoutMs: 5_000 },
+            )
+            if (state.startsWith('false|'))
+                return { running: false, startedAt: state.slice(6), processes: [] }
+            assert.ok(state.startsWith('true|'), 'appliance inspect returns a valid running state')
+            census = await context.docker(
+                ['exec', context.container, 'bun', '--no-env-file', '-e', runtimeProcessesProbe()],
+                { timeoutMs: 5_000 },
+            )
+            if (
+                state !==
+                (await context.docker(
+                    [
+                        'inspect',
+                        '--format',
+                        '{{.State.Running}}|{{.State.StartedAt}}',
+                        context.container,
+                    ],
+                    { timeoutMs: 5_000 },
+                ))
+            )
+                return undefined
+        } catch (error) {
+            if (error instanceof assert.AssertionError) throw error
+            return undefined
+        }
+        return {
+            running: true,
+            startedAt: state.slice(5),
+            processes: JSON.parse(census) as ApplianceProcess[],
+        }
+    }
+    return {
+        snapshot,
+        /** Verify the exact target again inside the appliance before sending TERM. */
+        signal: async (target) => {
+            const script = `const stat=await Bun.file('/proc/${target.pid}/stat').text();if(stat.slice(stat.lastIndexOf(')')+2).trim().split(/\\s+/)[19]!==${JSON.stringify(target.startTicks)})throw new Error('component identity changed');process.kill(${target.pid},'SIGTERM');`
+            await context.docker(
+                ['exec', context.container, 'bun', '--no-env-file', '-e', script],
+                { timeoutMs: 5_000 },
+            )
+        },
+        start: async () => {
+            await context.docker(['start', context.container])
+        },
+        /** Probe readiness without spawning a web UID fixture writer during supervisor recovery. */
+        ready: async () => {
+            try {
+                await context.docker(
+                    [
+                        'exec',
+                        context.container,
+                        'bun',
+                        '--no-env-file',
+                        '/opt/rentnerproxy/web/docker/web/healthcheck.ts',
+                    ],
+                    { timeoutMs: 8_000 },
+                )
+                return true
+            } catch {
+                return false
+            }
+        },
+        timeoutError: (label) => new ReliabilityError('timeout', label),
+    }
+}
+/** Preserve durable state only after the component's ownership and readiness barriers have completed. */
 async function preserveAcrossRestart(context: ReliabilityContext, component: 'web' | 'controller') {
     const before = await context.fixture('durability-read')
-    await signal(context, await processIds(context, component), 'TERM')
-    await context.waitFor(
-        async () =>
-            (await context.docker([
-                'inspect',
-                '--format',
-                '{{.State.Running}}',
-                context.container,
-            ])) === 'false',
-        'supervised component exit',
-        45_000,
-    )
-    await context.docker(['start', context.container])
-    await context.waitFor(
-        async () => {
-            await context.docker(
-                [
-                    'exec',
-                    context.container,
-                    'bun',
-                    '/opt/rentnerproxy/web/docker/web/healthcheck.ts',
-                ],
-                { timeoutMs: 8_000 },
-            )
-            return true
-        },
-        'appliance recovers after component exit',
-        150_000,
-    )
+    await recoverReliabilityComponent(component, recoveryDependencies(context))
     const after = await context.fixture('durability-read')
     assert.equal(after.desiredRevision, before.desiredRevision)
     assert.deepEqual(after.durableCounts, before.durableCounts)
     assert.deepEqual(after.importHistory, before.importHistory)
     await context.synced(after)
-    context.check('restart', component + ' exit and appliance recovery preserve durable state')
+    context.check('restart', component + ' ownership recovery preserves durable state')
 }
+/** Inject bounded component faults while retaining durable intent and verifying each recovery boundary. */
 async function exerciseFailures(
     context: ReliabilityContext,
     iteration: number,
@@ -125,12 +150,7 @@ async function exerciseFailures(
             await preserveAcrossRestart(context, mode)
         } else if (mode === 'caddy') {
             const before = await context.fixture('snapshot')
-            const previousIds = await processIds(context, 'caddy')
-            await signal(context, previousIds, 'TERM')
-            await context.waitFor(async () => {
-                const ids = await processIds(context, 'caddy', true)
-                return ids.length > 0 && !ids.some((id) => previousIds.includes(id))
-            }, 'Caddy process replacement')
+            await recoverReliabilityComponent('caddy', recoveryDependencies(context))
             await context.synced(before)
             await context.waitFor(
                 async () => (await context.http()).status === 200,
@@ -138,24 +158,69 @@ async function exerciseFailures(
             )
             context.check('restart', 'Caddy process recovery keeps the desired revision')
         } else if (mode === 'postgres') {
-            const ids = await processIds(context, 'postgres')
-            await signal(context, ids, 'STOP')
-            let unavailable = false
-            try {
-                const binding = await context.docker(['port', context.container, '3000/tcp'])
-                try {
-                    const response = await fetch('http://' + binding + '/health/ready', {
-                        signal: AbortSignal.timeout(4_000),
-                    })
-                    unavailable = !response.ok
-                } catch {
-                    unavailable = true
-                }
-                assert.equal(unavailable, true)
-                assert.equal((await context.http()).status, 200)
-            } finally {
-                await signal(context, ids, 'CONT')
-            }
+            const beforePause = await context.docker(
+                [
+                    'inspect',
+                    '--format',
+                    '{{.State.Running}}|{{.State.StartedAt}}',
+                    context.container,
+                ],
+                { timeoutMs: 5_000 },
+            )
+            assert.ok(beforePause.startsWith('true|'))
+            const paused: unknown = JSON.parse(
+                await context.docker(
+                    [
+                        'exec',
+                        context.container,
+                        'bun',
+                        '--no-env-file',
+                        '-e',
+                        postgresPauseProbe(context.domain),
+                    ],
+                    { timeoutMs: 12_000 },
+                ),
+            )
+            assert.ok(
+                paused &&
+                    typeof paused === 'object' &&
+                    'notReady' in paused &&
+                    'proxyStatus' in paused &&
+                    'resumed' in paused,
+            )
+            assert.equal(typeof paused.notReady, 'boolean')
+            assert.equal(typeof paused.resumed, 'boolean')
+            assert.ok(
+                paused.proxyStatus === null ||
+                    (typeof paused.proxyStatus === 'number' &&
+                        Number.isInteger(paused.proxyStatus) &&
+                        paused.proxyStatus >= 100 &&
+                        paused.proxyStatus <= 599),
+            )
+            console.log(
+                'PostgreSQL pause: notReady=' +
+                    paused.notReady +
+                    ' proxyStatus=' +
+                    paused.proxyStatus +
+                    ' resumed=' +
+                    paused.resumed,
+            )
+            assert.equal(paused.notReady, true)
+            assert.equal(paused.proxyStatus, 200)
+            assert.equal(paused.resumed, true)
+            assert.equal(
+                await context.docker(
+                    [
+                        'inspect',
+                        '--format',
+                        '{{.State.Running}}|{{.State.StartedAt}}',
+                        context.container,
+                    ],
+                    { timeoutMs: 5_000 },
+                ),
+                beforePause,
+                'brief PostgreSQL pause must preserve the running appliance',
+            )
             await context.synced(await context.fixture('snapshot'))
             context.check(
                 'health',
@@ -193,6 +258,7 @@ async function exerciseFailures(
         }
     }
 }
+/** Exercise both access-policy orderings and verify their published authentication and IP decisions. */
 async function exercisePolicies(context: ReliabilityContext, random: () => number) {
     const modes: ('public' | 'authenticated' | 'ip-restricted')[] =
         random() < 0.5
@@ -219,6 +285,7 @@ async function exercisePolicies(context: ReliabilityContext, random: () => numbe
     }
     context.check('proxy', 'Access policy changes enforce Basic Auth and IP restrictions')
 }
+/** Run the requested bounded reliability workload and write a sanitized report even when recovery fails. */
 async function main() {
     const options = parseReliabilityOptions(process.argv.slice(2))
     const checks: ReliabilityCheck[] = []
@@ -368,7 +435,7 @@ async function main() {
         const location =
             error instanceof Error
                 ? error.stack?.match(
-                      /runtime-reliability[/\\](harness|certificates|crowdsec|run|control)\.ts:(\d+):(\d+)/,
+                      /runtime-reliability[/\\](harness|certificates|crowdsec|run|control|component-recovery)\.ts:(\d+):(\d+)/,
                   )
                 : undefined
         console.error(
