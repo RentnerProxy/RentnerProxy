@@ -25,6 +25,7 @@ export interface HostMonitoringProbeDependencies {
         claim: HostMonitoringClaim,
         outcome: HostMonitoringOutcome,
         context: HostMonitoringProbeContext,
+        signal: AbortSignal,
     ) => Promise<boolean>
     readonly release: (claim: HostMonitoringClaim) => Promise<unknown>
 }

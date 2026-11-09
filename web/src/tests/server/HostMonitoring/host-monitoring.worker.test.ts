@@ -16,25 +16,34 @@ test('monitoring completion publishes only after accepted durable writes', async
         mock.module('./server/RuntimeDiagnostics/domain-diagnostics-data.ts', () => ({ readHostMonitoringContextInTransaction: async () => {} }))
         mock.module('./server/HostMonitoring/host-monitoring.probe.ts', () => ({ createHostMonitoringProbe: dependencies => { probe = dependencies; return async () => {} } }))
         mock.module('./server/HostMonitoring/host-monitoring.repository.ts', () => ({
-            claimDueHostMonitoringPolicy: async () => null,
-            completeHostMonitoringClaim: (...args) => complete(...args),
+            claimDueHostMonitoringPolicies: async () => [],
+            completeHostMonitoringClaims: (...args) => complete(...args),
+            readHostMonitoringClaimContexts: async claims => claims.map(() => null),
             releaseHostMonitoringClaim: async () => {},
             pruneHostMonitoringHistory: async () => {},
         }))
         mock.module('./server/WebSockets/applicationChanges.ts', () => ({ publishApplicationChange: () => publications++ }))
         await import('./server/HostMonitoring/host-monitoring.worker.server.ts')
         const pending = Promise.withResolvers()
-        complete = () => pending.promise
-        const result = probe.complete({}, {}, { availability: {} })
+        const signal = new AbortController().signal
+        complete = items => {
+            if (items.length !== 16 || items.some(item => item.signal !== signal)) throw new Error('Wrong completion batch')
+            return pending.promise
+        }
+        const result = Promise.allSettled(Array.from({ length: 16 }, () =>
+            probe.complete({}, {}, { availability: {} }, signal)))
         if (publications !== 0) throw new Error('Published before commit')
-        pending.resolve(true)
-        const accepted = await result
-        complete = async () => false
-        const stale = await probe.complete({}, {}, { availability: {} })
-        complete = async () => { throw new Error('commit failed') }
-        let rejected = false
-        try { await probe.complete({}, {}, { availability: {} }) } catch { rejected = true }
-        console.log(JSON.stringify({ accepted, stale, rejected, publications }))
+        pending.resolve(Array.from({ length: 16 }, (_, index) => index === 2
+            ? { status: 'rejected', reason: new Error('one stale write failed') }
+            : { status: 'fulfilled', value: index === 0 }))
+        const outcomes = await result
+        const accepted = outcomes[0].value
+        const stale = outcomes[1].value
+        const rejected = outcomes[2].status === 'rejected'
+        complete = async () => { throw new Error('root commit failed') }
+        let rootRejected = false
+        try { await probe.complete({}, {}, { availability: {} }, signal) } catch { rootRejected = true }
+        console.log(JSON.stringify({ accepted, stale, rejected, rootRejected, publications }))
         `,
         { cwd: new URL('../../..', import.meta.url) },
     )
@@ -42,13 +51,14 @@ test('monitoring completion publishes only after accepted durable writes', async
         accepted: true,
         stale: false,
         rejected: true,
+        rootRejected: true,
         publications: 1,
     })
 })
 
 function dependencies(overrides: Partial<HostMonitoringWorkerDependencies<string>> = {}) {
     return {
-        claim: async () => null,
+        claim: async () => [],
         runClaim: async () => {},
         releaseCancelled: async () => {},
         prune: async () => {},
@@ -77,60 +87,114 @@ function scheduler() {
     }
 }
 
+async function flush() {
+    await Bun.sleep(0)
+}
+
 describe('host monitoring worker', () => {
-    test('coalesces ticks, bounds admissions and waits for abort cleanup', async () => {
-        const entered = Promise.withResolvers<void>()
-        const cleaned = Promise.withResolvers<void>()
-        let claims = 0
+    test('bounds in-flight storage plus running probes at 64 with batches of 16', async () => {
+        const done = Promise.withResolvers<void>()
+        const late = Promise.withResolvers<readonly string[]>()
+        const batchEntered = Promise.withResolvers<void>()
+        const limits: number[] = []
         let probes = 0
-        let signal: AbortSignal | undefined
         const worker = createHostMonitoringWorker(
             dependencies({
-                claim: async () => {
-                    claims++
-                    return 'claim'
+                claim: async (limit) => {
+                    limits.push(limit)
+                    if (limits.length === 4) {
+                        batchEntered.resolve()
+                        return late.promise
+                    }
+                    return Array.from({ length: limit }, (_, index) => `${limits.length}-${index}`)
                 },
-                runClaim: async (_claim, abortSignal) => {
-                    signal = abortSignal
+                runClaim: async () => {
                     probes++
-                    entered.resolve()
-                    await cleaned.promise
+                    await done.promise
                 },
             }),
         )
-        const first = worker.runOnce()
-        expect(worker.runOnce()).toBe(first)
-        await entered.promise
+        const tick = worker.runOnce()
+        expect(worker.runOnce()).toBe(tick)
+        await batchEntered.promise
+        expect(probes).toBe(48)
+        expect(limits).toEqual([16, 16, 16, 16])
+        expect(worker.runOnce()).toBe(tick)
+        late.resolve(Array.from({ length: 16 }, (_, index) => `late-${index}`))
+        await tick
+        expect(probes).toBe(64)
+        await worker.runOnce()
+        expect(limits.length).toBe(4)
         let stopped = false
         const stopping = worker.stop().then(() => {
             stopped = true
         })
-        await Promise.resolve()
-        expect(signal?.aborted).toBeTrue()
+        await flush()
         expect(stopped).toBeFalse()
-        cleaned.resolve()
+        done.resolve()
         await stopping
-        await first
         await worker.runOnce()
-        expect(claims).toBe(HOST_MONITORING_LIMITS.workerConcurrency)
-        expect(probes).toBe(1)
+        expect(probes).toBe(64)
     })
 
-    test('releases claims arriving after shutdown without probing or warning', async () => {
-        const entered = Promise.withResolvers<void>()
-        const admitted = Promise.withResolvers<string>()
-        let released = 0
+    test('refills completed slots every tick while a slow sibling remains and never drains forever', async () => {
+        const timer = scheduler()
+        const slow = Promise.withResolvers<void>()
+        const firstFast = Promise.withResolvers<void>()
+        const limits: number[] = []
+        const signals = new Set<AbortSignal>()
+        let claimed = 0
+        let completed = 0
+        const worker = createHostMonitoringWorker(
+            dependencies({
+                schedule: timer.schedule,
+                claim: async (limit) => {
+                    limits.push(limit)
+                    return Array.from({ length: limit }, () => `${claimed++}`)
+                },
+                runClaim: async (claim, signal) => {
+                    signals.add(signal)
+                    if (claim === '0') await slow.promise
+                    else if (Number(claim) < 64) await firstFast.promise
+                    completed++
+                },
+            }),
+        )
+        worker.start()
+        await worker.runOnce()
+        expect(claimed).toBe(64)
+        expect(timer.pending.size).toBe(1)
+        timer.fire()
+        await worker.runOnce()
+        expect(claimed).toBe(64)
+        firstFast.resolve()
+        await flush()
+        expect(completed).toBe(63)
+        timer.fire()
+        await worker.runOnce()
+        expect(limits.slice(4)).toEqual([16, 16, 16, 15])
+        expect(claimed).toBe(127)
+        expect(completed).toBe(126)
+        expect(signals.size).toBe(1)
+        expect(timer.pending.size).toBe(1)
+        expect(timer.delays.every((delay) => delay === 250)).toBeTrue()
+        slow.resolve()
+        await worker.stop()
+    })
+
+    test('releases every late claim and awaits cleanup even when one release fails', async () => {
+        const admitted = Promise.withResolvers<readonly string[]>()
+        const cleaned = Promise.withResolvers<void>()
+        const released: string[] = []
         let probes = 0
         let warnings = 0
         const worker = createHostMonitoringWorker(
             dependencies({
-                claim: async () => {
-                    entered.resolve()
-                    return admitted.promise
-                },
-                releaseCancelled: async (claim) => {
-                    expect(claim).toBe('late')
-                    released++
+                claim: () => admitted.promise,
+                releaseCancelled: (claim) => {
+                    released.push(claim)
+                    if (claim === 'failed') throw new Error('private release failure')
+                    return cleaned.promise
                 },
                 runClaim: async () => {
                     probes++
@@ -140,55 +204,86 @@ describe('host monitoring worker', () => {
                 },
             }),
         )
-        const running = worker.runOnce()
-        await entered.promise
+        const tick = worker.runOnce()
         const stopping = worker.stop()
-        admitted.resolve('late')
+        admitted.resolve(['failed', 'late', 'later'])
+        await flush()
+        expect(released).toEqual(['failed', 'late', 'later'])
+        let stopped = false
+        void stopping.then(() => {
+            stopped = true
+        })
+        await flush()
+        expect(stopped).toBeFalse()
+        cleaned.resolve()
         await stopping
-        await running
-        expect({ released, probes, warnings }).toEqual({ released: 1, probes: 0, warnings: 0 })
+        await tick
+        expect({ probes, warnings }).toEqual({ probes: 0, warnings: 0 })
     })
 
-    test('sweeps retention independently of empty claims and throttles failed sweeps', async () => {
-        let clock = 100
-        let sweeps = 0
+    test('a failed probe does not abort a healthy sibling and shutdown awaits adapter cleanup', async () => {
+        const cleanup = Promise.withResolvers<void>()
+        const aborted = Promise.withResolvers<void>()
+        let healthySignal: AbortSignal | undefined
         let claims = 0
+        let releases = 0
+        let warnings = 0
         const worker = createHostMonitoringWorker(
             dependencies({
-                now: () => clock,
-                claim: async () => {
-                    claims++
-                    return null
+                claim: async () => (claims++ === 0 ? ['failed', 'healthy'] : []),
+                runClaim: async (claim, signal) => {
+                    if (claim === 'failed') throw new Error('secret target and credentials')
+                    healthySignal = signal
+                    await new Promise<void>((resolve) =>
+                        signal.addEventListener(
+                            'abort',
+                            () => {
+                                aborted.resolve()
+                                resolve()
+                            },
+                            { once: true },
+                        ),
+                    )
+                    await cleanup.promise
+                    throw new DOMException('Cancelled', 'AbortError')
                 },
-                prune: async () => {
-                    sweeps++
-                    throw new Error('private connection URI')
+                releaseCancelled: async () => {
+                    releases++
+                },
+                unavailable: (...args) => {
+                    expect(args).toEqual([])
+                    warnings++
                 },
             }),
         )
         await worker.runOnce()
-        clock += HOST_MONITORING_LIMITS.retentionSweepMs - 1
-        await worker.runOnce()
-        expect(sweeps).toBe(1)
-        clock++
-        await worker.runOnce()
-        await worker.stop()
-        expect(sweeps).toBe(2)
-        expect(claims).toBe(3)
+        await flush()
+        expect(healthySignal?.aborted).toBeFalse()
+        expect(warnings).toBe(1)
+        const stopping = worker.stop()
+        await aborted.promise
+        cleanup.resolve()
+        await stopping
+        expect(releases).toBe(0)
+        expect(warnings).toBe(1)
     })
 
-    test('reschedules after errors, deduplicates warnings and restarts after stop', async () => {
+    test('prunes independently of slow admission and probes, throttles failures and awaits prune on stop', async () => {
         const timer = scheduler()
-        let claims = 0
-        let broken = true
+        const admitted = Promise.withResolvers<readonly string[]>()
+        const pruned = Promise.withResolvers<void>()
+        let clock = 100
+        let sweeps = 0
         let warnings = 0
         const worker = createHostMonitoringWorker(
             dependencies({
+                now: () => clock,
                 schedule: timer.schedule,
-                claim: async () => {
-                    claims++
-                    if (broken) throw new Error('secret')
-                    return null
+                claim: () => admitted.promise,
+                prune: async () => {
+                    sweeps++
+                    if (sweeps === 1) throw new Error('private database URI')
+                    await pruned.promise
                 },
                 unavailable: () => {
                     warnings++
@@ -196,8 +291,60 @@ describe('host monitoring worker', () => {
             }),
         )
         worker.start()
+        await flush()
+        expect(sweeps).toBe(1)
+        clock += HOST_MONITORING_LIMITS.retentionSweepMs - 1
+        timer.fire()
+        await flush()
+        expect(sweeps).toBe(1)
+        clock++
+        timer.fire()
+        await flush()
+        expect(sweeps).toBe(2)
+        admitted.resolve([])
         await worker.runOnce()
-        expect(timer.pending.size).toBe(1)
+        let stopped = false
+        const stopping = worker.stop().then(() => {
+            stopped = true
+        })
+        await flush()
+        expect(stopped).toBeFalse()
+        pruned.resolve()
+        await stopping
+        expect(warnings).toBe(1)
+    })
+
+    test('keeps admission coalesced while independent timers run and recovers warnings after restart', async () => {
+        const timer = scheduler()
+        const admitted = Promise.withResolvers<readonly string[]>()
+        let claims = 0
+        let broken = false
+        let warnings = 0
+        const worker = createHostMonitoringWorker(
+            dependencies({
+                schedule: timer.schedule,
+                claim: async () => {
+                    claims++
+                    if (claims === 1) return admitted.promise
+                    if (broken) throw new Error('private database password')
+                    return []
+                },
+                unavailable: () => {
+                    warnings++
+                },
+            }),
+        )
+        worker.start()
+        const first = worker.runOnce()
+        timer.fire()
+        timer.fire()
+        expect(worker.runOnce()).toBe(first)
+        expect(claims).toBe(1)
+        admitted.resolve([])
+        await first
+        broken = true
+        timer.fire()
+        await worker.runOnce()
         timer.fire()
         await worker.runOnce()
         expect(warnings).toBe(1)
@@ -210,65 +357,10 @@ describe('host monitoring worker', () => {
         expect(warnings).toBe(2)
         await worker.stop()
         expect(timer.pending.size).toBe(0)
+        broken = false
         worker.start()
         await worker.runOnce()
         await worker.stop()
-        expect(claims).toBe(5)
-        expect(
-            timer.delays.every((delay) => delay === HOST_MONITORING_LIMITS.pollIntervalMs),
-        ).toBeTrue()
-    })
-
-    test('schedules one completion-relative tick after a slow probe with no catch-up', async () => {
-        const timer = scheduler()
-        const entered = Promise.withResolvers<void>()
-        const done = Promise.withResolvers<void>()
-        const worker = createHostMonitoringWorker(
-            dependencies({
-                schedule: timer.schedule,
-                claim: async () => 'slow',
-                runClaim: async () => {
-                    entered.resolve()
-                    await done.promise
-                },
-            }),
-        )
-        worker.start()
-        worker.start()
-        await entered.promise
-        expect(timer.pending.size).toBe(0)
-        done.resolve()
-        await worker.runOnce()
-        expect(timer.pending.size).toBe(1)
-        expect(timer.delays).toEqual([1_000])
-        await worker.stop()
-    })
-
-    test('abort rejections do not report an outage and cleanup remains adapter-owned', async () => {
-        const entered = Promise.withResolvers<void>()
-        let cleaned = false
-        let warnings = 0
-        const worker = createHostMonitoringWorker(
-            dependencies({
-                claim: async () => 'claim',
-                runClaim: async (_claim, signal) => {
-                    entered.resolve()
-                    await new Promise<void>((resolve) =>
-                        signal.addEventListener('abort', () => resolve(), { once: true }),
-                    )
-                    cleaned = true
-                    throw new DOMException('Cancelled', 'AbortError')
-                },
-                unavailable: () => {
-                    warnings++
-                },
-            }),
-        )
-        const running = worker.runOnce()
-        await entered.promise
-        await worker.stop()
-        await running
-        expect(cleaned).toBeTrue()
-        expect(warnings).toBe(0)
+        expect(claims).toBe(6)
     })
 })

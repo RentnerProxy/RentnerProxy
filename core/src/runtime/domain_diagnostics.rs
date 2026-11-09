@@ -9,7 +9,8 @@ pub(crate) use models::{Request, Result};
 use std::{sync::atomic::Ordering, time::Duration};
 use tokio::time::{Instant, timeout_at};
 
-// Admission caps this registry at two entries. The key deliberately excludes
+// Admission caps this registry at 64 scheduled plus two interactive entries.
+// The key deliberately excludes
 // revision and domain so a host edit cannot bypass an executing check.
 #[derive(Default)]
 pub(super) struct ActiveChecks(std::sync::Mutex<std::collections::HashSet<(HostType, String)>>);
@@ -135,6 +136,8 @@ impl ProxyRuntime {
         )
         .await
     }
+    /// Runs a bounded read-only check with separate scheduled/interactive admission and per-host exclusion.
+    /// Configured network timeouts retain a final snapshot reserve; changed configuration invalidates results.
     async fn diagnose_domain_budget(
         &self,
         request: Request,
@@ -142,20 +145,43 @@ impl ProxyRuntime {
         budget: Duration,
     ) -> std::result::Result<Result, Error> {
         request.validate()?;
-        let _permit = self
-            .diagnostics_admission
-            .try_acquire()
-            .map_err(|_| Error::Busy)?;
-        let _active = self.diagnostics_active.acquire(&request)?;
         let start = Instant::now();
+        // Only the trusted monitoring caller sets upstream_only. Keep its pool
+        // separate so scheduled probes cannot consume interactive reservations.
+        let admission = if request.upstream_only {
+            &self.monitoring_admission
+        } else {
+            &self.diagnostics_admission
+        };
+        let _permit = admission.try_acquire().map_err(|_| Error::Busy)?;
+        let _active = self.diagnostics_active.acquire(&request)?;
+        // A configured timeout bounds snapshot admission plus network work.
+        // Keep a separate verification reserve so a genuine upstream timeout
+        // survives brief apply contention without exceeding the outer budget.
+        let verification_reserve = budget.div_f64(12.0).min(Duration::from_secs(1));
+        let budget = if request.upstream_only {
+            request.timeout_ms.map_or(budget, |timeout| {
+                budget.min(Duration::from_millis(u64::from(timeout)) + verification_reserve)
+            })
+        } else {
+            budget
+        };
         let deadline = start + budget;
-        let network_deadline = deadline - budget.div_f64(12.0).min(Duration::from_secs(1));
+        let network_deadline = deadline - verification_reserve;
         let snapshot = timeout_at(network_deadline, async {
-            let _guard = self.apply_lock.try_lock().map_err(|_| Error::Busy)?;
-            Ok(self.diagnostic_snapshot(&request).await)
+            // Both classes wait fairly behind short snapshot/apply sections;
+            // admission remains bounded and interactive slots stay reserved.
+            let _guard = self.apply_lock.lock().await;
+            self.diagnostic_snapshot(&request).await
         })
         .await
-        .map_err(|_| Error::Unavailable)??;
+        .map_err(|_| {
+            if request.upstream_only {
+                Error::Unavailable
+            } else {
+                Error::Busy
+            }
+        })?;
         let config = if !snapshot.ready {
             Stage::new(Status::Unknown, Code::RuntimeUnavailable)
         } else if !snapshot.member {

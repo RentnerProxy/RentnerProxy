@@ -1,6 +1,8 @@
 import type { hostCheckIncidents, hostCheckObservations, hostCheckPolicies } from '@/db/schema.ts'
 import type { HostMonitoringSettings } from '@/lib/HostMonitoring/Types/host-monitoring.types.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
+import type { HostMonitoringOutcome } from '@/lib/HostMonitoring/Types/host-monitoring.types.ts'
+import type { HostMonitoringProbeContext } from './host-monitoring-probe.types.ts'
 
 export type HostMonitoringPolicy = typeof hostCheckPolicies.$inferSelect
 type HostMonitoringObservation = typeof hostCheckObservations.$inferSelect
@@ -9,6 +11,13 @@ type HostMonitoringIncident = typeof hostCheckIncidents.$inferSelect
 export interface HostMonitoringClaim {
     readonly policy: HostMonitoringPolicy
     readonly leaseToken: string
+}
+
+export interface HostMonitoringCompletion {
+    readonly claim: HostMonitoringClaim
+    readonly outcome: HostMonitoringOutcome
+    readonly before: HostMonitoringProbeContext
+    readonly signal: AbortSignal
 }
 
 export interface SaveHostMonitoringPolicyInput {

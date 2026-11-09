@@ -20,15 +20,19 @@ import { getDatabaseUrl } from '@/server/env.server.ts'
 import { lockProxyRuntimeSettings } from '@/server/ProxyRuntime/proxy-runtime-settings.ts'
 import {
     claimDueHostMonitoringPolicy,
+    claimDueHostMonitoringPolicies,
     completeHostMonitoringClaim as completeStoredClaim,
+    completeHostMonitoringClaims,
     lockHostMonitoringPolicy,
     pruneHostMonitoringHistory,
     readHostMonitoringHistory,
+    readHostMonitoringClaimContexts,
     releaseHostMonitoringClaim,
     saveHostMonitoringPolicy,
 } from '@/server/HostMonitoring/host-monitoring.repository.ts'
 import type {
     HostMonitoringClaim,
+    HostMonitoringCompletion,
     HostMonitoringContextMatches,
     HostMonitoringPolicy,
 } from '@/server/HostMonitoring/Types/host-monitoring.repository.types.ts'
@@ -77,7 +81,7 @@ const unknown: HostMonitoringOutcome = {
 async function fixture(
     settings: Partial<HostMonitoringSettings> = {},
 ): Promise<HostMonitoringPolicy> {
-    const id = randomUUID()
+    const id = Bun.randomUUIDv7()
     hostIds.push(id)
     const domain = `monitor-${id}.example.test`
     await db
@@ -120,6 +124,19 @@ async function finish(policy: HostMonitoringPolicy, outcome: HostMonitoringOutco
     return complete(await claim(policy), outcome, async () => true)
 }
 
+async function completions(
+    claims: readonly HostMonitoringClaim[],
+    outcome: HostMonitoringOutcome = healthy,
+): Promise<HostMonitoringCompletion[]> {
+    const contexts = await readHostMonitoringClaimContexts(claims)
+    const signal = new AbortController().signal
+    return claims.map((claimed, index) => {
+        const before = contexts[index]
+        if (!before) throw new Error('Owned monitoring context is unavailable.')
+        return { claim: claimed, outcome, before, signal }
+    })
+}
+
 describe('durable scheduled monitoring repository', () => {
     beforeEach(async () => {
         if (!isolated) return
@@ -147,20 +164,313 @@ describe('durable scheduled monitoring repository', () => {
     integrationTest(
         'concurrent claimers enforce the global lease cap and exclude already claimed policies',
         async () => {
-            await Promise.all([fixture(), fixture(), fixture()])
-            const claims = await Promise.all([
-                claimDueHostMonitoringPolicy(),
-                claimDueHostMonitoringPolicy(),
-                claimDueHostMonitoringPolicy(),
-                claimDueHostMonitoringPolicy(),
-            ])
-            const active = claims.filter((value) => value !== null)
-            expect(active).toHaveLength(2)
-            expect(new Set(active.map((value) => value.policy.id)).size).toBe(2)
+            const ids = Array.from({ length: 70 }, () => Bun.randomUUIDv7())
+            hostIds.push(...ids)
+            await db.insert(proxyHosts).values(
+                ids.map((id) => ({
+                    id,
+                    forwardScheme: 'http' as const,
+                    forwardHost: '127.0.0.1',
+                    forwardPort: 8080,
+                })),
+            )
+            await db.insert(hostDomains).values(
+                ids.map((proxyHostId) => ({
+                    proxyHostId,
+                    domain: `monitor-${proxyHostId}.example.test`,
+                })),
+            )
+            await db.insert(hostCheckPolicies).values(
+                ids.map((proxyHostId) => ({
+                    proxyHostId,
+                    domain: `monitor-${proxyHostId}.example.test`,
+                    enabled: true,
+                    configuredBy: actorId,
+                })),
+            )
+            const batches = await Promise.all(
+                Array.from({ length: 6 }, () => claimDueHostMonitoringPolicies(16)),
+            )
+            const active = batches.flat()
+            expect(active).toHaveLength(64)
+            expect(new Set(active.map((value) => value.policy.id)).size).toBe(64)
+            expect(batches.every((batch) => batch.length <= 16)).toBe(true)
             expect(active.every((value) => value.leaseToken === value.policy.leaseToken)).toBe(true)
+            expect(new Set(active.map((value) => value.leaseToken)).size).toBe(64)
+            expect(await claimDueHostMonitoringPolicies(16)).toEqual([])
             expect(await releaseHostMonitoringClaim(active[0]!)).toBe(true)
             expect((await row(active[0]!.policy)).nextCheckAt.getTime()).toBeGreaterThan(Date.now())
-            expect(await claimDueHostMonitoringPolicy()).not.toBeNull()
+            const replacement = await claimDueHostMonitoringPolicies(16)
+            expect(replacement).toHaveLength(1)
+            expect(active.some((value) => value.policy.id === replacement[0]?.policy.id)).toBe(
+                false,
+            )
+        },
+    )
+
+    integrationTest(
+        'batch preflight preserves input order and rejects stale token, version, expiry and eligibility',
+        async () => {
+            await Promise.all(Array.from({ length: 7 }, () => fixture()))
+            const claims = await claimDueHostMonitoringPolicies(7)
+            expect(claims).toHaveLength(7)
+            await db
+                .update(hostCheckPolicies)
+                .set({ leaseExpiresAt: new Date(0) })
+                .where(eq(hostCheckPolicies.id, claims[3]!.policy.id))
+            await db
+                .update(hostCheckPolicies)
+                .set({ enabled: false })
+                .where(eq(hostCheckPolicies.id, claims[4]!.policy.id))
+            await db
+                .update(hostDomains)
+                .set({ domain: `replacement-${claims[5]!.policy.proxyHostId}.example.test` })
+                .where(eq(hostDomains.proxyHostId, claims[5]!.policy.proxyHostId))
+            await db
+                .update(proxyHosts)
+                .set({ enabled: false })
+                .where(eq(proxyHosts.id, claims[6]!.policy.proxyHostId))
+            const inputs = [
+                { ...claims[2]!, policy: { ...claims[2]!.policy, version: randomUUID() } },
+                claims[0]!,
+                { ...claims[1]!, leaseToken: randomUUID() },
+                ...claims.slice(3),
+                { ...claims[0]!, leaseToken: randomUUID() },
+                { ...claims[0]!, policy: { ...claims[0]!.policy, version: randomUUID() } },
+            ]
+            const contexts = await readHostMonitoringClaimContexts(inputs)
+            expect(contexts).toHaveLength(inputs.length)
+            expect(contexts[1]?.enabled).toBe(true)
+            expect(contexts[1]?.proof).toMatch(/^sha256:[a-f0-9]{64}$/u)
+            expect(contexts[6]?.enabled).toBe(false)
+            expect(contexts.filter((_, index) => index !== 1 && index !== 6)).toEqual(
+                Array.from({ length: inputs.length - 2 }, () => null),
+            )
+            expect(await readHostMonitoringClaimContexts([])).toEqual([])
+        },
+    )
+
+    integrationTest(
+        'batch savepoints roll back a bad result without losing committed healthy siblings',
+        async () => {
+            const policies = await Promise.all(
+                Array.from({ length: 3 }, () => fixture({ failureThreshold: 1 })),
+            )
+            const failing = policies[0]!
+            await finish(failing, unhealthy)
+            await db
+                .update(hostCheckPolicies)
+                .set({ nextCheckAt: new Date(0) })
+                .where(eq(hostCheckPolicies.id, failing.id))
+            const claims = await claimDueHostMonitoringPolicies(3)
+            expect(claims).toHaveLength(3)
+            const items = await completions(claims)
+            const bad = items.find((item) => item.claim.policy.id === failing.id)!
+            const siblings = items.filter((item) => item !== bad)
+            const before = await row(failing)
+            const incidentsBefore = await db
+                .select()
+                .from(hostCheckIncidents)
+                .where(eq(hostCheckIncidents.policyId, failing.id))
+            const results = await completeHostMonitoringClaims([
+                siblings[0]!,
+                { ...bad, outcome: { ...healthy, durationMs: -1 } },
+                siblings[1]!,
+            ])
+            expect(results[0]).toEqual({ status: 'fulfilled', value: true })
+            expect(results[1]?.status).toBe('rejected')
+            expect(results[2]).toEqual({ status: 'fulfilled', value: true })
+            expect(await row(failing)).toEqual(before)
+            expect(
+                await db
+                    .select()
+                    .from(hostCheckIncidents)
+                    .where(eq(hostCheckIncidents.policyId, failing.id)),
+            ).toEqual(incidentsBefore)
+            const observations = await db.select().from(hostCheckObservations)
+            expect(observations).toHaveLength(3)
+            expect(new Set(observations.map((observation) => observation.policyId)).size).toBe(3)
+            for (const item of siblings) {
+                // oxlint-disable-next-line no-await-in-loop -- Read each committed sibling after the root transaction has returned.
+                const stored = await row(item.claim.policy)
+                expect(stored.state).toBe('healthy')
+                expect(stored.leaseToken).toBeNull()
+                expect(stored.contextProof).toBe(item.before.availability.proof)
+                expect(stored.contextRevision).toBe(item.before.availability.revision)
+            }
+        },
+    )
+
+    integrationTest(
+        'an unrelated global revision edit fences an in-flight probe while preserving outage continuity',
+        async () => {
+            const policy = await fixture({ failureThreshold: 1, recoveryThreshold: 1 })
+            const unrelated = await fixture()
+            const first = await completions([await claim(policy)], unhealthy)
+            expect(await completeHostMonitoringClaims(first)).toEqual([
+                { status: 'fulfilled', value: true },
+            ])
+            const stale = await completions([await claim(policy)])
+            await db.transaction(async (transaction) => {
+                await lockProxyRuntimeSettings(transaction)
+                await transaction
+                    .update(proxyHosts)
+                    .set({ forwardPort: 8081 })
+                    .where(eq(proxyHosts.id, unrelated.proxyHostId))
+            })
+            const [freshContext] = await readHostMonitoringClaimContexts([stale[0]!.claim])
+            expect(freshContext?.revision).not.toBe(stale[0]!.before.revision)
+            expect(freshContext?.availability).toEqual(stale[0]!.before.availability)
+            expect(await completeHostMonitoringClaims(stale)).toEqual([
+                { status: 'fulfilled', value: false },
+            ])
+            expect((await row(policy)).state).toBe('unhealthy')
+            expect(
+                await db
+                    .select()
+                    .from(hostCheckObservations)
+                    .where(eq(hostCheckObservations.policyId, policy.id)),
+            ).toHaveLength(1)
+            const fresh = await completions([await claim(policy)])
+            expect(await completeHostMonitoringClaims(fresh)).toEqual([
+                { status: 'fulfilled', value: true },
+            ])
+            const incidents = await db
+                .select()
+                .from(hostCheckIncidents)
+                .where(eq(hostCheckIncidents.policyId, policy.id))
+            expect(incidents).toHaveLength(1)
+            expect(incidents[0]?.closedReason).toBe('recovered')
+            expect((await row(policy)).state).toBe('healthy')
+        },
+    )
+
+    integrationTest(
+        'an aborted batch item writes nothing and leaves its sibling available',
+        async () => {
+            await Promise.all([fixture(), fixture()])
+            const claims = await claimDueHostMonitoringPolicies(2)
+            const items = await completions(claims, unhealthy)
+            const cancelled = items[0]!
+            const before = await row(cancelled.claim.policy)
+            const controller = new AbortController()
+            controller.abort()
+            expect(
+                await completeHostMonitoringClaims([
+                    { ...cancelled, signal: controller.signal },
+                    items[1]!,
+                ]),
+            ).toEqual([
+                { status: 'fulfilled', value: false },
+                { status: 'fulfilled', value: true },
+            ])
+            expect(await row(cancelled.claim.policy)).toEqual(before)
+            expect(
+                await db
+                    .select()
+                    .from(hostCheckObservations)
+                    .where(eq(hostCheckObservations.policyId, cancelled.claim.policy.id)),
+            ).toHaveLength(0)
+            expect(await releaseHostMonitoringClaim(cancelled.claim)).toBe(true)
+        },
+    )
+
+    integrationTest(
+        'an expiry during a batch item rolls back its observation and incident while its sibling commits',
+        async () => {
+            await Promise.all([fixture({ failureThreshold: 1 }), fixture()])
+            const claims = await claimDueHostMonitoringPolicies(2)
+            const items = await completions(claims, unhealthy)
+            const expiring = items.find((item) => item.claim.policy.failureThreshold === 1)!
+            const sibling = items.find((item) => item !== expiring)!
+            const before = await row(expiring.claim.policy)
+            await db.execute(sql`
+                create function "rentnerproxy"."monitoring_fixture_expire_claim"()
+                returns trigger language plpgsql as $fixture$
+                begin
+                    if new.policy_id::text = tg_argv[0] then
+                        update "rentnerproxy"."host_check_policies"
+                        set lease_expires_at = clock_timestamp() - interval '1 millisecond'
+                        where id = new.policy_id;
+                    end if;
+                    return new;
+                end;
+                $fixture$
+            `)
+            try {
+                await db.execute(
+                    sql.raw(`
+                        create trigger monitoring_fixture_expire_claim
+                        after insert on "rentnerproxy"."host_check_observations"
+                        for each row execute function "rentnerproxy"."monitoring_fixture_expire_claim"('${expiring.claim.policy.id}')
+                    `),
+                )
+                expect(await completeHostMonitoringClaims([expiring, sibling])).toEqual([
+                    { status: 'fulfilled', value: false },
+                    { status: 'fulfilled', value: true },
+                ])
+                expect(await row(expiring.claim.policy)).toEqual(before)
+                expect(
+                    await db
+                        .select()
+                        .from(hostCheckObservations)
+                        .where(eq(hostCheckObservations.policyId, expiring.claim.policy.id)),
+                ).toHaveLength(0)
+                expect(
+                    await db
+                        .select()
+                        .from(hostCheckIncidents)
+                        .where(eq(hostCheckIncidents.policyId, expiring.claim.policy.id)),
+                ).toHaveLength(0)
+                expect((await row(sibling.claim.policy)).lastOutcome).toBe('unhealthy')
+            } finally {
+                await db.execute(sql`
+                    drop function "rentnerproxy"."monitoring_fixture_expire_claim"() cascade
+                `)
+            }
+        },
+    )
+
+    integrationTest(
+        'completion and release keep fixed cadence across missed intervals without catch-up claims',
+        async () => {
+            const completed = await fixture()
+            const released = await fixture()
+            const [clock] = await db.execute<{ now: string }>(
+                sql`select clock_timestamp()::text as now`,
+            )
+            const now = new Date(clock!.now).getTime()
+            const due = new Map([
+                [completed.id, new Date(now - 15_000)],
+                [released.id, new Date(now - 195_000)],
+            ])
+            await Promise.all(
+                [completed, released].map((policy) =>
+                    db
+                        .update(hostCheckPolicies)
+                        .set({ nextCheckAt: due.get(policy.id)! })
+                        .where(eq(hostCheckPolicies.id, policy.id)),
+                ),
+            )
+            const claims = await claimDueHostMonitoringPolicies(2)
+            const completedClaim = claims.find((value) => value.policy.id === completed.id)!
+            const releasedClaim = claims.find((value) => value.policy.id === released.id)!
+            expect(await completeHostMonitoringClaims(await completions([completedClaim]))).toEqual(
+                [{ status: 'fulfilled', value: true }],
+            )
+            expect(await releaseHostMonitoringClaim(releasedClaim)).toBe(true)
+            const completedRow = await row(completed)
+            const releasedRow = await row(released)
+            expect(completedRow.nextCheckAt.getTime()).toBe(
+                due.get(completed.id)!.getTime() + 60_000,
+            )
+            expect(releasedRow.nextCheckAt.getTime()).toBe(
+                due.get(released.id)!.getTime() + 240_000,
+            )
+            expect(completedRow.nextCheckAt.getTime()).toBeGreaterThan(Date.now())
+            expect(releasedRow.nextCheckAt.getTime()).toBeGreaterThan(Date.now())
+            expect(await claimDueHostMonitoringPolicies(16)).toEqual([])
+            expect(await claimDueHostMonitoringPolicy()).toBeNull()
         },
     )
 

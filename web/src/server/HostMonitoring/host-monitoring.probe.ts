@@ -11,8 +11,10 @@ import type { HostMonitoringClaim } from './Types/host-monitoring.repository.typ
 import type { HostMonitoringProbeDependencies } from './Types/host-monitoring-probe.types.ts'
 import type { HostMonitoringOutcome } from '@/lib/HostMonitoring/Types/host-monitoring.types.ts'
 
+/** Runs an upstream-only probe behind fresh context fences and releases every claim without a committed completion. */
 export function createHostMonitoringProbe(dependencies: HostMonitoringProbeDependencies) {
     return async (claim: HostMonitoringClaim, signal: AbortSignal): Promise<void> => {
+        let completed = false
         try {
             assertDiagnosticsNotAborted(signal)
             const context = await dependencies.readContext(claim)
@@ -50,11 +52,11 @@ export function createHostMonitoringProbe(dependencies: HostMonitoringProbeDepen
                 )
             }
             assertDiagnosticsNotAborted(signal)
-            await dependencies.complete(claim, outcome, context)
+            completed = await dependencies.complete(claim, outcome, context, signal)
         } finally {
-            // Fenced release is harmless after a successful completion, and also
-            // covers cancellation, vanished hosts and preflight storage errors.
-            await dependencies.release(claim)
+            // Committed completion already clears its lease. Every unfinished
+            // attempt still releases through the durable token/version fence.
+            if (!completed) await dependencies.release(claim)
         }
     }
 }
