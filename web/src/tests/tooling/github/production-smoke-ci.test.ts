@@ -294,6 +294,29 @@ describe('production smoke CI output boundary', () => {
         expect(progress.result(1).diagnostic).toContain('runtime-faults.ts:77:11')
     })
 
+    test('retains bounded fault measurements while rejecting extra or private payloads', () => {
+        const progress = smokeProgress('production')
+        const rows = [
+            'Runtime web SIGTERM recoveryMs=2400 nativeCompletedTicksDelta=1 httpRequests=19 httpErrors=0 httpsRequests=18 httpsErrors=0',
+            'Runtime web SIGSTOP recoveryMs=37000 nativeCompletedTicksDelta=7 nativeTicksWhileWebStopped=6 httpRequests=145 httpErrors=0 httpsRequests=142 httpsErrors=0',
+            'Runtime native caddy SIGKILL expectedBoundaryRestart=true boundaryChanged=true recovered=true recoveryMs=22000 httpRequests=81 httpErrors=67 httpsRequests=81 httpsErrors=67',
+            'Runtime native controller SIGSTOP expectedBoundaryRestart=true boundaryChanged=false recovered=false recoveryMs=120000 httpRequests=155 httpErrors=9 httpsRequests=153 httpsErrors=9',
+        ]
+        for (const row of rows) {
+            expect(progress.consume(row)).toBe(row)
+            expect(smokeProgress('proxy').consume(row)).toBeUndefined()
+            expect(progress.consume(row + ' token=private-value')).toBeUndefined()
+            expect(progress.consume(row + '\n::error::private-value')).toBeUndefined()
+            expect(
+                progress.consume(row.replace(/recoveryMs=\d+/u, 'recoveryMs=-1')),
+            ).toBeUndefined()
+            expect(
+                progress.consume(row.replace(/httpRequests=\d+/u, 'httpRequests=123456789')),
+            ).toBeUndefined()
+        }
+        expect(JSON.stringify(progress.result(1))).not.toContain('private-value')
+    })
+
     test('reports CI smoke locations without exposing unrelated stack frames', () => {
         const progress = smokeProgress('production')
         progress.consume('error: Timed out waiting for managed CrowdSec acquisition')

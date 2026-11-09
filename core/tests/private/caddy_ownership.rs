@@ -4,10 +4,9 @@ use std::{
     os::unix::fs::{PermissionsExt, symlink},
     sync::atomic::{AtomicU64, Ordering},
 };
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::UnixListener,
-};
+#[cfg(target_os = "linux")]
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::UnixListener;
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -180,6 +179,7 @@ async fn socket_paths_must_not_alias_regular_files_directories_or_symlinks() {
 }
 
 #[tokio::test]
+#[cfg(target_os = "linux")]
 async fn inherited_lock_blocks_takeover_after_controller_ownership_is_dropped() {
     let fixture = Fixture::new();
     std::fs::write(

@@ -341,6 +341,47 @@ test_orphan_writer() (
     printf 'PASS: full process scan blocks admission for an unowned UID 10002 writer\n'
 )
 
+test_process_status_visibility() (
+    setup
+    local field variant
+    # Deterministic equivalent of a /proc glob entry whose process exits before
+    # its status file opens. The exact production helper must survive errexit.
+    assert_web_process_stopped "$scratch/vanished/status"
+    mkdir "$scratch/present"
+    expect_rejected assert_web_process_stopped "$scratch/present/status"
+    [[ $(cat "$scratch/rejection") == 'web recovery cannot inspect a surviving process identity' ]] \
+        || fail 'missing status leaked a raw open error or bypassed the identity fence'
+    # Opening a directory succeeds, but reading it fails: exercise the read
+    # failure independently of the missing-file/open failure above.
+    mkdir "$scratch/present/status"
+    expect_rejected assert_web_process_stopped "$scratch/present/status"
+    rmdir "$scratch/present/status"
+    for variant in missing truncated malformed extra; do
+        case $variant in
+            missing) printf 'Name:\tfixture\nState:\tS (sleeping)\n' ;;
+            truncated) printf 'Uid:\t0\t0\t0\n' ;;
+            malformed) printf 'Uid:\t0\tunknown\t0\t0\n' ;;
+            extra) printf 'Uid:\t0\t0\t0\t0\t10002\n' ;;
+        esac > "$scratch/present/status"
+        expect_rejected assert_web_process_stopped "$scratch/present/status"
+    done
+    printf 'State:\tS (sleeping)\nUid:\t10001\t10001\t10001\t10001\n' > "$scratch/present/status"
+    assert_web_process_stopped "$scratch/present/status"
+    for field in 0 1 2 3; do
+        local -a identities=(0 0 0 0)
+        identities[$field]=10002
+        printf 'State:\tS (sleeping)\nUid:\t%s\t%s\t%s\t%s\n' "${identities[@]}" > "$scratch/present/status"
+        expect_rejected assert_web_process_stopped "$scratch/present/status"
+        [[ $(cat "$scratch/rejection") == 'a web writer survived isolated recovery' ]] \
+            || fail "web UID field $field was not inspected"
+    done
+    for variant in Z X; do
+        printf 'State:\t%s (exited)\nUid:\t10002\t10002\t10002\t10002\n' "$variant" > "$scratch/present/status"
+        assert_web_process_stopped "$scratch/present/status"
+    done
+    printf 'PASS: vanished processes are tolerated; surviving unreadable or uninspectable identities fail closed in every UID field\n'
+)
+
 [[ $(uname -s) == Linux ]] || { printf 'SKIP: fault supervisor fixtures require Linux /proc\n'; exit 77; }
 test_real_termination
 test_recovery_fences
@@ -351,3 +392,4 @@ test_health
 test_dependency_health
 test_monitor_lifecycle
 test_orphan_writer
+test_process_status_visibility

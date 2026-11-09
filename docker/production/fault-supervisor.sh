@@ -54,19 +54,36 @@ assert_web_restart_allowed() {
         || fatal 'web recovery cannot prove the persisted maintenance fence safe'
 }
 
+assert_web_process_stopped() {
+    local status_file=$1 field real effective saved filesystem remainder
+    local inspected=false writer=false
+    # A process may disappear after glob expansion. Guard both opening and
+    # reading status; admission still requires proof for every surviving PID.
+    while read -r field real effective saved filesystem remainder; do
+        if [[ $field == State: && ( $real == Z || $real == X ) ]]; then
+            inspected=true
+            break
+        fi
+        [[ $field == Uid: ]] || continue
+        [[ $real =~ ^[0-9]+$ && $effective =~ ^[0-9]+$ && $saved =~ ^[0-9]+$ \
+            && $filesystem =~ ^[0-9]+$ && -z $remainder ]] || break
+        inspected=true
+        case " $real $effective $saved $filesystem " in
+            *' 10002 '*) writer=true ;;
+        esac
+        break
+    done 2>/dev/null < "$status_file" || :
+    $writer && fatal 'a web writer survived isolated recovery'
+    $inspected && return 0
+    [[ ! -d ${status_file%/*} ]] && return 0
+    fatal 'web recovery cannot inspect a surviving process identity'
+}
+
 assert_web_writers_stopped() {
-    local status_file field real effective saved filesystem remainder
+    local status_file
     [[ -r /proc/self/status ]] || fatal 'web recovery requires process identity visibility'
     for status_file in /proc/[0-9]*/status; do
-        [[ -r $status_file ]] || continue
-        while read -r field real effective saved filesystem remainder; do
-            if [[ $field == State: && ( $real == Z || $real == X ) ]]; then break; fi
-            [[ $field == Uid: ]] || continue
-            case " $real $effective $saved $filesystem " in
-                *' 10002 '*) fatal 'a web writer survived isolated recovery' ;;
-            esac
-            break
-        done < "$status_file" 2>/dev/null
+        assert_web_process_stopped "$status_file"
     done
 }
 

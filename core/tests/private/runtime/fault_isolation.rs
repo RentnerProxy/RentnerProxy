@@ -7,9 +7,9 @@ async fn live_but_hung_caddy_is_recovered_by_the_owned_worker() {
     runtime.initialize().await;
     let expected = configuration(4_000);
     runtime.apply(expected.clone()).await.unwrap();
-    engine.probe_hang_once.store(true, Ordering::SeqCst);
+    engine.probe_hangs_remaining.store(3, Ordering::SeqCst);
     runtime.start_recovery_worker().await;
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(Duration::from_secs(4), async {
         while engine.start_count.load(Ordering::SeqCst) < 2 {
             tokio::task::yield_now().await;
         }
@@ -19,8 +19,9 @@ async fn live_but_hung_caddy_is_recovered_by_the_owned_worker() {
     assert!(runtime.is_ready().await);
     let status = runtime.status().await;
     assert_eq!(status.active_revision, Some(expected.revision));
-    assert_eq!(status.recovery.faults, 1);
+    assert_eq!(status.recovery.faults, 3);
     assert_eq!(status.recovery.restarts_in_window, 1);
+    assert_eq!(status.recovery.consecutive_probe_failures, 0);
     assert!(runtime.recovery_progressing());
     runtime.shutdown().await;
     assert!(!runtime.recovery_progressing());
@@ -54,8 +55,10 @@ async fn uncertain_shutdown_never_spawns_a_replacement_and_latches_failure() {
         .probes
         .lock()
         .await
-        .push_back(Err(EngineError::TimedOut));
+        .extend(std::iter::repeat_n(Err(EngineError::TimedOut), 3));
     engine.shutdown_uncertain.store(true, Ordering::SeqCst);
+    runtime.recover().await.unwrap();
+    runtime.recover().await.unwrap();
     assert_eq!(runtime.recover().await, Err(RuntimeError::Unavailable));
     assert_eq!(engine.start_count.load(Ordering::SeqCst), 1);
     assert!(engine.running.load(Ordering::SeqCst));
@@ -162,6 +165,17 @@ async fn intentional_provider_changes_do_not_spend_the_fault_recovery_budget() {
     let engine = FakeCaddy::new();
     let (runtime, _) = runtime(Some(engine.clone()));
     runtime.initialize().await;
+    engine
+        .probes
+        .lock()
+        .await
+        .extend(std::iter::repeat_n(Err(EngineError::TimedOut), 2));
+    runtime.recover().await.unwrap();
+    runtime.recover().await.unwrap();
+    assert_eq!(
+        runtime.status().await.recovery.consecutive_probe_failures,
+        2
+    );
     for _ in 0..3 {
         for mode in [CrowdSecMode::External, CrowdSecMode::Disabled] {
             runtime
@@ -174,6 +188,10 @@ async fn intentional_provider_changes_do_not_spend_the_fault_recovery_budget() {
                 })
                 .await
                 .unwrap();
+            assert_eq!(
+                runtime.status().await.recovery.consecutive_probe_failures,
+                0
+            );
         }
     }
     let recovery = runtime.status().await.recovery;
@@ -183,6 +201,108 @@ async fn intentional_provider_changes_do_not_spend_the_fault_recovery_budget() {
     assert!(runtime.is_ready().await);
     runtime.shutdown().await;
     lapi.abort();
+}
+
+#[tokio::test]
+async fn intermittent_probe_failures_preserve_live_caddy_and_success_resets_the_streak() {
+    let engine = FakeCaddy::new();
+    let (runtime, _) = runtime(Some(engine.clone()));
+    runtime.initialize().await;
+    for failures in [1, 2, 1, 2] {
+        engine
+            .probes
+            .lock()
+            .await
+            .extend(std::iter::repeat_n(Err(EngineError::TimedOut), failures));
+        for expected in 1..=failures {
+            runtime.recover().await.unwrap();
+            let status = runtime.status().await;
+            assert!(status.available);
+            assert!(status.running);
+            assert!(!status.recovery.circuit_open);
+            assert_eq!(status.recovery.consecutive_probe_failures, expected as u32);
+            assert_eq!(status.recovery.restarts_in_window, 0);
+            assert_eq!(engine.start_count.load(Ordering::SeqCst), 1);
+        }
+        assert!(runtime.is_ready().await);
+        assert_eq!(
+            runtime.status().await.recovery.consecutive_probe_failures,
+            failures as u32,
+            "readiness checks cannot reset the worker's failure streak"
+        );
+        runtime.recover().await.unwrap();
+        assert_eq!(
+            runtime.status().await.recovery.consecutive_probe_failures,
+            0
+        );
+    }
+    assert_eq!(engine.start_count.load(Ordering::SeqCst), 1);
+    assert_eq!(runtime.status().await.recovery.faults, 6);
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn confirmed_child_exit_recovers_without_waiting_for_failed_live_probes() {
+    let engine = FakeCaddy::new();
+    let (runtime, _) = runtime(Some(engine.clone()));
+    runtime.initialize().await;
+    engine.running.store(false, Ordering::SeqCst);
+    engine.probe_hangs_remaining.store(3, Ordering::SeqCst);
+    let probes = engine.probe_count.load(Ordering::SeqCst);
+    tokio::time::timeout(Duration::from_secs(1), runtime.recover())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(engine.probe_count.load(Ordering::SeqCst), probes);
+    assert_eq!(engine.start_count.load(Ordering::SeqCst), 2);
+    let recovery = runtime.status().await.recovery;
+    assert_eq!(recovery.restarts_in_window, 1);
+    assert_eq!(recovery.consecutive_probe_failures, 0);
+    engine.probe_hangs_remaining.store(0, Ordering::SeqCst);
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn unknown_ownership_opens_the_circuit_on_the_first_probe_failure() {
+    let engine = FakeCaddy::new();
+    let (runtime, _) = runtime(Some(engine.clone()));
+    runtime.initialize().await;
+    engine
+        .probes
+        .lock()
+        .await
+        .push_back(Err(EngineError::OwnershipUncertain));
+    assert_eq!(runtime.recover().await, Err(RuntimeError::Unavailable));
+    let status = runtime.status().await;
+    assert!(status.recovery.circuit_open);
+    assert!(!status.available);
+    assert_eq!(status.recovery.restarts_in_window, 0);
+    assert_eq!(engine.start_count.load(Ordering::SeqCst), 1);
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn verified_configuration_reload_clears_the_failure_streak_without_a_restart() {
+    let engine = FakeCaddy::new();
+    let (runtime, _) = runtime(Some(engine.clone()));
+    runtime.initialize().await;
+    engine
+        .probes
+        .lock()
+        .await
+        .extend(std::iter::repeat_n(Err(EngineError::TimedOut), 2));
+    runtime.recover().await.unwrap();
+    runtime.recover().await.unwrap();
+    assert_eq!(
+        runtime.status().await.recovery.consecutive_probe_failures,
+        2
+    );
+    runtime.apply(configuration(4_000)).await.unwrap();
+    let recovery = runtime.status().await.recovery;
+    assert_eq!(recovery.consecutive_probe_failures, 0);
+    assert_eq!(recovery.restarts_in_window, 0);
+    assert_eq!(engine.start_count.load(Ordering::SeqCst), 1);
+    runtime.shutdown().await;
 }
 
 #[tokio::test]

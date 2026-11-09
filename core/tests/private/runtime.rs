@@ -52,7 +52,7 @@ struct FakeCaddy {
     upstream_response: Mutex<Option<axum::body::Bytes>>,
     upstream_gate: Mutex<Option<Arc<Notify>>>,
     upstream_started: Notify,
-    probe_hang_once: AtomicBool,
+    probe_hangs_remaining: AtomicUsize,
     shutdown_uncertain: AtomicBool,
 }
 impl FakeCaddy {
@@ -74,7 +74,7 @@ impl FakeCaddy {
             upstream_response: Mutex::new(None),
             upstream_gate: Mutex::new(None),
             upstream_started: Notify::new(),
-            probe_hang_once: AtomicBool::new(false),
+            probe_hangs_remaining: AtomicUsize::new(0),
             shutdown_uncertain: AtomicBool::new(false),
         })
     }
@@ -142,7 +142,13 @@ impl ProxyEngine for FakeCaddy {
     fn probe<'a>(&'a self, revision: &'a str) -> EngineFuture<'a> {
         Box::pin(async move {
             self.probe_count.fetch_add(1, Ordering::SeqCst);
-            if self.probe_hang_once.swap(false, Ordering::SeqCst) {
+            if self
+                .probe_hangs_remaining
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                    remaining.checked_sub(1)
+                })
+                .is_ok()
+            {
                 std::future::pending::<()>().await;
             }
             Self::next(&self.probes).await?;

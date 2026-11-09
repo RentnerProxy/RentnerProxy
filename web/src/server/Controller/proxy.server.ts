@@ -43,8 +43,9 @@ const statusSchema = z.object({
             completedTicks: z.number().int().nonnegative().safe(),
             lastCompletedAgeSeconds: z.number().int().nonnegative().safe().nullable(),
             circuitOpen: z.boolean(),
-            restartsInWindow: z.number().int().min(0).max(3),
+            restartsInWindow: z.number().int().nonnegative().safe(),
             faults: z.number().int().nonnegative().safe(),
+            consecutiveProbeFailures: z.number().int().nonnegative().safe().optional(),
         })
         .optional(),
 })

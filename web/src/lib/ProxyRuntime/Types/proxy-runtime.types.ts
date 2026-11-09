@@ -45,6 +45,7 @@ export interface ProxyRuntimeStatus {
               readonly circuitOpen: boolean
               readonly restartsInWindow: number
               readonly faults: number
+              readonly consecutiveProbeFailures?: number | undefined
           }
         | undefined
 }

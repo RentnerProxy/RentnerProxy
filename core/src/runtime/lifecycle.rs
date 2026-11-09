@@ -219,6 +219,18 @@ impl ProxyRuntime {
         if !self.state.lock().await.initialized {
             return self.initialize_with_restart_budget(true).await;
         }
+        let running = match timeout(self.settings.lock_wait, engine.is_running()).await {
+            Ok(running) => running,
+            Err(_) => {
+                self.recovery_health.open_circuit();
+                return Err(RuntimeError::Unavailable);
+            }
+        };
+        if !running {
+            self.recovery_health.fault();
+            self.mark_unavailable().await;
+            return self.ensure_running_locked().await;
+        }
         let revision = self
             .state
             .lock()
@@ -227,15 +239,22 @@ impl ProxyRuntime {
             .clone()
             .unwrap_or_else(|| BASELINE_PROBE_REVISION.to_owned());
         // A live PID is not proof that Caddy can serve the active revision.
-        // Only this serialized worker initiates recovery after a failed probe.
+        // Tolerate brief saturation without spending a restart attempt. Only
+        // this serialized worker advances the consecutive-failure threshold.
         let probed = self.run_stage(engine.probe(&revision)).await;
-        if probed.is_err() {
+        if probed == Err(EngineError::OwnershipUncertain) {
             self.recovery_health.fault();
             self.mark_unavailable().await;
-            if probed == Err(EngineError::OwnershipUncertain) {
-                self.recovery_health.open_circuit();
-                return Err(RuntimeError::Unavailable);
+            self.recovery_health.open_circuit();
+            return Err(RuntimeError::Unavailable);
+        }
+        if probed.is_err() {
+            if !self.recovery_health.probe_failed() {
+                return Ok(());
             }
+            self.mark_unavailable().await;
+        } else {
+            self.recovery_health.probe_verified();
         }
         self.ensure_running_locked().await
     }
@@ -468,6 +487,8 @@ impl ProxyRuntime {
         }
         if result.is_err() {
             let _ = self.stop_engine_for_restart(engine).await;
+        } else {
+            self.recovery_health.probe_verified();
         }
         result
     }

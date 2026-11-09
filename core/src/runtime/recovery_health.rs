@@ -5,6 +5,7 @@ use tokio::time::Instant;
 const RESTART_WINDOW: Duration = Duration::from_secs(300);
 const MAX_RESTARTS: usize = 3;
 const MAX_PROGRESS_AGE: Duration = Duration::from_secs(90);
+const MAX_CONSECUTIVE_PROBE_FAILURES: u32 = 3;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -15,6 +16,7 @@ pub(crate) struct RecoveryStatus {
     pub(crate) restarts_in_window: usize,
     pub(crate) faults: u64,
     pub(crate) completed_ticks: u64,
+    pub(crate) consecutive_probe_failures: u32,
 }
 
 #[derive(Default)]
@@ -25,6 +27,7 @@ struct State {
     restarts: VecDeque<Instant>,
     faults: u64,
     completed_ticks: u64,
+    consecutive_probe_failures: u32,
 }
 
 #[derive(Default)]
@@ -53,6 +56,21 @@ impl RecoveryHealth {
     pub(super) fn fault(&self) {
         if let Ok(mut state) = self.0.lock() {
             state.faults = state.faults.saturating_add(1);
+        }
+    }
+
+    pub(super) fn probe_failed(&self) -> bool {
+        let Ok(mut state) = self.0.lock() else {
+            return true;
+        };
+        state.faults = state.faults.saturating_add(1);
+        state.consecutive_probe_failures = state.consecutive_probe_failures.saturating_add(1);
+        state.consecutive_probe_failures >= MAX_CONSECUTIVE_PROBE_FAILURES
+    }
+
+    pub(super) fn probe_verified(&self) {
+        if let Ok(mut state) = self.0.lock() {
+            state.consecutive_probe_failures = 0;
         }
     }
 
@@ -111,6 +129,7 @@ impl RecoveryHealth {
                     .count(),
                 faults: state.faults,
                 completed_ticks: state.completed_ticks,
+                consecutive_probe_failures: state.consecutive_probe_failures,
             },
             Err(_) => RecoveryStatus {
                 worker_running: false,
@@ -119,6 +138,7 @@ impl RecoveryHealth {
                 restarts_in_window: 0,
                 faults: 0,
                 completed_ticks: 0,
+                consecutive_probe_failures: 0,
             },
         }
     }

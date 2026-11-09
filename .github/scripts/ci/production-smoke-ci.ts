@@ -103,6 +103,12 @@ export function smokeProgress(suite: Suite) {
                 ) ||
                     /^Runtime web native workerRunning=(?:true|false) circuitOpen=(?:true|false) completedTicks=\d{1,12} lastCompletedAgeSeconds=(?:null|\d{1,12})$/u.test(
                         line,
+                    ) ||
+                    /^Runtime web SIG(?:TERM|KILL|STOP) recoveryMs=\d{1,6} nativeCompletedTicksDelta=\d{1,8}(?: nativeTicksWhileWebStopped=\d{1,8})? httpRequests=\d{1,8} httpErrors=\d{1,8} httpsRequests=\d{1,8} httpsErrors=\d{1,8}$/u.test(
+                        line,
+                    ) ||
+                    /^Runtime native (?:caddy|controller) SIG(?:TERM|KILL|STOP) expectedBoundaryRestart=(?:true|false) boundaryChanged=(?:true|false) recovered=(?:true|false) recoveryMs=\d{1,6} httpRequests=\d{1,8} httpErrors=\d{1,8} httpsRequests=\d{1,8} httpsErrors=\d{1,8}$/u.test(
+                        line,
                     ))
             ) {
                 diagnostic = line

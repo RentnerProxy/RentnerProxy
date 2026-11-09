@@ -215,6 +215,7 @@ impl ProxyRuntime {
         state.host_sources = host_sources;
         state.engine_available = true;
         drop(state);
+        self.recovery_health.probe_verified();
         *self.active_configuration.lock().await = Some(configuration.clone());
 
         if staged.is_some()
@@ -246,6 +247,7 @@ impl ProxyRuntime {
                 && self.run_stage(engine.probe(revision)).await.is_ok()
         };
         if recovered {
+            self.recovery_health.probe_verified();
             return;
         }
         self.mark_unavailable().await;
