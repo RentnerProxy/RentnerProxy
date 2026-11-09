@@ -33,7 +33,7 @@ export async function createNativeMonitoringFixture(
     const upstream = Bun.serve({
         hostname: '0.0.0.0',
         port: 0,
-        idleTimeout: 5,
+        idleTimeout: 15,
         async fetch(request) {
             const index = hosts.get(request.headers.get('host') ?? '')
             if (

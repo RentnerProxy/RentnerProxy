@@ -5,11 +5,20 @@ import {
     monitoringLatency,
     parseMonitoringOptions,
     simulatedMonitoringResult,
+    isMonitoringFixtureOutcome,
 } from '../../../../../scripts/runtime-scale/monitoring.ts'
 import { domainDiagnosticsResultSchema } from '@/lib/RuntimeDiagnostics/domainDiagnostics.ts'
 import { assertNativeMonitoringFixture } from '../../../../../scripts/runtime-scale/monitoring-native.ts'
 
 describe('bounded opt-in monitoring capacity', () => {
+    test('rejects mismatched availability codes instead of accepting a false fixture success', () => {
+        expect(isMonitoringFixtureOutcome('healthy', 'expected_status')).toBe(true)
+        expect(isMonitoringFixtureOutcome('unhealthy', 'upstream_timeout')).toBe(true)
+        expect(isMonitoringFixtureOutcome('unhealthy', 'expected_status')).toBe(false)
+        expect(isMonitoringFixtureOutcome('healthy', 'upstream_timeout')).toBe(false)
+        expect(isMonitoringFixtureOutcome('unknown', 'expected_status')).toBe(false)
+        expect(isMonitoringFixtureOutcome('unhealthy', 'upstream_unreachable')).toBe(false)
+    })
     test('native execution requires the exact opt-in loopback fixture and synthetic token', () => {
         const url = 'http://127.0.0.1:55441'
         const token = 'synthetic-monitoring-scale-token-392'

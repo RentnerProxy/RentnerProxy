@@ -129,6 +129,13 @@ function sleep(ms: number) {
     return new Promise<void>((resolve) => setTimeout(resolve, ms))
 }
 
+export function isMonitoringFixtureOutcome(status: string, code: string): boolean {
+    return (
+        (status === 'healthy' && code === 'expected_status') ||
+        (status === 'unhealthy' && code === 'upstream_timeout')
+    )
+}
+
 export async function runMonitoringCapacity(options: MonitoringScaleOptions) {
     assertIsolatedMonitoringDatabase(
         process.env.RENTNERPROXY_DATABASE_INTEGRATION,
@@ -172,7 +179,7 @@ export async function runMonitoringCapacity(options: MonitoringScaleOptions) {
         claimBatch: HOST_MONITORING_LIMITS.claimBatchSize,
         persistenceBatch: HOST_MONITORING_LIMITS.persistenceBatchSize,
         pollMs: HOST_MONITORING_LIMITS.pollIntervalMs,
-        maxWallSeconds: 240,
+        cooperativeStopSeconds: 240,
         referenceSlo: {
             exactCompletionsPerPolicyPerPeriod: 1,
             dueToStartP99Ms: 55000,
@@ -510,11 +517,7 @@ export async function runMonitoringCapacity(options: MonitoringScaleOptions) {
             .reduce((sum, row) => sum + Number(row.count), 0)
         if (
             timeoutCount !== expectedTimeouts ||
-            observations.some(
-                (row) =>
-                    !['expected_status', 'upstream_timeout'].includes(row.code) ||
-                    row.status === 'unknown',
-            )
+            observations.some((row) => !isMonitoringFixtureOutcome(row.status, row.code))
         )
             failures.push('Controlled upstream outcomes differ from requested workload')
         const startDistribution = monitoringDistribution(dueToStart),
