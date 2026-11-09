@@ -93,6 +93,61 @@ test('runtime census uses start ticks, exact executable names, and every web UID
     }
 })
 
+test('overlapping health and version clients are excluded while duplicate serving owners and every web UID remain visible', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'runtime-processes-probes-'))
+    const controller = '/usr/local/bin/rentnerproxy-controller'
+    const caddy = '/usr/bin/caddy'
+    try {
+        await Promise.all(
+            [
+                { pid: 20, uid: 10001, args: [controller] },
+                { pid: 21, uid: 10001, args: [controller, '--healthcheck', 'ready'] },
+                { pid: 22, uid: 10001, args: [controller, '--healthcheck', 'progress'] },
+                { pid: 23, uid: 10001, args: [controller, '--healthcheck'] },
+                // Only the dedicated first argument selects healthcheck mode in the Rust entrypoint.
+                { pid: 24, uid: 10001, args: [controller, '--serve', '--healthcheck'] },
+                { pid: 25, uid: 10001, args: [caddy, 'run', '--config', '-'] },
+                { pid: 26, uid: 10001, args: [caddy, 'version'] },
+                { pid: 27, uid: 10001, args: [caddy, 'run', '--config', '/tmp/duplicate.json'] },
+                { pid: 28, uid: 10002, args: [controller, '--healthcheck', 'ready'] },
+            ].map(async ({ pid, uid, args }) => {
+                const root = join(directory, String(pid))
+                await mkdir(root)
+                await Promise.all([
+                    writeFile(join(root, 'status'), `Uid:\t${uid}\t${uid}\t${uid}\t${uid}\n`),
+                    writeFile(join(root, 'cmdline'), args.join('\0') + '\0'),
+                    writeFile(
+                        join(root, 'stat'),
+                        `${pid} (controller) ` +
+                            ['S', ...Array<string>(18).fill('0'), String(pid * 10), '0'].join(' '),
+                    ),
+                ])
+            }),
+        )
+        const rows = await readRuntimeProcesses(directory)
+        expect(rows.map(({ pid, role }) => [pid, role])).toEqual([
+            [20, 'controller'],
+            [24, 'controller'],
+            [25, 'caddy'],
+            [27, 'caddy'],
+            [28, 'web'],
+        ])
+        const child = Bun.spawn(
+            [process.execPath, '--no-env-file', '-e', runtimeProcessesProbe(directory)],
+            { stdout: 'pipe', stderr: 'pipe' },
+        )
+        const [exit, output, errors] = await Promise.all([
+            child.exited,
+            new Response(child.stdout).text(),
+            new Response(child.stderr).text(),
+        ])
+        expect({ exit, errors }).toEqual({ exit: 0, errors: '' })
+        expect(JSON.parse(output)).toEqual(rows)
+    } finally {
+        await rm(directory, { recursive: true, force: true })
+    }
+})
+
 test('incomplete identities fail instead of claiming web descendants were reaped', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'runtime-processes-invalid-'))
     try {

@@ -19,13 +19,16 @@ export async function readRuntimeProcesses(procRoot = '/proc') {
                 readFile(directory + '/cmdline', 'utf8'),
             ])
             const uid = Number(/^Uid:[\t ]+(\d+)/mu.exec(status)?.[1])
-            const executable = command.split('\0')[0]?.split('/').at(-1)
+            const commandArguments = command.split('\0')
+            const executable = commandArguments[0]?.split('/').at(-1)
+            // Health and version clients share the daemon executable but never own its serving lifecycle.
             const role =
                 uid === 10002
                     ? 'web'
-                    : executable === 'rentnerproxy-controller'
+                    : executable === 'rentnerproxy-controller' &&
+                        commandArguments[1] !== '--healthcheck'
                       ? 'controller'
-                      : executable === 'caddy'
+                      : executable === 'caddy' && commandArguments[1] !== 'version'
                         ? 'caddy'
                         : undefined
             if (!role) continue
