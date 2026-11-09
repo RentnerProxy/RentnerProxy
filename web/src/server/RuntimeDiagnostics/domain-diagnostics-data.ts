@@ -47,6 +47,7 @@ export async function readDomainDiagnosticsContextInTransaction(
     return (await readDomainDiagnosticsStateInTransaction(transaction, input)).context
 }
 
+/** Builds a fresh single-host probe fence and availability continuity proof from the supplied transaction. */
 export async function readHostMonitoringContextInTransaction(
     transaction: AuthTransaction,
     input: DomainDiagnosticsInput,
@@ -57,6 +58,7 @@ export async function readHostMonitoringContextInTransaction(
     return createHostMonitoringContext(host, snapshot)
 }
 
+/** Shares one transaction-local snapshot across selected hosts; missing selectors produce null without caching across calls. */
 export async function readHostMonitoringContextsInTransaction(
     transaction: AuthTransaction,
     inputs: readonly DomainDiagnosticsInput[],
@@ -82,6 +84,7 @@ export async function readHostMonitoringContextsInTransaction(
     return contexts
 }
 
+/** Separates the full within-probe revision fence from upstream-only continuity across successive checks. */
 function createHostMonitoringContext(
     host: ProxyHostSummary,
     snapshot: ProxyRuntimeSnapshot,

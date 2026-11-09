@@ -22,6 +22,7 @@ export async function prepareWorkerTransaction(transaction: AuthTransaction): Pr
     await lockMonitoring(transaction)
 }
 
+/** Uses the live database clock for lease decisions, including time elapsed inside the transaction. */
 export async function databaseNow(transaction: AuthTransaction): Promise<Date> {
     const [row] = await transaction.execute<{ now: string }>(
         sql`select clock_timestamp()::text as now`,

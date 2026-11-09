@@ -11,6 +11,7 @@ import type { HostMonitoringClaim } from './Types/host-monitoring.repository.typ
 import type { HostMonitoringProbeDependencies } from './Types/host-monitoring-probe.types.ts'
 import type { HostMonitoringOutcome } from '@/lib/HostMonitoring/Types/host-monitoring.types.ts'
 
+/** Runs an upstream-only probe behind fresh context fences and releases every claim without a committed completion. */
 export function createHostMonitoringProbe(dependencies: HostMonitoringProbeDependencies) {
     return async (claim: HostMonitoringClaim, signal: AbortSignal): Promise<void> => {
         let completed = false

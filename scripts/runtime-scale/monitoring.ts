@@ -4,6 +4,33 @@ import type {
     DomainDiagnosticsResult,
 } from '../../web/src/lib/RuntimeDiagnostics/Types/domain-diagnostics.types.ts'
 
+const inputMessages = {
+    options:
+        'Expected --hosts 100|500|1000 --periods 2|3 --profile mixed|slow|timeout --runtime simulated|native --timeout-ms 3000|10000 --scheduler candidate|legacy',
+    bounds: 'Monitoring workload outside fixed bounds',
+    database: 'Isolated monitoring database required',
+    isolation:
+        'Requires RENTNERPROXY_DATABASE_INTEGRATION=1 and loopback rentnerproxy_upstream_test',
+    nonempty: 'Refusing nonempty monitoring/host database',
+    native: 'Native monitoring requires the explicitly isolated controller fixture.',
+} as const
+
+/** Identifies fixed, safe CLI guard diagnostics without accepting caller-provided error text. */
+export class MonitoringInputError extends Error {
+    constructor(readonly code: keyof typeof inputMessages) {
+        super(inputMessages[code])
+        this.name = 'MonitoringInputError'
+    }
+}
+
+/** Shows recognized guard messages while hiding driver errors, connection URLs and credentials. */
+export function formatMonitoringFailure(error: unknown): string {
+    return error instanceof MonitoringInputError && Object.hasOwn(inputMessages, error.code)
+        ? inputMessages[error.code]
+        : 'Monitoring capacity failed; inspect isolated database/runtime availability. No credentials logged.'
+}
+
+/** Accepts only the fixed workload, duration, timeout and scheduler profiles supported by this opt-in fixture. */
 export function parseMonitoringOptions(args: string[]): MonitoringScaleOptions {
     const flags = new Map<string, string>()
     for (let index = 0; index < args.length; index += 2) {
@@ -21,9 +48,7 @@ export function parseMonitoringOptions(args: string[]): MonitoringScaleOptions {
             flags.has(flag) ||
             !value
         )
-            throw new Error(
-                'Expected --hosts 100|500|1000 --periods 2|3 --profile mixed|slow|timeout',
-            )
+            throw new MonitoringInputError('options')
         flags.set(flag, value)
     }
     const hosts = flags.get('--hosts') ?? '100'
@@ -40,7 +65,7 @@ export function parseMonitoringOptions(args: string[]): MonitoringScaleOptions {
         !['3000', '10000'].includes(timeoutMs) ||
         !['legacy', 'candidate'].includes(scheduler)
     )
-        throw new Error('Monitoring workload outside fixed bounds')
+        throw new MonitoringInputError('bounds')
     return {
         hosts: Number(hosts) as MonitoringScaleOptions['hosts'],
         periods: Number(periods) as MonitoringScaleOptions['periods'],
@@ -51,6 +76,7 @@ export function parseMonitoringOptions(args: string[]): MonitoringScaleOptions {
     }
 }
 
+/** Rejects unflagged or non-test database destinations before importing modules that can mutate fixture state. */
 export function assertIsolatedMonitoringDatabase(
     flag: string | undefined,
     value: string | undefined,
@@ -59,7 +85,7 @@ export function assertIsolatedMonitoringDatabase(
     try {
         url = new URL(value ?? '')
     } catch {
-        throw new Error('Isolated monitoring database required')
+        throw new MonitoringInputError('database')
     }
     if (
         flag !== '1' ||
@@ -67,11 +93,10 @@ export function assertIsolatedMonitoringDatabase(
         url.hostname !== '127.0.0.1' ||
         url.pathname !== '/rentnerproxy_upstream_test'
     )
-        throw new Error(
-            'Requires RENTNERPROXY_DATABASE_INTEGRATION=1 and loopback rentnerproxy_upstream_test',
-        )
+        throw new MonitoringInputError('isolation')
 }
 
+/** Reports nearest-rank tail latency in the input's units, with null tails for an empty sample. */
 export function monitoringDistribution(values: readonly number[]): MonitoringDistribution {
     const sorted = values.toSorted((left, right) => left - right)
     const percentile = (fraction: number) => sorted[Math.ceil(sorted.length * fraction) - 1] ?? null
@@ -84,6 +109,7 @@ export function monitoringDistribution(values: readonly number[]): MonitoringDis
     }
 }
 
+/** Assigns deterministic healthy/timeout delays while preserving the requested timeout and interval workload. */
 export function monitoringLatency(
     profile: MonitoringScaleOptions['profile'],
     index: number,
@@ -98,6 +124,7 @@ export function monitoringLatency(
     return { durationMs, timeout: index % 4 === 3 }
 }
 
+/** Produces a protocol-valid diagnostic for the simulation profile without claiming native network execution. */
 export function simulatedMonitoringResult(
     input: DomainDiagnosticsControllerInput,
     durationMs: number,
@@ -129,6 +156,7 @@ function sleep(ms: number) {
     return new Promise<void>((resolve) => setTimeout(resolve, ms))
 }
 
+/** Accepts only the exact healthy and timeout status/code pairs emitted by controlled fixture upstreams. */
 export function isMonitoringFixtureOutcome(status: string, code: string): boolean {
     return (
         (status === 'healthy' && code === 'expected_status') ||
@@ -136,6 +164,7 @@ export function isMonitoringFixtureOutcome(status: string, code: string): boolea
     )
 }
 
+/** Seeds an empty isolated database, measures unchanged 60-second policies, and drains and removes its fixtures on exit. */
 export async function runMonitoringCapacity(options: MonitoringScaleOptions) {
     assertIsolatedMonitoringDatabase(
         process.env.RENTNERPROXY_DATABASE_INTEGRATION,
@@ -249,12 +278,24 @@ export async function runMonitoringCapacity(options: MonitoringScaleOptions) {
     let cpu = process.cpuUsage()
     let legacyActive = false
     let legacyNextAt = 0
-    let budgetExpired = false
-    const budgetTimer = setTimeout(() => {
-        budgetExpired = true
-        failures.push('Monitoring capacity wall-clock budget exhausted')
+    let runAborted = false
+    /** Stops admission once and lets the run unwind through fixture cleanup on deadlines or signals. */
+    function abortRun(reason: 'budget' | 'SIGINT' | 'SIGTERM') {
+        if (runAborted) return
+        runAborted = true
+        failures.push(
+            reason === 'budget'
+                ? 'Monitoring capacity wall-clock budget exhausted'
+                : `Monitoring capacity interrupted by ${reason}`,
+        )
         void worker?.stop()
-    }, 240000)
+    }
+    const budgetTimer = setTimeout(() => abortRun('budget'), 240000)
+    const interrupt = () => abortRun('SIGINT')
+    const terminate = () => abortRun('SIGTERM')
+    process.once('SIGINT', interrupt)
+    process.once('SIGTERM', terminate)
+    /** Records full phase latency, including failures, without changing the operation's result or error. */
     async function measure<T>(name: string, operation: () => Promise<T>): Promise<T> {
         const start = performance.now()
         try {
@@ -271,7 +312,7 @@ export async function runMonitoringCapacity(options: MonitoringScaleOptions) {
             db.select({ id: redirectHosts.id }).from(redirectHosts).limit(1),
         ])
         if (existingPolicies.length || existingHosts.length || existingRedirects.length)
-            throw new Error('Refusing nonempty monitoring/host database')
+            throw new MonitoringInputError('nonempty')
         if (nativeMode) {
             const { createNativeMonitoringFixture } = await import('./monitoring-native.ts')
             native = await createNativeMonitoringFixture(options, domains)
@@ -304,7 +345,7 @@ export async function runMonitoringCapacity(options: MonitoringScaleOptions) {
             )
         })
         seeded = true
-        if (budgetExpired) throw new Error('Monitoring capacity setup exceeded its budget.')
+        if (runAborted) throw new Error('Monitoring capacity stopped during setup.')
         if (native) {
             const { readProxyRuntimeSnapshot } =
                 await import('../../web/src/server/ProxyRuntime/proxy-runtime-data.ts')
@@ -471,7 +512,7 @@ export async function runMonitoringCapacity(options: MonitoringScaleOptions) {
         worker.start()
         const end = origin + (options.periods - 1) * 60000 + 59000
         while (Date.now() < end) {
-            if (budgetExpired) break
+            if (runAborted) break
             // Bounded wall clock includes a final 59-second drain, never stretches policy cadence.
             // oxlint-disable-next-line no-await-in-loop -- Wait for the fixed final cadence window.
             await sleep(Math.min(200, end - Date.now()))
@@ -590,6 +631,8 @@ export async function runMonitoringCapacity(options: MonitoringScaleOptions) {
         }
     } finally {
         clearTimeout(budgetTimer)
+        process.removeListener('SIGINT', interrupt)
+        process.removeListener('SIGTERM', terminate)
         await worker?.stop()
         samplerController.abort()
         await sampler
@@ -617,10 +660,8 @@ if (import.meta.main) {
             )
             console.log(JSON.stringify(result))
             if (!result.passed) process.exitCode = 1
-        } catch {
-            console.error(
-                'Monitoring capacity failed; inspect isolated database/runtime availability. No credentials logged.',
-            )
+        } catch (error) {
+            console.error(formatMonitoringFailure(error))
             process.exitCode = 1
         }
     }

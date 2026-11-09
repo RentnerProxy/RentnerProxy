@@ -35,10 +35,12 @@ import {
 } from './host-monitoring.storage.ts'
 class ExpiredHostMonitoringClaim extends Error {}
 
+/** Admits the oldest eligible policy through the same global ceiling as batch claimers. */
 export async function claimDueHostMonitoringPolicy(): Promise<HostMonitoringClaim | null> {
     return (await claimDueHostMonitoringPolicies(1))[0] ?? null
 }
 
+/** Claims at most the requested batch in stable due order, with distinct tokens and a shared cross-process lease ceiling. */
 export async function claimDueHostMonitoringPolicies(
     limit: number,
 ): Promise<HostMonitoringClaim[]> {
@@ -101,6 +103,7 @@ export async function claimDueHostMonitoringPolicies(
     })
 }
 
+/** Reads transaction-local contexts in input order after validating each exact policy/version/token lease identity. */
 export async function readHostMonitoringClaimContexts(
     claims: readonly HostMonitoringClaim[],
 ): Promise<readonly (HostMonitoringProbeContext | null)[]> {
@@ -159,6 +162,7 @@ export async function readHostMonitoringClaimContexts(
     )
 }
 
+/** Locks an unexpired lease only when its token and policy version still identify this attempt. */
 async function currentClaim(
     transaction: AuthTransaction,
     claim: HostMonitoringClaim,
@@ -197,6 +201,7 @@ function nextScheduledCheck(policy: HostMonitoringPolicy) {
     return sql`date_bin(${policy.intervalSeconds} * interval '1 second', clock_timestamp(), ${policy.nextCheckAt}::timestamptz) + ${policy.intervalSeconds} * interval '1 second'`
 }
 
+/** Clears only the still-owned live lease and advances its fixed cadence without immediate catch-up work. */
 export async function releaseHostMonitoringClaim(claim: HostMonitoringClaim): Promise<boolean> {
     return getAuthDatabase().transaction(async (transaction) => {
         await prepareWorkerTransaction(transaction)
@@ -207,6 +212,7 @@ export async function releaseHostMonitoringClaim(claim: HostMonitoringClaim): Pr
     })
 }
 
+/** Atomically commits one observation, availability transition and notification input behind the caller's context fence. */
 export async function completeHostMonitoringClaim(
     claim: HostMonitoringClaim,
     outcome: HostMonitoringOutcome,
@@ -230,6 +236,7 @@ export async function completeHostMonitoringClaim(
         })
 }
 
+/** Applies one fenced result inside its transaction; a final expiry or cancellation rolls back all result writes. */
 async function completeHostMonitoringClaimInTransaction(
     transaction: AuthTransaction,
     claim: HostMonitoringClaim,
@@ -377,6 +384,7 @@ async function completeHostMonitoringClaimInTransaction(
     return true
 }
 
+/** Rechecks shared configuration once and isolates each result with a savepoint; results return only after root commit. */
 export async function completeHostMonitoringClaims(
     items: readonly HostMonitoringCompletion[],
 ): Promise<readonly PromiseSettledResult<boolean>[]> {

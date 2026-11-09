@@ -1,6 +1,7 @@
 import { HOST_MONITORING_LIMITS } from '@/config/host-monitoring.config.ts'
 import type { HostMonitoringWorkerDependencies } from './Types/host-monitoring-worker.types.ts'
 
+/** Refills bounded claim slots independently of slow probes; stop aborts admission and awaits every admitted cleanup. */
 export function createHostMonitoringWorker<Claim>(
     dependencies: HostMonitoringWorkerDependencies<Claim>,
 ) {
@@ -23,6 +24,7 @@ export function createHostMonitoringWorker<Claim>(
             return () => clearTimeout(timer)
         })
 
+    /** Deduplicates sanitized availability warnings until the failing subsystem recovers. */
     function warn(source: 'claim' | 'probe' | 'prune', signal: AbortSignal) {
         if (signal.aborted || unavailable.has(source)) return
         const notify = unavailable.size === 0
@@ -35,6 +37,7 @@ export function createHostMonitoringWorker<Claim>(
         }
     }
 
+    /** Holds a worker slot through the adapter's durable completion or fenced release. */
     function launch(claim: Claim, signal: AbortSignal) {
         const task = (async () => {
             try {
@@ -48,6 +51,7 @@ export function createHostMonitoringWorker<Claim>(
         running.add(task)
     }
 
+    /** Sweeps history independently of probe progress, with at most one throttled sweep in flight. */
     function prune(signal: AbortSignal) {
         if (pruning || signal.aborted || now() < nextPruneAt) return
         // Failed pruning is retried at the sweep interval, never in a hot loop.
@@ -64,6 +68,7 @@ export function createHostMonitoringWorker<Claim>(
         })
     }
 
+    /** Keeps a single periodic admission wakeup active while existing probes continue. */
     function schedule() {
         if (!started || stopped || cancelTimer) return
         cancelTimer = setTimer(() => {
@@ -73,6 +78,7 @@ export function createHostMonitoringWorker<Claim>(
         }, HOST_MONITORING_LIMITS.pollIntervalMs)
     }
 
+    /** Coalesces admission ticks and reserves free slots before each storage claim batch. */
     function runOnce(): Promise<void> {
         if (stopped) return Promise.resolve()
         const signal = controller.signal
@@ -115,6 +121,7 @@ export function createHostMonitoringWorker<Claim>(
 
     return {
         runOnce,
+        /** Starts admission, or resumes only after a previous stop has finished draining. */
         start() {
             if (started || stopping) return
             if (stopped) controller = new AbortController()
@@ -123,6 +130,7 @@ export function createHostMonitoringWorker<Claim>(
             schedule()
             void runOnce()
         },
+        /** Stops new work and waits for admission, retention, probes and late-lease cleanup. */
         stop(): Promise<void> {
             if (stopping) return stopping
             stopped = true

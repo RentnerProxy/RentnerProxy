@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import {
     assertIsolatedMonitoringDatabase,
+    formatMonitoringFailure,
+    MonitoringInputError,
     monitoringDistribution,
     monitoringLatency,
     parseMonitoringOptions,
@@ -11,6 +13,40 @@ import { domainDiagnosticsResultSchema } from '@/lib/RuntimeDiagnostics/domainDi
 import { assertNativeMonitoringFixture } from '../../../../../scripts/runtime-scale/monitoring-native.ts'
 
 describe('bounded opt-in monitoring capacity', () => {
+    test('prints only fixed branded guard diagnostics and hides arbitrary runtime errors', () => {
+        const secret = 'DO_NOT_DISCLOSE_postgresql://private:credential@database.invalid/private'
+        expect(formatMonitoringFailure(new MonitoringInputError('nonempty'))).toBe(
+            'Refusing nonempty monitoring/host database',
+        )
+        const branded = new MonitoringInputError('bounds')
+        branded.message = secret
+        expect(formatMonitoringFailure(branded)).toBe('Monitoring workload outside fixed bounds')
+        for (const error of [
+            new Error(secret),
+            new TypeError(secret),
+            secret,
+            { name: 'MonitoringInputError', code: 'bounds', message: secret },
+            null,
+        ]) {
+            expect(formatMonitoringFailure(error)).not.toContain(secret)
+            expect(formatMonitoringFailure(error)).toBe(
+                'Monitoring capacity failed; inspect isolated database/runtime availability. No credentials logged.',
+            )
+        }
+        for (const operation of [
+            () => parseMonitoringOptions(['--hosts', '999']),
+            () => assertIsolatedMonitoringDatabase('1', 'postgresql://127.0.0.1/ordinary'),
+            () => assertNativeMonitoringFixture(undefined, undefined, undefined),
+        ]) {
+            try {
+                operation()
+                throw new Error('Expected a branded guard error')
+            } catch (error) {
+                expect(error).toBeInstanceOf(MonitoringInputError)
+                expect(formatMonitoringFailure(error)).not.toContain('capacity failed')
+            }
+        }
+    })
     test('rejects mismatched availability codes instead of accepting a false fixture success', () => {
         expect(isMonitoringFixtureOutcome('healthy', 'expected_status')).toBe(true)
         expect(isMonitoringFixtureOutcome('unhealthy', 'upstream_timeout')).toBe(true)

@@ -4,6 +4,7 @@ import type {
     HostMonitoringBatchOptions,
 } from './Types/host-monitoring-batch.types.ts'
 
+/** Coalesces storage work within the worker's admission budget; callers settle only after their batch operation settles. */
 export function createHostMonitoringBatcher<Input, Output>(
     options: HostMonitoringBatchOptions<Input, Output>,
 ) {
@@ -12,6 +13,7 @@ export function createHostMonitoringBatcher<Input, Output>(
     let running = false
     let admitted = 0
 
+    /** Flushes a partial tail after the configured delay without overlapping a storage transaction. */
     function schedule() {
         if (running || timer || pending.length === 0) return
         timer = setTimeout(() => {
@@ -20,6 +22,7 @@ export function createHostMonitoringBatcher<Input, Output>(
         }, options.delayMs)
     }
 
+    /** Runs one bounded batch, isolates item failures, and drains queued batches serially. */
     async function flush() {
         if (running || pending.length === 0) return
         if (timer) clearTimeout(timer)

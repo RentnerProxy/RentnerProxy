@@ -1,7 +1,8 @@
 import type { MonitoringScaleOptions } from './Types/monitoring.types.ts'
 import type { ProxyRuntimeSnapshot } from '../../web/src/server/ProxyRuntime/Types/proxy-runtime.types.ts'
-import { monitoringLatency } from './monitoring.ts'
+import { monitoringLatency, MonitoringInputError } from './monitoring.ts'
 
+/** Restricts native mutations to the explicitly opted-in loopback controller and synthetic fixture identity. */
 export function assertNativeMonitoringFixture(
     flag: string | undefined,
     controllerUrl: string | undefined,
@@ -12,9 +13,10 @@ export function assertNativeMonitoringFixture(
         controllerUrl !== 'http://127.0.0.1:55441' ||
         token !== 'synthetic-monitoring-scale-token-392'
     )
-        throw new Error('Native monitoring requires the explicitly isolated controller fixture.')
+        throw new MonitoringInputError('native')
 }
 
+/** Hosts bounded deterministic HTTP upstreams and exposes the real controller/traffic adapters for the isolated workload. */
 export async function createNativeMonitoringFixture(
     options: MonitoringScaleOptions,
     domains: readonly string[],
@@ -34,6 +36,7 @@ export async function createNativeMonitoringFixture(
         hostname: '0.0.0.0',
         port: 0,
         idleTimeout: 15,
+        /** Serves only selected fixture domains, retaining slow HEAD requests beyond the controller's requested deadline. */
         async fetch(request) {
             const index = hosts.get(request.headers.get('host') ?? '')
             if (
@@ -69,6 +72,7 @@ export async function createNativeMonitoringFixture(
         forwardHost: 'host.docker.internal',
         forwardPort: upstream.port,
         inspect: inspectControllerDomain,
+        /** Verifies a real Caddy response independently of scheduled upstream probes. */
         async traffic() {
             const response = await fetch('http://127.0.0.1:55442/traffic', {
                 headers: { host: domains[0]! },
@@ -81,6 +85,7 @@ export async function createNativeMonitoringFixture(
             )
                 throw new Error('Isolated Caddy traffic failed during monitoring load.')
         },
+        /** Requires confirmed activation of the fixture snapshot before scheduling probes. */
         async apply(snapshot: ProxyRuntimeSnapshot) {
             if (!(await applyProxyRuntimeConfiguration(snapshot)))
                 throw new Error('Isolated native monitoring configuration was not activated.')
