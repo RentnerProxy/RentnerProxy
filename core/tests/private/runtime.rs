@@ -27,6 +27,8 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::{Mutex, Notify};
+#[path = "runtime/fault_isolation.rs"]
+mod fault_isolation;
 #[path = "runtime/recovery.rs"]
 mod recovery;
 const HOST_ID: &str = "00000000-0000-0000-0000-000000000000";
@@ -50,6 +52,8 @@ struct FakeCaddy {
     upstream_response: Mutex<Option<axum::body::Bytes>>,
     upstream_gate: Mutex<Option<Arc<Notify>>>,
     upstream_started: Notify,
+    probe_hang_once: AtomicBool,
+    shutdown_uncertain: AtomicBool,
 }
 impl FakeCaddy {
     fn new() -> Arc<Self> {
@@ -70,6 +74,8 @@ impl FakeCaddy {
             upstream_response: Mutex::new(None),
             upstream_gate: Mutex::new(None),
             upstream_started: Notify::new(),
+            probe_hang_once: AtomicBool::new(false),
+            shutdown_uncertain: AtomicBool::new(false),
         })
     }
     async fn next(queue: &Mutex<VecDeque<Result<(), EngineError>>>) -> Result<(), EngineError> {
@@ -136,6 +142,9 @@ impl ProxyEngine for FakeCaddy {
     fn probe<'a>(&'a self, revision: &'a str) -> EngineFuture<'a> {
         Box::pin(async move {
             self.probe_count.fetch_add(1, Ordering::SeqCst);
+            if self.probe_hang_once.swap(false, Ordering::SeqCst) {
+                std::future::pending::<()>().await;
+            }
             Self::next(&self.probes).await?;
             let json = self.configuration.lock().await;
             let active = revision_from_config(&json).unwrap_or_else(|| "none".to_owned());
@@ -148,6 +157,9 @@ impl ProxyEngine for FakeCaddy {
     }
     fn shutdown<'a>(&'a self) -> EngineFuture<'a> {
         Box::pin(async move {
+            if self.shutdown_uncertain.load(Ordering::SeqCst) {
+                return Err(EngineError::TimedOut);
+            }
             self.running.store(false, Ordering::SeqCst);
             Ok(())
         })
@@ -1575,7 +1587,7 @@ fn timestamps_are_utc() {
 }
 
 #[tokio::test]
-async fn failed_readiness_of_a_running_child_triggers_verified_recovery() {
+async fn readiness_probe_failure_does_not_restart_or_change_recovery_state() {
     let engine = FakeCaddy::new();
     let (runtime, _) = runtime(Some(engine.clone()));
     runtime.initialize().await;
@@ -1586,11 +1598,11 @@ async fn failed_readiness_of_a_running_child_triggers_verified_recovery() {
         .await
         .push_back(Err(EngineError::InvalidResponse));
     assert!(!runtime.is_ready().await);
-    assert!(!runtime.status().await.available);
+    assert!(runtime.status().await.available);
     assert!(engine.running.load(Ordering::SeqCst));
     runtime.recover().await.unwrap();
     assert!(runtime.is_ready().await);
-    assert_eq!(engine.start_count.load(Ordering::SeqCst), 2);
+    assert_eq!(engine.start_count.load(Ordering::SeqCst), 1);
     assert_eq!(
         runtime.status().await.active_revision,
         Some(configuration(4_000).revision)

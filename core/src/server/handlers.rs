@@ -29,7 +29,7 @@ pub(super) use crowdsec::{
     apply_crowdsec_config, crowdsec_dashboard, crowdsec_status, enroll_crowdsec_console,
     test_crowdsec_connection,
 };
-pub(super) use health::{health, readiness};
+pub(super) use health::{health, readiness, recovery_progress};
 pub(super) use proxy::{
     apply_proxy_config, preview_proxy_config, preview_proxy_host_config, proxy_status,
     proxy_version, read_proxy_config, read_proxy_host_config, read_proxy_host_upstreams,

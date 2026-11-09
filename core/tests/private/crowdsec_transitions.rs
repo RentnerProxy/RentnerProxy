@@ -6,13 +6,16 @@ use std::{collections::VecDeque, future::Future, pin::Pin, sync::Mutex};
 struct TransitionEngine {
     starts: Mutex<Vec<String>>,
     results: Mutex<VecDeque<Result<(), EngineError>>>,
+    running: std::sync::atomic::AtomicBool,
 }
 
 impl ProxyEngine for TransitionEngine {
     fn start<'a>(&'a self, json: &'a str, _: &'a str) -> EngineFuture<'a> {
         Box::pin(async move {
             self.starts.lock().unwrap().push(json.to_owned());
-            self.results.lock().unwrap().pop_front().unwrap_or(Ok(()))
+            let result = self.results.lock().unwrap().pop_front().unwrap_or(Ok(()));
+            self.running.store(result.is_ok(), Ordering::SeqCst);
+            result
         })
     }
     fn load<'a>(&'a self, _: &'a str) -> EngineFuture<'a> {
@@ -22,16 +25,20 @@ impl ProxyEngine for TransitionEngine {
         Box::pin(async { Ok(()) })
     }
     fn shutdown(&self) -> EngineFuture<'_> {
-        Box::pin(async { Ok(()) })
+        Box::pin(async {
+            self.running.store(false, Ordering::SeqCst);
+            Ok(())
+        })
     }
     fn is_running(&self) -> Pin<Box<dyn Future<Output = bool> + Send + '_>> {
-        Box::pin(async { true })
+        Box::pin(async { self.running.load(Ordering::SeqCst) })
     }
 }
 
 async fn enabled_fixture() -> (Fixture, Arc<TransitionEngine>) {
     let mut fixture = Fixture::new();
     let engine = Arc::new(TransitionEngine::default());
+    engine.running.store(true, Ordering::SeqCst);
     Arc::get_mut(&mut fixture.runtime).unwrap().engine = Some(engine.clone());
     {
         let mut state = fixture.runtime.state.lock().await;

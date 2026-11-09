@@ -11,6 +11,8 @@ async fn binary_healthcheck_requires_an_exact_success_status_and_uses_the_reques
     for (endpoint, response, success) in [
         ("health", "HTTP/1.1 200 OK\r\n\r\n", true),
         ("ready", "HTTP/1.0 200 OK\r\n\r\n", true),
+        ("progress", "HTTP/1.1 200 OK\r\n\r\n", true),
+        ("progress", "HTTP/1.1 503 Unavailable\r\n\r\n", false),
         ("ready", "HTTP/1.1 503 Unavailable\r\n\r\n", false),
         ("health", "HTTP/1.1 201 Created\r\n\r\n", false),
         ("health", "HTTP/1.1 2000 Invalid\r\n\r\n", false),

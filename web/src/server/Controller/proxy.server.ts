@@ -37,6 +37,16 @@ const statusSchema = z.object({
     running: z.boolean(),
     activeRevision: revisionSchema.nullable(),
     lastApplyAt: timestampSchema,
+    recovery: z
+        .object({
+            workerRunning: z.boolean(),
+            completedTicks: z.number().int().nonnegative().safe(),
+            lastCompletedAgeSeconds: z.number().int().nonnegative().safe().nullable(),
+            circuitOpen: z.boolean(),
+            restartsInWindow: z.number().int().min(0).max(3),
+            faults: z.number().int().nonnegative().safe(),
+        })
+        .optional(),
 })
 
 const applySchema = z.object({

@@ -1,3 +1,4 @@
+// oxlint-disable no-await-in-loop -- Each case replaces the shared isolated journal before checking its fence.
 import { beforeEach, expect, mock, test } from 'bun:test'
 import { join } from 'node:path'
 import type {
@@ -22,8 +23,12 @@ mock.module('../../../../../../docker/production/backups/storage.ts', () => ({
         files.set(path, structuredClone(value))
     },
 }))
-const { canConfirmRestartedRestore, confirmRestartedRestore, hasRestartedRestoreProof } =
-    await import('../../../../../../docker/production/backups/restart-recovery.ts')
+const {
+    assertWebRestartSafe,
+    canConfirmRestartedRestore,
+    confirmRestartedRestore,
+    hasRestartedRestoreProof,
+} = await import('../../../../../../docker/production/backups/restart-recovery.ts')
 
 function operation(): ManagedBackupMaintenance {
     return {
@@ -112,4 +117,25 @@ test('missing state is a no-op and unsafe or malformed state fails closed', asyn
     readError = new Error('unsafe fixture ownership')
     await expect(confirmRestartedRestore()).rejects.toThrow('unsafe fixture ownership')
     await expect(hasRestartedRestoreProof(operation())).rejects.toThrow('unsafe fixture ownership')
+})
+
+test('web restart requires a readable maintenance journal and completed restore fence', async () => {
+    await expect(assertWebRestartSafe()).rejects.toThrow()
+    files.set(stateFile, { invalid: true })
+    await expect(assertWebRestartSafe()).rejects.toThrow()
+    for (const phase of ['queued', 'validating', 'database', 'secrets', 'restarting'] as const) {
+        for (const status of ['queued', 'running', 'failed', 'interrupted'] as const) {
+            files.set(stateFile, state({ ...operation(), state: status, phase }))
+            await expect(assertWebRestartSafe()).rejects.toThrow('maintenance fence')
+        }
+    }
+    files.set(stateFile, state({ ...operation(), state: 'succeeded', phase: 'complete' }))
+    await expect(assertWebRestartSafe()).resolves.toBeUndefined()
+    const clean = { ...state(operation()), maintenance: null }
+    files.set(stateFile, clean)
+    await expect(assertWebRestartSafe()).resolves.toBeUndefined()
+    files.set(stateFile, { ...clean, maintenanceRequests: [{ ...operation(), state: 'queued' }] })
+    await expect(assertWebRestartSafe()).rejects.toThrow('maintenance fence')
+    readError = new Error('unsafe fixture ownership')
+    await expect(assertWebRestartSafe()).rejects.toThrow('unsafe fixture ownership')
 })

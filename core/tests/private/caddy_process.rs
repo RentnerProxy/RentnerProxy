@@ -126,7 +126,6 @@ async fn owned_start_passes_configuration_and_private_environment_and_reuses_ver
         .set_environment(EngineEnvironment::with_crowdsec_bouncer_key(
             "fixture-bouncer-key".to_owned(),
         ));
-    let listener = fixture.listener("runtime-probe.sock");
     let probe = async {
         timeout(Duration::from_secs(2), async {
             while !fixture.root.join("started").exists() {
@@ -135,6 +134,7 @@ async fn owned_start_passes_configuration_and_private_environment_and_reuses_ver
         })
         .await
         .unwrap();
+        let listener = fixture.listener("runtime-probe.sock");
         respond(
             &listener,
             "GET /__rentnerproxy_runtime_probe HTTP/1.1\r\n",
@@ -163,6 +163,7 @@ async fn owned_start_passes_configuration_and_private_environment_and_reuses_ver
         )
     );
     let original_pid = fixture.engine.child.lock().await.as_ref().unwrap().id();
+    let listener = fixture.listener("runtime-probe.sock");
     let (result, ()) = tokio::join!(
         fixture
             .engine
@@ -237,6 +238,7 @@ async fn owned_start_rejects_missing_nonexecutable_and_prematurely_exited_childr
         missing.start("{}", "r").await,
         Err(EngineError::Unavailable)
     );
+    drop(missing);
     std::fs::set_permissions(
         &fixture.engine.binary,
         std::fs::Permissions::from_mode(0o600),

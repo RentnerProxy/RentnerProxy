@@ -36,3 +36,28 @@ pub(in crate::server) async fn readiness(state: AppState) -> Response {
         },
     )
 }
+
+#[derive(Serialize)]
+struct RecoveryProgressResponse {
+    status: &'static str,
+    scope: &'static str,
+}
+
+pub(in crate::server) async fn recovery_progress(state: AppState) -> Response {
+    let progressing = state.runtime.recovery_progressing();
+    no_store_status_json(
+        if progressing {
+            StatusCode::OK
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        },
+        RecoveryProgressResponse {
+            status: if progressing {
+                "progressing"
+            } else {
+                "not_progressing"
+            },
+            scope: "caddy_recovery",
+        },
+    )
+}

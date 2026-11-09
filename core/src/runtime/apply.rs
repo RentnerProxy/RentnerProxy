@@ -249,10 +249,9 @@ impl ProxyRuntime {
             return;
         }
         self.mark_unavailable().await;
-        let _ = engine.shutdown().await;
         let environment = self.active_crowdsec_provider().await.environment();
         if self
-            .start_engine(engine, json, revision, environment)
+            .replace_engine(engine, json, revision, environment)
             .await
             .is_ok()
         {

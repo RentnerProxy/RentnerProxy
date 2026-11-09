@@ -1,6 +1,8 @@
 async function isWebReady(): Promise<boolean> {
     try {
-        const response = await fetch('http://127.0.0.1:3000/health/ready')
+        const response = await fetch('http://127.0.0.1:3000/health/ready', {
+            signal: AbortSignal.timeout(3_000),
+        })
         await response.body?.cancel()
         return response.ok
     } catch {

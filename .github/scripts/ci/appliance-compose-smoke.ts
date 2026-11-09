@@ -5,6 +5,8 @@ import { createApplianceSmokeContext, assertions } from './appliance/context.ts'
 import { verifyApplianceStartup } from './appliance/startup.ts'
 import { verifyApplianceManagementAndPersistence } from './appliance/management-and-persistence.ts'
 import { verifyApplianceProxyTraffic } from './appliance/proxy-traffic.ts'
+import { verifyApplianceRuntimeFaults } from './appliance/runtime-faults.ts'
+import { verifyApplianceNativeRuntimeFaults } from './appliance/native-runtime-faults.ts'
 import { verifyApplianceCrowdsec } from './appliance/crowdsec.ts'
 import { verifyApplianceBackup } from './appliance/backup.ts'
 import { verifyApplianceRestore } from './appliance/restore.ts'
@@ -19,6 +21,8 @@ async function runSmoke(): Promise<void> {
             await verifyApplianceManagementAndPersistence(started),
         )
         const proxy = extendSmokeContext(persisted, await verifyApplianceProxyTraffic(persisted))
+        await verifyApplianceRuntimeFaults(proxy)
+        await verifyApplianceNativeRuntimeFaults(proxy)
         await verifyApplianceCrowdsec(proxy)
         const backup = extendSmokeContext(proxy, await verifyApplianceBackup(proxy))
         const restored = extendSmokeContext(backup, await verifyApplianceRestore(backup))

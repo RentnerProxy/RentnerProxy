@@ -43,6 +43,7 @@ test_environment() (
     load_function "$entrypoint" start_child
     load_function "$entrypoint" run_web
     load_function "$entrypoint" start_web
+    source "$source_directory/production/fault-supervisor.sh"
     for variant in configured empty unset; do
         (
             case $variant in

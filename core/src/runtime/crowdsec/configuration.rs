@@ -115,14 +115,13 @@ impl ProxyRuntime {
                 }
             };
 
-            let _ = engine.shutdown().await;
             if runtime
-                .start_engine(engine, &target_json, &revision, target.environment())
+                .reconfigure_engine(engine, &target_json, &revision, target.environment())
                 .await
                 .is_err()
             {
                 let restored = runtime
-                    .start_engine(engine, &previous_json, &revision, previous.1.environment())
+                    .replace_engine(engine, &previous_json, &revision, previous.1.environment())
                     .await
                     .is_ok();
                 if !restored {
@@ -140,9 +139,8 @@ impl ProxyRuntime {
                     stage = "crowdsec_snapshot",
                     "CrowdSec provider state was not persisted"
                 );
-                let _ = engine.shutdown().await;
                 let restored = runtime
-                    .start_engine(engine, &previous_json, &revision, previous.1.environment())
+                    .replace_engine(engine, &previous_json, &revision, previous.1.environment())
                     .await
                     .is_ok();
                 if !restored {

@@ -36,6 +36,7 @@ pub async fn healthcheck(endpoint: &str) -> ExitCode {
     let path = match endpoint {
         "health" => "/health",
         "ready" => "/ready",
+        "progress" => "/progress",
         _ => return ExitCode::FAILURE,
     };
     let configured_addr =

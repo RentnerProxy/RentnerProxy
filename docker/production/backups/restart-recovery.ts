@@ -49,3 +49,18 @@ export async function hasRestartedRestoreProof(operation: ManagedBackupMaintenan
     const proof = proofSchema.parse(stored)
     return proof.id === operation.id && proof.metadataSha256 === operation.metadataSha256
 }
+
+/** A replacement Bun process must never resume writers beside unfinished maintenance. */
+export async function assertWebRestartSafe(): Promise<void> {
+    const state = managedBackupStateSchema.parse(await readPrivateJson(stateFile))
+    if (
+        state.jobs.some((job) => job.state === 'queued' || job.state === 'running') ||
+        state.maintenanceRequests?.some(
+            (operation) => operation.state === 'queued' || operation.state === 'running',
+        ) ||
+        (state.maintenance?.operation === 'restore' && state.maintenance.state !== 'succeeded') ||
+        state.maintenance?.state === 'queued' ||
+        state.maintenance?.state === 'running'
+    )
+        throw new Error('web restart blocked by maintenance fence')
+}

@@ -25,6 +25,8 @@ use tokio::{
 };
 
 mod maintenance;
+#[cfg(unix)]
+mod ownership;
 mod version;
 
 const API_TIMEOUT: Duration = Duration::from_secs(10);
@@ -80,6 +82,9 @@ impl std::fmt::Debug for EngineEnvironment {
 }
 
 pub(crate) trait ProxyEngine: Send + Sync {
+    fn claim_ownership(&self) -> EngineFuture<'_> {
+        Box::pin(async { Ok(()) })
+    }
     fn version(&self) -> Pin<Box<dyn Future<Output = Option<String>> + Send + '_>> {
         Box::pin(async { None })
     }
@@ -124,6 +129,7 @@ pub(crate) enum EngineError {
     Rejected,
     InvalidResponse,
     TimedOut,
+    OwnershipUncertain,
 }
 
 pub(crate) struct CaddyProcess {
@@ -134,6 +140,8 @@ pub(crate) struct CaddyProcess {
     environment: std::sync::Mutex<EngineEnvironment>,
     child: Mutex<Option<Child>>,
     stopping: std::sync::atomic::AtomicBool,
+    #[cfg(unix)]
+    ownership: std::sync::Mutex<Option<std::fs::File>>,
 }
 
 impl CaddyProcess {
@@ -146,16 +154,24 @@ impl CaddyProcess {
             environment: std::sync::Mutex::new(EngineEnvironment::default()),
             child: Mutex::new(None),
             stopping: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(unix)]
+            ownership: std::sync::Mutex::new(None),
         }
     }
 
     async fn child_running(&self) -> bool {
+        // Unknown child state must retain ownership and prevent a replacement.
+        self.owned_child_running().await.unwrap_or(true)
+    }
+
+    async fn owned_child_running(&self) -> Result<bool, EngineError> {
         let mut slot = self.child.lock().await;
         match slot.as_mut().map(Child::try_wait) {
-            Some(Ok(None)) => true,
-            _ => {
+            Some(Ok(None)) => Ok(true),
+            Some(Err(_)) => Err(EngineError::OwnershipUncertain),
+            Some(Ok(Some(_))) | None => {
                 *slot = None;
-                false
+                Ok(false)
             }
         }
     }
@@ -221,7 +237,7 @@ impl CaddyProcess {
         let expected = format!("{revision}\n");
         let operation = async {
             loop {
-                if !self.child_running().await {
+                if !self.owned_child_running().await? {
                     return Err(EngineError::Unavailable);
                 }
                 if let Ok(response) = self
@@ -252,9 +268,13 @@ impl CaddyProcess {
         if !cfg!(unix) {
             return Err(EngineError::Unavailable);
         }
-        if self.child_running().await {
+        if self.owned_child_running().await? {
             return self.verify_revision(revision).await;
         }
+        #[cfg(unix)]
+        let ownership_fd = self.claim_state_ownership()?;
+        #[cfg(unix)]
+        self.require_unoccupied_sockets().await?;
         let mut command = Command::new(&self.binary);
         command
             .args(["run", "--config", "-"])
@@ -276,7 +296,23 @@ impl CaddyProcess {
             command.env("RENTNERPROXY_CROWDSEC_BOUNCER_KEY", key);
         }
         #[cfg(unix)]
-        command.process_group(0);
+        {
+            command.process_group(0);
+            // SAFETY: this child-only hook calls only async-signal-safe fcntl.
+            // ownership keeps the FD alive through spawn; inheritance ensures
+            // an orphan or maintenance Caddy retains the same ownership lock.
+            unsafe {
+                command.pre_exec(move || {
+                    let flags = libc::fcntl(ownership_fd, libc::F_GETFD);
+                    if flags < 0
+                        || libc::fcntl(ownership_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0
+                    {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
         #[cfg(windows)]
         {
             command.creation_flags(0x0800_0000);
@@ -326,21 +362,23 @@ impl CaddyProcess {
     }
 
     async fn terminate_child_until(&self, deadline: Instant) -> Result<(), EngineError> {
-        let Some(mut child) = timeout_at(deadline, self.child.lock())
+        let mut slot = timeout_at(deadline, self.child.lock())
             .await
-            .map_err(|_| EngineError::TimedOut)?
-            .take()
-        else {
+            .map_err(|_| EngineError::TimedOut)?;
+        let Some(child) = slot.as_mut() else {
             return Ok(());
         };
         let kill_result = child.start_kill().map_err(|error| {
             tracing::warn!(stage = "child_kill", error_kind = ?error.kind(), "Caddy child kill failed");
             EngineError::CommandFailed
         });
-        // Even when signalling fails, reaping remains bounded. On timeout the
-        // owned child is dropped with kill_on_drop as the final fallback.
+        // Retain the handle until reaping proves exit, including when this
+        // future is cancelled. A failed wait cannot authorize a replacement.
         match timeout_at(deadline, child.wait()).await {
-            Ok(Ok(_)) => kill_result,
+            Ok(Ok(_)) => {
+                *slot = None;
+                kill_result
+            }
             Ok(Err(error)) => {
                 tracing::warn!(stage = "child_reap", error_kind = ?error.kind(), "Caddy child reap failed");
                 Err(EngineError::CommandFailed)
@@ -437,6 +475,13 @@ impl CaddyProcess {
 }
 
 impl ProxyEngine for CaddyProcess {
+    fn claim_ownership(&self) -> EngineFuture<'_> {
+        Box::pin(async {
+            #[cfg(unix)]
+            self.claim_state_ownership().map(|_| ())?;
+            Ok(())
+        })
+    }
     fn version(&self) -> Pin<Box<dyn Future<Output = Option<String>> + Send + '_>> {
         Box::pin(version::read(&self.binary))
     }
@@ -451,7 +496,7 @@ impl ProxyEngine for CaddyProcess {
     }
     fn load<'a>(&'a self, configuration: &'a str) -> EngineFuture<'a> {
         Box::pin(async move {
-            if !self.child_running().await {
+            if !self.owned_child_running().await? {
                 return Err(EngineError::Unavailable);
             }
             let response = self
@@ -497,7 +542,7 @@ impl ProxyEngine for CaddyProcess {
         &'a self,
     ) -> Pin<Box<dyn Future<Output = Result<Bytes, EngineError>> + Send + 'a>> {
         Box::pin(async move {
-            if !self.child_running().await {
+            if !self.owned_child_running().await? {
                 return Err(EngineError::Unavailable);
             }
             let response = self
@@ -528,7 +573,7 @@ impl ProxyEngine for CaddyProcess {
             if !crate::proxy::is_canonical_uuid(host_id) || !crate::proxy::is_revision(revision) {
                 return Err(EngineError::InvalidResponse);
             }
-            if !self.child_running().await {
+            if !self.owned_child_running().await? {
                 return Err(EngineError::Unavailable);
             }
             let path = format!("/rentnerproxy/upstreams?host_id={host_id}&revision={revision}");

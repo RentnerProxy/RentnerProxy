@@ -197,6 +197,7 @@ COPY --from=valkey-runtime /usr/local/bin/valkey-server /usr/local/bin/valkey-cl
 COPY docker/production/entrypoint.sh /usr/local/bin/rentnerproxy-production
 COPY docker/production/verify-platform.sh /tmp/verify-platform.sh
 COPY docker/production/backups/supervisor.sh /usr/local/lib/rentnerproxy-backups.sh
+COPY docker/production/fault-supervisor.sh /usr/local/lib/rentnerproxy-fault-supervisor.sh
 COPY --from=web-build /build/backup-build-identity.js /tmp/backup-build-identity.js
 COPY docker/crowdsec/runtime/supervisor.sh /usr/local/bin/rentnerproxy-crowdsec-supervisor
 
@@ -205,7 +206,7 @@ ARG RENTNERPROXY_BUILD_REVISION
 RUN install -d -m 0755 /usr/share/rentnerproxy \
     && RENTNERPROXY_BUILD_VERSION="$RENTNERPROXY_BUILD_VERSION" RENTNERPROXY_BUILD_REVISION="$RENTNERPROXY_BUILD_REVISION" bun --no-env-file /tmp/backup-build-identity.js \
     && rm /tmp/backup-build-identity.js \
-    && chmod 0444 /usr/local/lib/rentnerproxy-backups.sh
+    && chmod 0444 /usr/local/lib/rentnerproxy-backups.sh /usr/local/lib/rentnerproxy-fault-supervisor.sh
 
 RUN chmod 0555 /usr/local/bin/rentnerproxy-production \
     && chmod 0555 /usr/local/bin/rentnerproxy-crowdsec-supervisor \

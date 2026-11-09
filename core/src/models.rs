@@ -411,6 +411,7 @@ pub(crate) struct ProxyRuntimeStatus {
     pub(crate) running: bool,
     pub(crate) active_revision: Option<String>,
     pub(crate) last_apply_at: Option<String>,
+    pub(crate) recovery: crate::runtime::RecoveryStatus,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

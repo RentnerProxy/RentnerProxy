@@ -14,6 +14,9 @@ import {
     assertPersistenceRequestDecrypts,
 } from '../fixtures/persistence/state.ts'
 import { psql } from '../fixtures/appliance-storage.ts'
+import { verifyApplianceRuntimeFaults } from '../appliance/runtime-faults.ts'
+import { verifyApplianceNativeRuntimeFaults } from '../appliance/native-runtime-faults.ts'
+import type { ApplianceRuntimeFaultContext } from '../appliance/Types/runtime-faults.types.ts'
 
 const container = 'rentnerproxy'
 let stage = 'image identity'
@@ -57,7 +60,7 @@ async function controller(path: string, method = 'GET', body?: unknown): Promise
     )
 }
 
-async function traffic(verifyPersisted = false) {
+async function traffic(verifyPersisted = false, verifyRuntimeFaults = false) {
     const backend = Bun.serve({
         hostname: '0.0.0.0',
         port: 19081,
@@ -146,6 +149,24 @@ async function traffic(verifyPersisted = false) {
                 'distribution-native-appliance\n' +
                     (protocol === '--http1.1' ? '1.1' : protocol === '--http2' ? '2' : '3'),
             )
+        }
+        if (verifyRuntimeFaults) {
+            stage = 'isolated web runtime faults with published HTTP and HTTPS'
+            const faultContext: ApplianceRuntimeFaultContext = {
+                recreatedId: container,
+                httpPort: 80,
+                httpsPort: 443,
+                managementPort: 81,
+                hostDomain: 'distribution.test',
+                trafficMarker: 'distribution-native-appliance',
+                trafficCaFile: '/root/distribution-ca.pem',
+                command,
+                inspect: (id, format) => command(['podman', 'inspect', '--format', format, id]),
+                passed: (label) => console.log('PASS native ' + label),
+            }
+            await verifyApplianceRuntimeFaults(faultContext)
+            stage = 'native Caddy recovery budget and controller fail-stop'
+            await verifyApplianceNativeRuntimeFaults(faultContext)
         }
     } finally {
         backend.stop(true)
@@ -254,7 +275,7 @@ async function run() {
     if (phase === 'seed') {
         stage = 'test certificate and route initialization'
         await initializeTraffic()
-        await traffic()
+        await traffic(false, true)
         await waitForCertificateCursor()
         stage = 'persistence seed'
         const fixture = await seedPersistenceFixture({

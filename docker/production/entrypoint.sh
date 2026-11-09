@@ -32,6 +32,7 @@ log() {
 shutdown_children() {
     local deadline consumer_deadline pid index
 
+    supervisor_phase=stopping
     trap - EXIT INT TERM
     if [[ -n ${backup_recovery_job:-} ]]; then
         backup_write_result "$backup_recovery_job" recovery_failed \
@@ -120,6 +121,10 @@ assert_children_running() {
     local index
     for index in "${!child_pids[@]}"; do
         if ! kill -0 "${child_pids[$index]}" 2>/dev/null; then
+            if [[ ${child_names[$index]} == web && ${supervisor_phase:-starting} == running && ${web_recovery_active:-false} == false ]]; then
+                recover_web "$index" exit
+                continue
+            fi
             fatal "${child_names[$index]} stopped unexpectedly"
         fi
     done
@@ -365,22 +370,38 @@ run_web() {
 
 start_web() {
     start_child web run_web
+    web_process_start=$(supervisor_process_start "${child_pids[-1]}") || web_process_start=''
 }
 
 wait_for_web_readiness() {
-    wait_for_command 'web readiness' timeout --signal=TERM --kill-after=1s 5s \
-        bun --no-env-file "$app_directory/docker/web/healthcheck.ts"
+    local deadline=$((SECONDS + 60)) remaining budget
+    while ((SECONDS < deadline)); do
+        remaining=$((deadline - SECONDS))
+        budget=$remaining
+        ((budget <= 5)) || budget=5
+        if timeout --signal=TERM --kill-after=1s "${budget}s" \
+            bun --no-env-file "$app_directory/docker/web/healthcheck.ts" >/dev/null 2>&1; then
+            return
+        fi
+        assert_children_running
+        sleep 1
+    done
+    fatal 'timed out waiting for web readiness within 60 seconds'
 }
 
 monitor_children() {
     while :; do
         assert_children_running
         if [[ -e $backup_control_directory/request.json || -L $backup_control_directory/request.json ]]; then
+            supervisor_phase=maintenance
             case $(bun --no-env-file "$backup_exporter" --request-kind) in
                 backup) perform_managed_backup ;;
                 restore) perform_managed_restore ;;
                 *) fatal 'invalid maintenance operation' ;;
             esac
+            supervisor_phase=running
+        else
+            monitor_runtime_health
         fi
         sleep 0.2
     done
@@ -397,6 +418,7 @@ initialize_restore_target() {
 
 # Fixed image-owned lifecycle code; no request selects executable code or paths.
 source /usr/local/lib/rentnerproxy-backups.sh
+source /usr/local/lib/rentnerproxy-fault-supervisor.sh
 
 trap shutdown_children EXIT
 trap on_shutdown_signal INT TERM
@@ -425,4 +447,5 @@ wait_for_web_readiness
 # A failed final restart can finish recovery only after this boot proves every
 # service ready. The agent records the matching completion and releases web writers.
 bun --no-env-file "$backup_exporter" --confirm-restarted-restore
+supervisor_phase=running
 monitor_children
