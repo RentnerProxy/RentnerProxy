@@ -270,6 +270,30 @@ describe('production smoke CI output boundary', () => {
         expect(progress.result(1).diagnostic).not.toContain('secret-value')
     })
 
+    test('allows fixed web runtime stages and bounded native counters without raw diagnostics', () => {
+        const progress = smokeProgress('production')
+        for (const line of [
+            'Runtime web stage=baseline-native',
+            'Runtime web native workerRunning=true circuitOpen=false completedTicks=0 lastCompletedAgeSeconds=null',
+            'Runtime web native workerRunning=true circuitOpen=false completedTicks=12 lastCompletedAgeSeconds=0',
+            'Runtime web failure stage=resource-fds',
+        ])
+            expect(progress.consume(line)).toBe(line)
+        for (const line of [
+            'Runtime web failure stage=secret-value',
+            'Runtime web stage=baseline-native secret-value',
+            'Runtime web native workerRunning=true circuitOpen=false completedTicks=1234567890123 lastCompletedAgeSeconds=0',
+            'Runtime web native workerRunning=true circuitOpen=false completedTicks=1 lastCompletedAgeSeconds=secret-value',
+            'Runtime descriptor counts before faults secret-value',
+            'Runtime resource sample before faults cpu|memory|pids=secret-value',
+        ])
+            expect(progress.consume(line)).toBeUndefined()
+        expect(progress.result(1).diagnostic).toBe('Runtime web failure stage=resource-fds')
+        expect(smokeProgress('proxy').consume('Runtime web stage=baseline-native')).toBeUndefined()
+        progress.consume('at .github/scripts/ci/appliance/runtime-faults.ts:77:11')
+        expect(progress.result(1).diagnostic).toContain('runtime-faults.ts:77:11')
+    })
+
     test('reports CI smoke locations without exposing unrelated stack frames', () => {
         const progress = smokeProgress('production')
         progress.consume('error: Timed out waiting for managed CrowdSec acquisition')

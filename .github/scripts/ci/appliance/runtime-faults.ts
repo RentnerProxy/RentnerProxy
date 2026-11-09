@@ -9,6 +9,17 @@ import type { ApplianceRuntimeFaultContext } from './Types/runtime-faults.types.
 import { samplePublishedRuntimeTraffic } from './runtime-traffic.ts'
 
 type RuntimeProcess = Awaited<ReturnType<typeof readRuntimeProcesses>>[number]
+type RuntimeStage =
+    | 'baseline-container'
+    | 'baseline-native'
+    | 'resource-stats'
+    | 'resource-fds'
+    | 'resource-postgres'
+    | 'fault-processes'
+    | 'fault-native'
+    | 'fault-signal'
+    | 'fault-observation'
+    | 'fault-result'
 type RuntimeStatus = {
     activeRevision: string
     running: boolean
@@ -36,6 +47,23 @@ function stableRoles(rows: RuntimeProcess[]): string[] {
 export async function verifyApplianceRuntimeFaults(
     context: ApplianceRuntimeFaultContext,
 ): Promise<void> {
+    let stage: RuntimeStage = 'baseline-container'
+    const setStage = (value: RuntimeStage) => {
+        stage = value
+        console.log('Runtime web stage=' + stage)
+    }
+    try {
+        await runApplianceRuntimeFaults(context, setStage)
+    } catch (error) {
+        console.error('Runtime web failure stage=' + stage)
+        throw error
+    }
+}
+
+async function runApplianceRuntimeFaults(
+    context: ApplianceRuntimeFaultContext,
+    setStage: (value: RuntimeStage) => void,
+): Promise<void> {
     const id = context.recreatedId
     const processes = async () =>
         JSON.parse(
@@ -44,7 +72,7 @@ export async function verifyApplianceRuntimeFaults(
                 5_000,
             ),
         ) as RuntimeProcess[]
-    const status = async (): Promise<RuntimeStatus> => {
+    const status = async (allowInitialPending = false): Promise<RuntimeStatus> => {
         const source = `const token=await Bun.file('/run/rentnerproxy/controller-token/value').text();const response=await fetch('http://127.0.0.1:8081/internal/v1/proxy/status',{headers:{authorization:'Bearer '+token},signal:AbortSignal.timeout(2000)});process.stdout.write(JSON.stringify({status:response.status,body:await response.text()}));`
         const response = JSON.parse(
             await context.command(
@@ -64,18 +92,63 @@ export async function verifyApplianceRuntimeFaults(
         ) as { status: number; body: string }
         assert.equal(response.status, 200)
         const value = JSON.parse(response.body) as RuntimeStatus
-        assert.equal(value.recovery.workerRunning, true)
+        if (
+            allowInitialPending &&
+            typeof value.recovery.workerRunning === 'boolean' &&
+            typeof value.recovery.circuitOpen === 'boolean' &&
+            Number.isSafeInteger(value.recovery.completedTicks) &&
+            (value.recovery.lastCompletedAgeSeconds === null ||
+                Number.isSafeInteger(value.recovery.lastCompletedAgeSeconds))
+        ) {
+            console.log(
+                'Runtime web native workerRunning=' +
+                    value.recovery.workerRunning +
+                    ' circuitOpen=' +
+                    value.recovery.circuitOpen +
+                    ' completedTicks=' +
+                    value.recovery.completedTicks +
+                    ' lastCompletedAgeSeconds=' +
+                    value.recovery.lastCompletedAgeSeconds,
+            )
+        }
         assert.equal(value.recovery.circuitOpen, false)
-        assert.ok(
-            value.recovery.lastCompletedAgeSeconds !== null &&
-                value.recovery.lastCompletedAgeSeconds <= 90,
-        )
         assert.ok(Number.isSafeInteger(value.recovery.completedTicks))
+        if (!allowInitialPending) {
+            assert.equal(value.recovery.workerRunning, true)
+            assert.ok(
+                value.recovery.lastCompletedAgeSeconds !== null &&
+                    value.recovery.lastCompletedAgeSeconds <= 90,
+            )
+        }
         return value
     }
+    setStage('baseline-container')
     const restartCount = await context.inspect(id, '{{.RestartCount}}')
-    const original = await status()
+    setStage('baseline-native')
+    const initialStarted = performance.now()
+    let original = await status(true)
+    while (
+        !(
+            original.recovery.workerRunning &&
+            original.recovery.lastCompletedAgeSeconds !== null &&
+            original.recovery.lastCompletedAgeSeconds <= 90 &&
+            original.recovery.completedTicks > 0
+        ) &&
+        performance.now() - initialStarted < 15_000
+    ) {
+        await Bun.sleep(500)
+        original = await status(true)
+    }
+    assert.ok(
+        performance.now() - initialStarted <= 15_000 &&
+            original.recovery.workerRunning &&
+            original.recovery.lastCompletedAgeSeconds !== null &&
+            original.recovery.lastCompletedAgeSeconds <= 90 &&
+            original.recovery.completedTicks > 0,
+        'initial native recovery worker completes a tick within 15 seconds',
+    )
     const resourceSample = async (label: string) => {
+        setStage('resource-stats')
         const sample = await context.command(
             [
                 'docker',
@@ -88,11 +161,13 @@ export async function verifyApplianceRuntimeFaults(
             10_000,
         )
         console.log('Runtime resource sample ' + label + ' cpu|memory|pids=' + sample)
+        setStage('resource-fds')
         const descriptorCounts = await context.command(
             ['docker', 'exec', id, 'bun', '--no-env-file', '-e', runtimeFdCountsProbe()],
             5_000,
         )
         console.log('Runtime descriptor counts ' + label + ' ' + descriptorCounts)
+        setStage('resource-postgres')
         const databaseConnections = await context.command(
             [
                 'docker',
@@ -123,11 +198,13 @@ export async function verifyApplianceRuntimeFaults(
     }
     await resourceSample('before faults')
     for (const signal of ['TERM', 'KILL', 'STOP'] as const) {
+        setStage('fault-processes')
         const beforeProcesses = await processes()
         const oldWeb = beforeProcesses.filter((row) => row.role === 'web')
         assert.equal(oldWeb.length, 1, 'steady appliance has exactly one web process')
         assert.equal(beforeProcesses.filter((row) => row.role === 'controller').length, 1)
         assert.equal(beforeProcesses.filter((row) => row.role === 'caddy').length, 1)
+        setStage('fault-native')
         const beforeStatus = await status()
         const sampling = new AbortController()
         const traffic = { http: { requests: 0, errors: 0 }, https: { requests: 0, errors: 0 } }
@@ -147,6 +224,7 @@ export async function verifyApplianceRuntimeFaults(
         let stoppedTicksDelta = 0
         const replacementIdentities = new Set<string>()
         try {
+            setStage('fault-signal')
             // Match both PID and kernel start time again before sending a signal.
             const target = oldWeb[0]!
             const source = `const stat=await Bun.file('/proc/${target.pid}/stat').text();if(stat.slice(stat.lastIndexOf(')')+2).trim().split(/\\s+/)[19]!==${JSON.stringify(target.startTicks)})throw new Error('web identity changed');process.kill(${target.pid},'SIG${signal}');`
@@ -154,6 +232,7 @@ export async function verifyApplianceRuntimeFaults(
                 ['docker', 'exec', id, 'bun', '--no-env-file', '-e', source],
                 5_000,
             )
+            setStage('fault-observation')
             while (performance.now() - started < 60_000) {
                 const rows = await processes()
                 const current = await status()
@@ -260,6 +339,7 @@ export async function verifyApplianceRuntimeFaults(
                 ' httpsErrors=' +
                 traffic.https.errors,
         )
+        setStage('fault-result')
         assert.equal(traffic.http.errors, 0, 'published HTTP traffic remains available')
         assert.equal(traffic.https.errors, 0, 'published HTTPS traffic remains available')
         assert.ok(traffic.http.requests > 0 && traffic.https.requests > 0)

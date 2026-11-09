@@ -66,6 +66,10 @@ export function smokeProgress(suite: Suite) {
                   'startup',
                   'management-and-persistence',
                   'proxy-traffic',
+                  'runtime-faults',
+                  'runtime-processes',
+                  'runtime-traffic',
+                  'native-runtime-faults',
                   'crowdsec',
                   'backup',
                   'restore',
@@ -92,6 +96,18 @@ export function smokeProgress(suite: Suite) {
     ])
     return {
         consume(line: string): string | undefined {
+            if (
+                suite === 'production' &&
+                (/^Runtime web (?:stage=|failure stage=)(?:baseline-container|baseline-native|resource-stats|resource-fds|resource-postgres|fault-processes|fault-native|fault-signal|fault-observation|fault-result)$/u.test(
+                    line,
+                ) ||
+                    /^Runtime web native workerRunning=(?:true|false) circuitOpen=(?:true|false) completedTicks=\d{1,12} lastCompletedAgeSeconds=(?:null|\d{1,12})$/u.test(
+                        line,
+                    ))
+            ) {
+                diagnostic = line
+                return diagnostic
+            }
             if (
                 suite === 'backups' &&
                 /^Managed backup health: (?:fixture|interrupted-backup-restart) running=(?:true|false) exitCode=(?:0|[1-9]\d?|1\d{2}|2[0-4]\d|25[0-5]) health=(?:none|starting|healthy|unhealthy)$/u.test(

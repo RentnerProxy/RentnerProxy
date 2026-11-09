@@ -233,7 +233,11 @@ async fn unverified_owned_start_times_out_and_reaps_the_child() {
 #[tokio::test]
 async fn owned_start_rejects_missing_nonexecutable_and_prematurely_exited_children() {
     let fixture = Fixture::new("exit 0");
-    let missing = CaddyProcess::new(fixture.root.join("missing"), fixture.root.clone());
+    let missing_fixture = Fixture::new("exit 0");
+    let missing = CaddyProcess::new(
+        missing_fixture.root.join("missing"),
+        missing_fixture.root.clone(),
+    );
     assert_eq!(
         missing.start("{}", "r").await,
         Err(EngineError::Unavailable)

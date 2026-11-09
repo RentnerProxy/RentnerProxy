@@ -35,18 +35,36 @@ impl Drop for Fixture {
     }
 }
 
-#[test]
-fn independent_controllers_cannot_claim_the_same_state() {
+async fn claim_after_prior_owners_close(engine: &CaddyProcess) {
+    // Other parallel fixtures can inherit an FD between fork and exec. Closing
+    // all prior descriptions must eventually release the kernel's lock.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match engine.claim_ownership().await {
+                Ok(()) => break,
+                Err(EngineError::OwnershipUncertain) => tokio::task::yield_now().await,
+                Err(error) => panic!("ownership release failed: {error:?}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn independent_controllers_cannot_claim_the_same_state_before_spawning() {
     let fixture = Fixture::new();
     let first = fixture.engine();
     let second = fixture.engine();
-    first.claim_state_ownership().unwrap();
+    first.claim_ownership().await.unwrap();
     assert_eq!(
-        second.claim_state_ownership(),
+        second.claim_ownership().await,
         Err(EngineError::OwnershipUncertain)
     );
+    assert!(first.child.lock().await.is_none());
+    assert!(second.child.lock().await.is_none());
     drop(first);
-    second.claim_state_ownership().unwrap();
+    claim_after_prior_owners_close(&second).await;
 }
 
 #[test]
@@ -92,6 +110,72 @@ async fn occupied_private_sockets_are_not_unlinked_or_adopted() {
             metadata.ino()
         );
         drop(listener);
+    }
+}
+
+#[tokio::test]
+async fn stale_socket_inodes_are_allowed_without_destroying_them_during_preflight() {
+    let fixture = Fixture::new();
+    let mut identities = Vec::new();
+    for name in ["caddy-admin.sock", "runtime-probe.sock"] {
+        let path = fixture.0.join(name);
+        let listener = UnixListener::bind(&path).unwrap();
+        identities.push((
+            path.clone(),
+            std::fs::symlink_metadata(&path).unwrap().ino(),
+        ));
+        drop(listener);
+        // Parallel process fixtures may briefly inherit the listener across
+        // fork. Establish that the endpoint is actually stale before testing
+        // preflight, rather than racing that child's close-on-exec cleanup.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match tokio::net::UnixStream::connect(&path).await {
+                    Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => break,
+                    Ok(stream) => drop(stream),
+                    Err(error) => panic!("stale socket fixture failed: {error}"),
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+    let engine = fixture.engine();
+    engine.claim_ownership().await.unwrap();
+    engine.require_unoccupied_sockets().await.unwrap();
+    for (path, inode) in identities {
+        assert_eq!(std::fs::symlink_metadata(path).unwrap().ino(), inode);
+    }
+    assert!(engine.child.lock().await.is_none());
+}
+
+#[tokio::test]
+async fn socket_paths_must_not_alias_regular_files_directories_or_symlinks() {
+    for name in ["caddy-admin.sock", "runtime-probe.sock"] {
+        for kind in ["regular", "directory", "symlink"] {
+            let fixture = Fixture::new();
+            let path = fixture.0.join(name);
+            let target = fixture.0.join("preserved");
+            std::fs::write(&target, b"keep existing state").unwrap();
+            match kind {
+                "regular" => std::fs::write(&path, b"not a socket").unwrap(),
+                "directory" => std::fs::create_dir(&path).unwrap(),
+                _ => symlink(&target, &path).unwrap(),
+            }
+            let before = std::fs::symlink_metadata(&path).unwrap();
+            let engine = fixture.engine();
+            assert_eq!(
+                engine.start("{}", "none").await,
+                Err(EngineError::OwnershipUncertain)
+            );
+            assert!(engine.child.lock().await.is_none());
+            assert_eq!(
+                std::fs::symlink_metadata(&path).unwrap().ino(),
+                before.ino()
+            );
+            assert_eq!(std::fs::read(&target).unwrap(), b"keep existing state");
+        }
     }
 }
 
@@ -153,5 +237,5 @@ async fn inherited_lock_blocks_takeover_after_controller_ownership_is_dropped() 
     );
     child.kill().await.unwrap();
     child.wait().await.unwrap();
-    successor.claim_state_ownership().unwrap();
+    claim_after_prior_owners_close(&successor).await;
 }
