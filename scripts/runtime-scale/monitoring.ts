@@ -463,7 +463,8 @@ export async function runMonitoringCapacity(options: MonitoringScaleOptions) {
         })()
         worker.start()
         const end = origin + (options.periods - 1) * 60000 + 59000
-        while (Date.now() < end && !budgetExpired) {
+        while (Date.now() < end) {
+            if (budgetExpired) break
             // Bounded wall clock includes a final 59-second drain, never stretches policy cadence.
             // oxlint-disable-next-line no-await-in-loop -- Wait for the fixed final cadence window.
             await sleep(Math.min(200, end - Date.now()))
