@@ -1024,5 +1024,20 @@ console.log(JSON.stringify({memoryBytes:Math.max(0,memory-inactive),pids:Number(
         setAuthMode(value: 'allow' | 'deny' | 'unavailable') {
             return fixtureControl({ authMode: value })
         },
+        async backgroundReceipts() {
+            return JSON.parse(
+                await docker(
+                    [
+                        'exec',
+                        upstream,
+                        'bun',
+                        '--no-env-file',
+                        '-e',
+                        `const r=await fetch('http://127.0.0.1:${fixtureTransport.controlPort}/background-receipts',{signal:AbortSignal.timeout(3000)});if(!r.ok)process.exit(1);process.stdout.write(await r.text())`,
+                    ],
+                    { timeoutMs: 5000 },
+                ),
+            ) as unknown
+        },
     }
 }
