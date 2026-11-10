@@ -181,6 +181,7 @@ test('a flood holds one running pass plus one latest snapshot, and dirty work ge
         await advance(500)
         expect(calls).toBe(3)
         expect(maximum).toBe(1)
+        expect(f.dependencies.reconcile.mock.calls[2]![0]).toEqual(observed(50).snapshot)
     } finally {
         first.resolve({ enabled: true, again: false })
         await f.worker.stop()

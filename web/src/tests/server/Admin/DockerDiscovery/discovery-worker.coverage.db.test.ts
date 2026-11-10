@@ -405,3 +405,69 @@ integrationTest(
         }
     },
 )
+
+integrationTest(
+    'a real fair batch continues past sixteen hosts without another inventory hint',
+    async () => {
+        const actor = await createBackendActor()
+        await configure(actor)
+        const inventory = observed(
+            discoverySnapshot(
+                Array.from({ length: 20 }, (_unused, index) =>
+                    discoveryCandidate({
+                        containerId: index.toString(16).padStart(64, '0'),
+                        sourceId: `batch-${index}`,
+                        domains: [`batch-${index}-${actor}.example.com`],
+                    }),
+                ),
+            ),
+        )
+        const watch = spyOn(dockerDiscoveryController, 'watch').mockImplementation(
+            async (cursor, signal) => {
+                if (!cursor) return inventory
+                return new Promise((_resolve, reject) => {
+                    const cancel = () => reject(new Error('cancelled'))
+                    signal.addEventListener('abort', cancel, { once: true })
+                    if (signal.aborted) cancel()
+                })
+            },
+        )
+        const complete = Promise.withResolvers<void>()
+        const original = runtime.reconcileProxyConfigurationService
+        const apply = spyOn(runtime, 'reconcileProxyConfigurationService').mockImplementation(
+            Object.assign(
+                async (): Promise<'applied'> => {
+                    const committed = await registry()
+                    ownedHosts.push(...committed.owners.map((owner) => owner.hostId))
+                    if (committed.owners.length === 20) complete.resolve()
+                    return 'applied'
+                },
+                { start: original.start, stop: original.stop, checkDrift: original.checkDrift },
+            ),
+        )
+        const worker = createDockerDiscoveryWorker()
+        let deadline: ReturnType<typeof setTimeout> | undefined
+        try {
+            await worker.start()
+            expect((await registry()).owners).toHaveLength(16)
+            await Promise.race([
+                complete.promise,
+                new Promise<never>((_resolve, reject) => {
+                    deadline = setTimeout(
+                        () => reject(new Error('Fair batch continuation did not converge')),
+                        5000,
+                    )
+                }),
+            ])
+            await worker.stop()
+            expect((await registry()).owners).toHaveLength(20)
+            expect((await registry()).runtimeStatus).toBe('applied')
+            expect(apply).toHaveBeenCalledTimes(2)
+            expect(watch.mock.calls.filter(([cursor]) => cursor === null)).toHaveLength(1)
+        } finally {
+            if (deadline) clearTimeout(deadline)
+            await worker.stop()
+        }
+    },
+    10_000,
+)
