@@ -98,3 +98,54 @@ test('the shared Rust management fixture passes the web boundary without fields 
     ).json()
     expect(fixture).toEqual(dockerDiscoverySnapshotSchema.parse(fixture))
 })
+
+test('change watches use authenticated bounded GETs, safe cursors and caller cancellation', async () => {
+    const signal = new AbortController().signal
+    const cursor = { runtimeId: 'a'.repeat(32), generation: Number.MAX_SAFE_INTEGER }
+    const controller = createDockerDiscoveryController(async (path, options) => {
+        expect(path).toBe(
+            `/internal/v1/discovery/docker/watch?runtimeId=${cursor.runtimeId}&generation=${cursor.generation}`,
+        )
+        expect(options).toMatchObject({
+            privileged: true,
+            confidential: true,
+            timeoutMs: 30_000,
+            responseLimit: 1_048_576,
+            signal,
+        })
+        expect(options.method).toBeUndefined()
+        expect(options.body).toBeUndefined()
+        return { cursor, snapshot: null }
+    })
+    expect(await controller.watch(cursor, signal)).toEqual({ cursor, snapshot: null })
+    const initial = createDockerDiscoveryController(async (path) => {
+        expect(path).toBe('/internal/v1/discovery/docker/watch')
+        return { cursor, snapshot }
+    })
+    expect((await initial.watch(null, signal)).snapshot).toEqual(snapshot)
+})
+
+test('watch responses reject invalid identities, unsafe generations, private fields and inconsistent heartbeats', async () => {
+    const signal = new AbortController().signal
+    const cursor = { runtimeId: 'a'.repeat(32), generation: 1 }
+    const values: unknown[] = [
+        { cursor: { ...cursor, generation: Number.MAX_SAFE_INTEGER + 1 }, snapshot },
+        { cursor: { ...cursor, runtimeId: 'unsafe' }, snapshot },
+        { cursor, snapshot, secret: 'must-not-leave' },
+        { cursor, snapshot: { ...snapshot, Env: ['must-not-leave'] } },
+        { cursor: { ...cursor, generation: 2 }, snapshot: null },
+        { error: 'private Docker payload' },
+    ]
+    await Promise.all(
+        values.map(async (value) => {
+            const controller = createDockerDiscoveryController(async () => value)
+            await expect(controller.watch(cursor, signal)).rejects.toThrow('controller_unavailable')
+        }),
+    )
+    const unavailable = createDockerDiscoveryController(async () => ({
+        error: 'endpoint_unavailable',
+    }))
+    await expect(unavailable.watch(cursor, signal)).rejects.toThrow('endpoint_unavailable')
+    const noSnapshot = createDockerDiscoveryController(async () => ({ cursor, snapshot: null }))
+    await expect(noSnapshot.watch(null, signal)).rejects.toThrow('controller_unavailable')
+})

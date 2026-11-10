@@ -1,3 +1,4 @@
+mod changes;
 mod client;
 mod labels;
 pub(crate) mod models;
@@ -13,7 +14,7 @@ use std::{
     },
 };
 use tokio::{
-    sync::{Mutex, Notify},
+    sync::{Mutex, Notify, Semaphore, watch},
     task::JoinHandle,
 };
 
@@ -22,6 +23,8 @@ pub(crate) struct Discovery {
     io: Arc<Mutex<()>>,
     inspection: Mutex<()>,
     snapshot: Mutex<Snapshot>,
+    changes: watch::Sender<Option<models::Cursor>>,
+    subscribers: Semaphore,
     wake: Arc<Notify>,
     stopping: AtomicBool,
     task: Mutex<Option<JoinHandle<()>>>,
@@ -50,6 +53,8 @@ impl Discovery {
             io: Arc::new(Mutex::new(())),
             inspection: Mutex::new(()),
             snapshot: Mutex::new(Snapshot::default()),
+            changes: watch::channel(changes::new_cursor()).0,
+            subscribers: Semaphore::new(2),
             wake: Arc::new(Notify::new()),
             stopping: AtomicBool::new(false),
             task: Mutex::new(None),
@@ -57,12 +62,27 @@ impl Discovery {
     }
 
     pub(crate) async fn status(&self) -> Result<Snapshot, Error> {
+        Ok(self.observation().await?.0)
+    }
+
+    async fn observation(&self) -> Result<(Snapshot, Option<models::Cursor>), Error> {
+        let mut value = self.snapshot.lock().await;
+        // Readers and publishers take snapshot before I/O so an old document read
+        // cannot replace a newer inventory after waiting for snapshot admission.
         let (document, restored) = persistence::load(&self.path, &self.io).await?;
-        let mut value = self.snapshot.lock().await.clone();
-        if value.configuration != document || restored {
-            value = Snapshot::for_configuration(document, restored);
+        let expected_status = if restored {
+            Status::Paused
+        } else if document.settings.enabled {
+            Status::Connecting
+        } else {
+            Status::Disabled
+        };
+        if value.configuration != document || (restored && value.status != expected_status) {
+            *value = Snapshot::for_configuration(document, restored);
+            self.advance_generation();
         }
-        Ok(value)
+        // Snapshot and cursor are read under the same lock used by publish.
+        Ok((value.clone(), self.changes.borrow().clone()))
     }
 
     pub(crate) async fn save(&self, request: Save) -> Result<Snapshot, Error> {
@@ -71,6 +91,7 @@ impl Discovery {
         }
         let (document, restored) =
             persistence::save(&self.path, &self.io, &self.wake, request).await?;
+        self.changes.send_modify(|_| {});
         // A later management write cannot replace this operation's acknowledgment.
         Ok(Snapshot::for_configuration(document, restored))
     }
@@ -81,14 +102,16 @@ impl Discovery {
         candidates: Option<Vec<models::Candidate>>,
         error: Option<Error>,
     ) {
+        let mut snapshot = self.snapshot.lock().await;
         // A late response from a replaced endpoint must never become its successor's inventory.
+        // Recheck persistence under the same snapshot -> I/O order as observation.
         let Ok((current, restored)) = persistence::load(&self.path, &self.io).await else {
             return;
         };
         if &current != configuration || restored {
             return;
         }
-        let mut snapshot = self.snapshot.lock().await;
+        let previous = snapshot.clone();
         if snapshot.configuration != current {
             *snapshot = Snapshot::for_configuration(current, false);
         }
@@ -101,6 +124,9 @@ impl Discovery {
             snapshot.status = Status::Unavailable;
         }
         snapshot.error = error;
+        if *snapshot != previous {
+            self.advance_generation();
+        }
     }
 }
 
