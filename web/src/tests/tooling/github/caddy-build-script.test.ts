@@ -57,8 +57,8 @@ import { appendFileSync, writeFileSync, chmodSync } from 'node:fs'
 const name=basename(process.argv[1]),args=process.argv.slice(2),mode=process.env.FIXTURE_MODE
 appendFileSync(process.env.FIXTURE_CALLS,JSON.stringify([name,...args])+'\\n')
 if(name==='go') {
- if(args[0]==='env')console.log(mode==='compiler'?'go1.27.1':'go1.27.3')
- else if(args[0]==='version') console.log('/usr/bin/caddy: go1.27.3')
+ if(args[0]==='env')console.log(mode==='compiler'?'go1.27.1':'go1.27.4')
+ else if(args[0]==='version') console.log('/usr/bin/caddy: go1.27.4')
  else if(args[0]==='build') {
   if(mode==='validator-build')process.exit(1)
   writeFileSync('/tmp/verify-buildinfo', '#!/bin/sh\\n[ "$1" = caddy ] && [ "$2" = /usr/bin/caddy ] && [ "$FIXTURE_MODE" != metadata ]\\n');chmodSync('/tmp/verify-buildinfo',0o755)

@@ -33,9 +33,11 @@ func run(args []string) error {
 
 func validate(profile string, info *debug.BuildInfo) error {
 	var expected map[string]string
+	var compiler string
 	settings := map[string]string{"CGO_ENABLED": "0"}
 	switch profile {
 	case "caddy":
+		compiler = "go1.27.4"
 		expected = map[string]string{
 			caddyModule:                                  "v2.11.9",
 			"github.com/go-jose/go-jose/v4":              "v4.1.9",
@@ -45,6 +47,7 @@ func validate(profile string, info *debug.BuildInfo) error {
 			"github.com/mholt/caddy-l4":                  "v0.1.3-0.20261029145729-f607ccea1b7d",
 		}
 	case "crowdsec":
+		compiler = "go1.27.3"
 		expected = map[string]string{
 			"google.golang.org/grpc": "v1.85.0",
 			"golang.org/x/crypto":    "v0.58.0",
@@ -54,8 +57,8 @@ func validate(profile string, info *debug.BuildInfo) error {
 	default:
 		return fmt.Errorf("unknown build profile %q", profile)
 	}
-	if info == nil || info.GoVersion != "go1.27.3" {
-		return fmt.Errorf("expected compiler go1.27.3")
+	if info == nil || info.GoVersion != compiler {
+		return fmt.Errorf("expected compiler %s", compiler)
 	}
 	counts := make(map[string]int)
 	for _, dep := range info.Deps {

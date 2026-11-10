@@ -12,6 +12,7 @@ import (
 func fixture(profile string) *debug.BuildInfo {
 	info := &debug.BuildInfo{GoVersion: "go1.27.3"}
 	if profile == "caddy" {
+		info.GoVersion = "go1.27.4"
 		info.Deps = []*debug.Module{
 			{Path: "golang.org/x/net", Version: "v0.59.0", Replace: &debug.Module{Path: "golang.org/x/net", Version: "v0.62.0"}},
 			{Path: "github.com/crowdsecurity/crowdsec", Version: "v1.8.2"},
@@ -33,6 +34,27 @@ func fixture(profile string) *debug.BuildInfo {
 		info.Settings = []debug.BuildSetting{{Key: "CGO_ENABLED", Value: "1"}, {Key: "-tags", Value: crowdsecTags}}
 	}
 	return info
+}
+
+func TestCompilerPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		profile string
+		version string
+		valid   bool
+	}{
+		{"caddy", "go1.27.4", true},
+		{"caddy", "go1.27.3", false},
+		{"crowdsec", "go1.27.3", true},
+		{"crowdsec", "go1.27.4", false},
+	} {
+		t.Run(tc.profile+"/"+tc.version, func(t *testing.T) {
+			info := fixture(tc.profile)
+			info.GoVersion = tc.version
+			if err := validate(tc.profile, info); (err == nil) != tc.valid {
+				t.Fatalf("validate compiler %s: got %v, want valid=%v", tc.version, err, tc.valid)
+			}
+		})
+	}
 }
 
 func TestPolicies(t *testing.T) {
