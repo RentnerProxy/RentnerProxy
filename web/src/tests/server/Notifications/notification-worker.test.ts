@@ -458,6 +458,56 @@ test('due timers, coalesced hints and periodic replay recover work independently
     }
 })
 
+test.each([false, true])(
+    'a wake during a pending due-read is replayed after dispatch, unless stopped (%s)',
+    async (stopDuringRead) => {
+        jest.useFakeTimers({ now: 1000 })
+        const due = Promise.withResolvers<number | null>()
+        let wake: (() => void) | undefined
+        let pending = false
+        let sends = 0
+        let reads = 0
+        const worker = createNotificationWorker(
+            dependencies({
+                subscribe: (listener) => {
+                    wake = listener
+                    return () => {}
+                },
+                claimDelivery: async () => {
+                    if (!pending) return null
+                    pending = false
+                    return claim
+                },
+                nextDeliveryAt: async () => (++reads === 1 ? due.promise : null),
+                deliver: async () => {
+                    sends++
+                    return { success: true }
+                },
+            }),
+        )
+        try {
+            worker.start()
+            await settle()
+            expect(reads).toBe(1)
+            pending = true
+            wake!()
+            jest.advanceTimersByTime(50)
+            await settle()
+            const stopping = stopDuringRead ? worker.stop() : undefined
+            due.resolve(null)
+            await settle()
+            await stopping
+            jest.advanceTimersByTime(50)
+            await settle()
+            expect(sends).toBe(stopDuringRead ? 0 : 1)
+        } finally {
+            due.resolve(null)
+            await worker.stop()
+            jest.useRealTimers()
+        }
+    },
+)
+
 test('stop records a receiver acceptance that races cancellation and drains acknowledgement before returning', async () => {
     const sending = Promise.withResolvers<void>()
     const accepted = Promise.withResolvers<{ success: true }>()

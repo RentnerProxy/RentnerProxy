@@ -13,6 +13,7 @@ export function createNotificationWorker(dependencies: NotificationWorkerDepende
     let deliveryScheduledAt = 0
     let collecting: Promise<void> | null = null
     let dispatching: Promise<void> | null = null
+    let redispatch = false
     let running: Promise<void> | null = null
     let controller = new AbortController()
     const active = new Set<Promise<void>>()
@@ -108,7 +109,11 @@ export function createNotificationWorker(dependencies: NotificationWorkerDepende
 
     function dispatch(): Promise<void> {
         if (stopped) return Promise.resolve()
-        if (dispatching) return dispatching
+        if (dispatching) {
+            // A coalesced hint may fire while a stale next-due read is still pending.
+            redispatch = true
+            return dispatching
+        }
         dispatching = (async () => {
             try {
                 for (let count = 0; count < limits.deliveriesPerTick; count++) {
@@ -136,6 +141,10 @@ export function createNotificationWorker(dependencies: NotificationWorkerDepende
             }
         })().finally(() => {
             dispatching = null
+            if (redispatch) {
+                redispatch = false
+                scheduleDelivery(0)
+            }
         })
         return dispatching
     }
