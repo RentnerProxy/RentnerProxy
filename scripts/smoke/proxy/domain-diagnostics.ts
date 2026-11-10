@@ -16,6 +16,12 @@ const configurationStatusSchema = z.object({
             faults: z.number().int().nonnegative(),
             consecutiveProbeFailures: z.number().int().nonnegative().optional(),
         })
+        .transform(({ workerRunning, circuitOpen, faults, consecutiveProbeFailures }) => ({
+            workerRunning,
+            circuitOpen,
+            faults,
+            consecutiveProbeFailures,
+        }))
         .optional(),
 })
 
@@ -37,7 +43,7 @@ export async function runDomainDiagnosticsSmoke({
     const readStatus = async () => {
         const response = await controller('/internal/v1/proxy/status')
         assert.equal(response.status, 200)
-        // Healthy worker ticks change liveness counters independently of diagnostics.
+        // Worker ticks and aging restarts change telemetry independently of diagnostics.
         return configurationStatusSchema.parse(await response.json())
     }
     const before = await readStatus()
