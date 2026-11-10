@@ -106,11 +106,11 @@ describe('upstream Caddy binary security metadata', () => {
                 'docker/licenses/CaddyCrowdSecBouncer-NOTICE /usr/share/licenses/caddy-crowdsec-bouncer/NOTICE',
             )
             expect(image).toContain(
-                'golang:1.27.3-alpine@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18',
+                'golang:1.27.4-alpine@sha256:0a5f7fe796599ff487605987432e7619ae45beeb2fba4c2ce0b907879932aebf',
             )
         }
         for (const contract of [
-            'test "$(go env GOVERSION)" = go1.27.3',
+            'test "$(go env GOVERSION)" = go1.27.4',
             '--with github.com/hslatman/caddy-crowdsec-bouncer/http@${CADDY_CROWDSEC_BOUNCER_VERSION:?Caddy builder must pin the upstream CrowdSec module}',
             'go mod verify',
             '/bin/sh /tmp/prepare-caddy-source.sh',
