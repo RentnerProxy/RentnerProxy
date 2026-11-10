@@ -1,6 +1,7 @@
 pub(crate) mod access_logs;
 mod acme;
 mod apply;
+pub(crate) mod background;
 mod certificate_management;
 mod certificates;
 pub(crate) mod clock;
@@ -157,6 +158,7 @@ pub(crate) struct ProxyRuntime {
     #[cfg(test)]
     pub(crate) recovery_write_faults:
         std::sync::Mutex<std::collections::VecDeque<RecoveryWriteFault>>,
+    pub(crate) background: Arc<background::Registry>,
     settings: RuntimeSettings,
     engine: Option<Arc<dyn ProxyEngine>>,
     state: Mutex<RuntimeState>,
@@ -229,10 +231,15 @@ impl ProxyRuntime {
         let trusted_ca_store = TrustedCaStore::new(settings.state_dir.clone());
         let dns_connections = dns_connections::Store::new(settings.state_dir.clone());
         let ddns_automation = ddns::Automation::new(settings.state_dir.clone());
-        let docker_discovery = docker_discovery::Discovery::new(settings.state_dir.clone());
+        let background = background::Registry::new();
+        let docker_discovery = docker_discovery::Discovery::with_background(
+            settings.state_dir.clone(),
+            Arc::clone(&background),
+        );
         Arc::new(Self {
             #[cfg(test)]
             recovery_write_faults: std::sync::Mutex::new(std::collections::VecDeque::new()),
+            background,
             settings,
             engine,
             certificate_store,

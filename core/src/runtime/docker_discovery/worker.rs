@@ -3,6 +3,7 @@ use super::{
     client::{Docker, EventUpdate, Events},
     models::*,
 };
+use crate::runtime::background::{Outcome, Worker};
 use std::{
     sync::{Arc, atomic::Ordering},
     time::Duration,
@@ -16,12 +17,15 @@ impl Discovery {
             return;
         }
         let discovery = Arc::clone(self);
+        let resident = discovery.background.start(Worker::Docker);
         *task = Some(tokio::spawn(async move {
+            let _resident = resident;
             discovery.run().await;
         }));
     }
     pub(crate) fn stop_accepting(&self) {
         self.stopping.store(true, Ordering::SeqCst);
+        self.background.stop_worker(Worker::Docker);
         self.wake.notify_one();
         self.changes.send_modify(|_| {});
     }
@@ -56,19 +60,30 @@ impl Discovery {
     async fn run(&self) {
         let mut failures = 0_u32;
         while !self.stopping.load(Ordering::SeqCst) {
+            let pass = self.background.begin(Worker::Docker);
             let loaded = super::persistence::load(&self.path, &self.io).await;
             let document = match loaded {
                 Ok((document, false)) if document.settings.enabled => document,
-                _ => {
+                other => {
+                    pass.finish(if other.is_err() {
+                        Outcome::Failure
+                    } else {
+                        Outcome::Idle
+                    });
                     tokio::select! { _ = self.wake.notified() => {}, _ = sleep(Duration::from_secs(30)) => {} }
                     continue;
                 }
             };
             // Changing configuration cancels reads/streams, never enqueues a second worker.
             let result = tokio::select! {
-                _ = self.wake.notified() => { failures = 0; continue; },
+                _ = self.wake.notified() => { pass.finish(Outcome::Cancelled); failures = 0; continue; },
                 result = self.observe(&document) => result,
             };
+            pass.finish(if result.is_err() {
+                Outcome::Failure
+            } else {
+                Outcome::Idle
+            });
             if let Err(error) = result {
                 self.publish(&document, None, Some(error)).await;
                 failures = failures.saturating_add(1).min(6);

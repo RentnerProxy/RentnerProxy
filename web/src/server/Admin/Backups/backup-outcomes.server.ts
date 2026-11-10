@@ -8,6 +8,7 @@ import { appendAuditEventsInTransactionService } from '@/server/Audit/audit.serv
 import { backupsController } from '@/server/Controller/backups.server.ts'
 import { backupAuditCursorSchema, createBackupAuditIngestor } from './backup-outcomes.ts'
 import { createBackupAuditWorker } from './backup-outcomes.worker.ts'
+import { observeWorkerOperation } from '@/server/Foundation/worker-operation.ts'
 
 const CURSOR_KEY = 'managed_backup_audit_cursor_v1'
 const ingest = createBackupAuditIngestor({
@@ -49,7 +50,7 @@ const ingest = createBackupAuditIngestor({
         }),
 })
 export const backupOutcomesWorker = createBackupAuditWorker({
-    ingest,
+    ingest: (signal) => observeWorkerOperation('backup_outcomes', () => ingest(signal), signal),
     unavailable: () => {
         if (process.env.NODE_ENV === 'production')
             console.warn('[backups] Audit synchronization temporarily unavailable')

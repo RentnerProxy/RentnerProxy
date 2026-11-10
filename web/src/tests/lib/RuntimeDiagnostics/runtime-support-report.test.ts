@@ -18,7 +18,7 @@ describe('runtime support report allowlist', () => {
     test('reports healthy versions, availability, counts and exact revisions with a versioned format', () => {
         const report = createRuntimeSupportReport(supportReportFixture(), capturedAt)
         expect(report.format).toBe('rentnerproxy-runtime-support')
-        expect(report.formatVersion).toBe(1)
+        expect(report.formatVersion).toBe(2)
         expect(report.capturedAt).toBe('2026-10-06T10:00:00.000Z')
         expect(report.completeness).toBe('complete')
         expect(report.unavailableSections).toEqual([])

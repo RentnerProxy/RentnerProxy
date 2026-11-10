@@ -1,3 +1,5 @@
+import type { BunWorkerReport, ControllerWorkerReport } from '../backgroundWorkerReport.ts'
+
 export type SupportReportSection<T> =
     | { readonly state: 'available'; readonly data: T }
     | { readonly state: 'unavailable'; readonly data: null }
@@ -28,7 +30,7 @@ export interface SupportJobCounts {
 
 export interface RuntimeSupportReport {
     readonly format: 'rentnerproxy-runtime-support'
-    readonly formatVersion: 1
+    readonly formatVersion: 2
     readonly capturedAt: string
     readonly completeness: 'complete' | 'partial'
     readonly versions: {
@@ -54,6 +56,15 @@ export interface RuntimeSupportReport {
     }>
     readonly certificates: SupportReportSection<SupportCertificateCounts>
     readonly certificateJobs: SupportReportSection<SupportJobCounts>
+    readonly backgroundWorkers: {
+        readonly bun: SupportReportSection<BunWorkerReport>
+        readonly controller: SupportReportSection<ControllerWorkerReport>
+        readonly omissions: readonly {
+            readonly id: string
+            readonly owner: string
+            readonly reason: string
+        }[]
+    }
     readonly unavailableSections: readonly string[]
 }
 
@@ -68,4 +79,6 @@ export interface RuntimeSupportReportInput {
     readonly configuration: unknown
     readonly certificates: unknown
     readonly certificateJobs: unknown
+    readonly bunWorkers?: unknown
+    readonly controllerWorkers?: unknown
 }

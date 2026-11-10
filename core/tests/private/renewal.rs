@@ -65,9 +65,12 @@ async fn scheduler_first_tick_preserves_candidate_backoff_and_can_be_cancelled()
             .unwrap(),
         [ID]
     );
-    runtime
-        .renew_due_certificates(crate::server::challenges::ChallengeStore::new(), usize::MAX)
-        .await;
+    assert!(matches!(
+        runtime
+            .renew_due_certificates(crate::server::challenges::ChallengeStore::new(), usize::MAX)
+            .await,
+        Outcome::Idle
+    ));
     assert_eq!(runtime.certificate_store.get(ID).await.unwrap(), before);
     runtime.begin_shutdown();
     runtime.retry_certificate_candidates().await;

@@ -8,6 +8,8 @@ import { CERTIFICATE_JOB_STAGES } from '@/config/certificate-jobs.config.ts'
 import { SUPPORT_CERTIFICATE_JOB_ERROR_CODES } from '@/lib/RuntimeDiagnostics/runtimeSupportReport.ts'
 import { CONTROLLER_SERVICE } from '@/config/controller.config.ts'
 import type { RuntimeSupportReportInput } from '@/lib/RuntimeDiagnostics/Types/runtime-support-report.types.ts'
+import { createWorkerObservability } from '@/server/Foundation/worker-observability.ts'
+import { controllerWorkerIds } from '@/config/background-workers.config.ts'
 
 export const SUPPORT_FIXTURE_REVISION = 'sha256:' + 'a'.repeat(64)
 
@@ -48,6 +50,26 @@ export function supportReportFixture(): RuntimeSupportReportInput {
                 'applied',
             ),
             errors: counters([...SUPPORT_CERTIFICATE_JOB_ERROR_CODES, 'none', 'other'], 'none'),
+        },
+        bunWorkers: createWorkerObservability({ now: () => 1_791_282_000_000 }).snapshot(),
+        controllerWorkers: {
+            epoch: { startedAt: 1_791_282_000_000, sequence: 0 },
+            observedAt: 1_791_282_000_000,
+            workers: controllerWorkerIds.map((id) => ({
+                id,
+                owner: 'controller',
+                state: 'unknown',
+                lastAttempt: null,
+                lastSuccess: null,
+                lastFinished: null,
+                runningCount: 0,
+                attempts: 0,
+                successes: 0,
+                failures: 0,
+                cancellations: 0,
+                durationBuckets: [0, 0, 0, 0, 0, 0],
+                overflowed: false,
+            })),
         },
     }
 }

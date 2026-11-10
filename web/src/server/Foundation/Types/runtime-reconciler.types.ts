@@ -1,4 +1,5 @@
 import type { ProxyRuntimeMutationStatus } from '@/lib/ProxyRuntime/Types/proxy-runtime.types.ts'
+import type { BackgroundWorkerId } from './worker-observability.types.ts'
 
 export interface RuntimeReconcileDependencies<T> {
     readonly enabled?: boolean
@@ -18,6 +19,7 @@ export interface RuntimeApplyFailure {
 }
 
 export interface RuntimeReconcileOptions {
+    readonly workerId?: BackgroundWorkerId
     readonly name: string
     readonly timeoutMs: number
     readonly stopTimeoutMs: number

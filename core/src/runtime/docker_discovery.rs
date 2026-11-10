@@ -19,6 +19,7 @@ use tokio::{
 };
 
 pub(crate) struct Discovery {
+    background: Arc<super::background::Registry>,
     path: PathBuf,
     io: Arc<Mutex<()>>,
     inspection: Mutex<()>,
@@ -47,8 +48,16 @@ impl Discovery {
         }
         client::Docker::new(&request.endpoint)?.inventory().await
     }
+    #[cfg(test)]
     pub(crate) fn new(path: PathBuf) -> Arc<Self> {
+        Self::with_background(path, super::background::Registry::new())
+    }
+    pub(super) fn with_background(
+        path: PathBuf,
+        background: Arc<super::background::Registry>,
+    ) -> Arc<Self> {
         Arc::new(Self {
+            background,
             path,
             io: Arc::new(Mutex::new(())),
             inspection: Mutex::new(()),
@@ -102,6 +111,8 @@ impl Discovery {
         candidates: Option<Vec<models::Candidate>>,
         error: Option<Error>,
     ) {
+        let pass = self.background.begin(super::background::Worker::Docker);
+        let succeeded = candidates.is_some() && error.is_none();
         let mut snapshot = self.snapshot.lock().await;
         // A late response from a replaced endpoint must never become its successor's inventory.
         // Recheck persistence under the same snapshot -> I/O order as observation.
@@ -109,6 +120,7 @@ impl Discovery {
             return;
         };
         if &current != configuration || restored {
+            pass.finish(super::background::Outcome::Idle);
             return;
         }
         let previous = snapshot.clone();
@@ -127,6 +139,11 @@ impl Discovery {
         if *snapshot != previous {
             self.advance_generation();
         }
+        pass.finish(if succeeded {
+            super::background::Outcome::Success
+        } else {
+            super::background::Outcome::Failure
+        });
     }
 }
 

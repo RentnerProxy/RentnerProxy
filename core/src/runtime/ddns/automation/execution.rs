@@ -31,10 +31,20 @@ impl Automation {
         &self,
         connections: &Store,
         engine: &Engine,
-    ) -> Result<(), AutomationError> {
+    ) -> Result<crate::runtime::background::Outcome, AutomationError> {
         self.run_at(connections, engine, None, Self::now())
             .await
-            .map(|_| ())
+            .map(|result| match result {
+                None => crate::runtime::background::Outcome::Idle,
+                Some(result)
+                    if result.targets.iter().any(|target| {
+                        target.error.is_some() || matches!(target.status, Status::Failed)
+                    }) =>
+                {
+                    crate::runtime::background::Outcome::Failure
+                }
+                Some(_) => crate::runtime::background::Outcome::Success,
+            })
     }
     pub(super) async fn run_at(
         &self,

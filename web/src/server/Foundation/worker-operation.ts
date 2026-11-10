@@ -1,0 +1,24 @@
+import { workerObservability } from './worker-observability.ts'
+import type {
+    BackgroundWorkerId,
+    WorkerOutcome,
+    BackgroundWorkerLane,
+} from './Types/worker-observability.types.ts'
+
+export async function observeWorkerOperation<T>(
+    id: BackgroundWorkerId,
+    operation: () => Promise<T>,
+    signal?: AbortSignal,
+    outcome?: (value: T) => WorkerOutcome,
+    lane?: BackgroundWorkerLane,
+): Promise<T> {
+    const finish = workerObservability.begin(id, lane)
+    try {
+        const value = await operation()
+        finish(outcome?.(value) ?? 'success')
+        return value
+    } catch (error) {
+        finish(signal?.aborted ? 'cancelled' : 'failure')
+        throw error
+    }
+}

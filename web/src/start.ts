@@ -9,6 +9,7 @@ import { getRequestProtocol, setResponseHeaders } from '@tanstack/react-start/se
 import { getTrustProxyHeaders, validateProductionEnvironment } from '@/server/env.server.ts'
 import { startRealtimeValkey } from '@/server/WebSockets/realtimeValkey.service.ts'
 import { startWorkerLifecycle } from '@/server/Foundation/worker-lifecycle.server.ts'
+import { observeWorkerOperation } from '@/server/Foundation/worker-operation.ts'
 import {
     applyAdminUiSecurityHeaders,
     createCspNonce,
@@ -29,7 +30,7 @@ const startProxyRuntimeLifecycle = createServerOnlyFn(() =>
         const { reconcileProxyConfigurationService } =
             await import('@/server/ProxyRuntime/proxy-runtime.service.ts')
         return reconcileProxyConfigurationService
-    }),
+    }, 'proxy_reconciliation'),
 )
 
 if (typeof window === 'undefined') void startProxyRuntimeLifecycle()
@@ -39,7 +40,7 @@ const startDockerDiscoveryLifecycle = createServerOnlyFn(() =>
         const { dockerDiscoveryWorker } =
             await import('@/server/Admin/DockerDiscovery/discovery-worker.ts')
         return dockerDiscoveryWorker
-    }),
+    }, 'docker_discovery'),
 )
 if (typeof window === 'undefined') void startDockerDiscoveryLifecycle()
 
@@ -48,7 +49,7 @@ const startCrowdSecRuntimeLifecycle = createServerOnlyFn(() =>
         const { reconcileCrowdSecConfiguration } =
             await import('@/server/Admin/CrowdSec/crowdsec.service.ts')
         return reconcileCrowdSecConfiguration
-    }),
+    }, 'crowdsec_reconciliation'),
 )
 
 if (typeof window === 'undefined') void startCrowdSecRuntimeLifecycle()
@@ -61,7 +62,7 @@ const startCertificateEventsLifecycle = createServerOnlyFn(() =>
             start: startCertificateEventsSynchronization,
             stop: stopCertificateEventsSynchronization,
         }
-    }),
+    }, 'certificate_events'),
 )
 
 if (typeof window === 'undefined') void startCertificateEventsLifecycle()
@@ -71,7 +72,7 @@ const startCertificateJobsLifecycle = createServerOnlyFn(() =>
         const { startCertificateJobWorker, stopCertificateJobWorker } =
             await import('@/server/Admin/ProxyHostManagement/certificate-jobs.worker.server.ts')
         return { start: startCertificateJobWorker, stop: stopCertificateJobWorker }
-    }),
+    }, 'certificate_jobs'),
 )
 
 if (typeof window === 'undefined') void startCertificateJobsLifecycle()
@@ -81,7 +82,7 @@ const startBackupOutcomesLifecycle = createServerOnlyFn(() =>
         const { backupOutcomesWorker } =
             await import('@/server/Admin/Backups/backup-outcomes.server.ts')
         return backupOutcomesWorker
-    }),
+    }, 'backup_outcomes'),
 )
 if (typeof window === 'undefined') void startBackupOutcomesLifecycle()
 
@@ -90,7 +91,7 @@ const startNotificationLifecycle = createServerOnlyFn(() =>
         const { notificationWorker } =
             await import('@/server/Notifications/notification-worker.server.ts')
         return notificationWorker
-    }),
+    }, 'notifications'),
 )
 if (typeof window === 'undefined') void startNotificationLifecycle()
 
@@ -99,7 +100,7 @@ const startHostMonitoringLifecycle = createServerOnlyFn(() =>
         const { hostMonitoringWorker } =
             await import('@/server/HostMonitoring/host-monitoring.worker.server.ts')
         return hostMonitoringWorker
-    }),
+    }, 'host_monitoring'),
 )
 if (typeof window === 'undefined') void startHostMonitoringLifecycle()
 
@@ -109,7 +110,7 @@ const startNpmImportTempCleanup = createServerOnlyFn(async () => {
         let timer: ReturnType<typeof setInterval> | null = null
         let running: Promise<void> | null = null
         const prune = () => {
-            running ??= pruneStaleNpmImports()
+            running ??= observeWorkerOperation('npm_import_cleanup', pruneStaleNpmImports)
                 .catch(() => undefined)
                 .then(() => undefined)
                 .finally(() => {
@@ -128,7 +129,7 @@ const startNpmImportTempCleanup = createServerOnlyFn(async () => {
                 await running
             },
         }
-    })
+    }, 'npm_import_cleanup')
 })
 if (typeof window === 'undefined') void startNpmImportTempCleanup()
 

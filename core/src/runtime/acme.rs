@@ -1,3 +1,4 @@
+use super::background::{Outcome, Worker};
 mod accounts;
 #[path = "acme_http.rs"]
 mod acme_http;
@@ -30,9 +31,10 @@ static ACME_JOBS: Semaphore = Semaphore::const_new(4);
 mod tests;
 
 impl ProxyRuntime {
-    pub(crate) async fn recover_dns_cleanup(self: &Arc<Self>) {
+    pub(crate) async fn recover_dns_cleanup(self: &Arc<Self>) -> bool {
+        let pass = self.background.begin(Worker::Orders);
         let Ok(mut ids) = self.certificate_store.pending_dns_cleanup_ids().await else {
-            return;
+            return false;
         };
         if !ids.is_empty() {
             let offset = self
@@ -54,12 +56,19 @@ impl ProxyRuntime {
                 runtime.recover_dns_cleanup_one(&id).await;
             });
         }
+        pass.finish(Outcome::Idle);
+        true
     }
 
     async fn recover_dns_cleanup_one(&self, id: &str) {
+        let pass = self.background.begin(Worker::Orders);
         let work = match self.certificate_store.begin_dns_cleanup(id).await {
             Ok(Some(work)) => work,
-            Ok(None) | Err(_) => return,
+            Ok(None) => {
+                pass.finish(Outcome::Idle);
+                return;
+            }
+            Err(_) => return,
         };
         let (environment, config, intents) = work;
         let resolved = self
@@ -72,8 +81,12 @@ impl ProxyRuntime {
             Ok(provider) => self.cleanup_dns_challenges(id, &provider, &intents).await,
             Err(error) => Err(error),
         };
-        let _ = result;
         self.certificate_store.finish_dns_cleanup(id).await;
+        pass.finish(if result.is_ok() {
+            Outcome::Success
+        } else {
+            Outcome::Failure
+        });
     }
 
     pub(crate) async fn start_acme_issue(
@@ -223,6 +236,7 @@ impl ProxyRuntime {
             self.issue_manual_dns_inner(id, request).await;
             return;
         }
+        let pass = self.background.begin(Worker::Orders);
         let dns_provider = match request.challenge_type {
             AcmeChallengeType::Http01 => None,
             AcmeChallengeType::Dns01 => {
@@ -295,8 +309,13 @@ impl ProxyRuntime {
             challenges.remove(&domain, &token).await;
         }
         if let Some(staged) = candidate {
-            let _ = self.commit_or_reapply_staged_certificate(staged).await;
+            let result = self.commit_or_reapply_staged_certificate(staged).await;
             self.recover_dns_cleanup_one(&id).await;
+            pass.finish(if result.is_ok() {
+                Outcome::Success
+            } else {
+                Outcome::Failure
+            });
             return;
         }
         if let Some(error) = issue_error {

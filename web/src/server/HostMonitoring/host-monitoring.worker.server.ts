@@ -1,10 +1,13 @@
 import '@tanstack/react-start/server-only'
 import { HOST_MONITORING_LIMITS } from '@/config/host-monitoring.config.ts'
+import { observeWorkerOperation } from '@/server/Foundation/worker-operation.ts'
+import { workerObservability } from '@/server/Foundation/worker-observability.ts'
 import { inspectControllerDomain } from '@/server/Controller/domain-diagnostics.server.ts'
 import { publishApplicationChange } from '@/server/WebSockets/applicationChanges.ts'
 import { createHostMonitoringBatcher } from './host-monitoring.batch.ts'
 import { createHostMonitoringWorker } from './host-monitoring.worker.ts'
 import { createHostMonitoringProbe } from './host-monitoring.probe.ts'
+import { sampleHostMonitoringBacklog } from './host-monitoring.observability.ts'
 import {
     claimDueHostMonitoringPolicies,
     completeHostMonitoringClaims,
@@ -42,22 +45,60 @@ const complete = createHostMonitoringBatcher<HostMonitoringCompletion, boolean>(
     },
 })
 
-const runClaim = createHostMonitoringProbe({
-    readContext,
-    inspect: inspectControllerDomain,
-    complete: (claim, outcome, before, signal) => complete({ claim, outcome, before, signal }),
-    release: releaseHostMonitoringClaim,
-})
-
 export const hostMonitoringWorker = createHostMonitoringWorker({
-    claim: claimDueHostMonitoringPolicies,
-    runClaim,
+    claim: (limit) =>
+        observeWorkerOperation(
+            'host_monitoring',
+            () => claimDueHostMonitoringPolicies(limit),
+            undefined,
+            () => 'deferred',
+            'admission',
+        ),
+    runClaim: (claim, signal) => {
+        let progress: 'success' | 'failure' | 'deferred' = 'deferred'
+        const execute = createHostMonitoringProbe({
+            readContext,
+            inspect: inspectControllerDomain,
+            complete: async (current, outcome, before, currentSignal) => {
+                const stored = await complete({
+                    claim: current,
+                    outcome,
+                    before,
+                    signal: currentSignal,
+                })
+                if (stored) progress = outcome.status === 'unknown' ? 'failure' : 'success'
+                if (outcome.code === 'busy')
+                    workerObservability.count('host_monitoring', 'admissionRejected')
+                return stored
+            },
+            release: releaseHostMonitoringClaim,
+        })
+        return observeWorkerOperation(
+            'host_monitoring',
+            () => execute(claim, signal),
+            signal,
+            () => progress,
+        )
+    },
     releaseCancelled: async (claim) => {
         await releaseHostMonitoringClaim(claim)
     },
-    prune: pruneHostMonitoringHistory,
+    prune: async () => {
+        await observeWorkerOperation(
+            'host_monitoring',
+            pruneHostMonitoringHistory,
+            undefined,
+            undefined,
+            'retention',
+        )
+        await sampleHostMonitoringBacklog()
+    },
     unavailable: () =>
         console.warn('[host-monitoring] Worker temporarily unavailable.', {
             retryMs: HOST_MONITORING_LIMITS.pollIntervalMs,
         }),
+})
+
+workerObservability.sample('host_monitoring', {
+    concurrency: HOST_MONITORING_LIMITS.workerConcurrency,
 })

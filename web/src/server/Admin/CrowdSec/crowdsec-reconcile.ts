@@ -20,6 +20,12 @@ export function createCrowdSecReconciler<T extends CrowdSecReconcileSnapshot>(
             apply: dependencies.apply,
             drift: { matches: dependencies.hasDrift },
         },
-        { name: 'crowdsec', timeoutMs, stopTimeoutMs: 60_000, unrefWaiters: true },
+        {
+            name: 'crowdsec',
+            workerId: 'crowdsec_reconciliation',
+            timeoutMs,
+            stopTimeoutMs: 60_000,
+            unrefWaiters: true,
+        },
     )
 }

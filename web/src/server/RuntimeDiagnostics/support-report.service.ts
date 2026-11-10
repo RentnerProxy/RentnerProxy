@@ -7,6 +7,7 @@ import { controllerRequest } from '@/server/Controller/transport.server.ts'
 import { getProxyRuntimeStatus } from '@/server/Controller/proxy.server.ts'
 import { checkDatabaseHealth } from '@/server/Foundation/database-health.server.ts'
 import { checkValkeyHealth } from '@/server/Valkey/health.server.ts'
+import { workerObservability } from '@/server/Foundation/worker-observability.ts'
 import {
     canExportRuntimeSupportReport,
     createRuntimeSupportReport,
@@ -40,6 +41,7 @@ export async function exportRuntimeSupportReportService(): Promise<RuntimeSuppor
         configuration,
         certificates,
         jobs,
+        controllerWorkers,
     ] = await Promise.allSettled([
         controllerRequest('/health', { timeoutMs: 1_200 }),
         controllerRequest('/internal/v1/proxy/version', {
@@ -54,6 +56,12 @@ export async function exportRuntimeSupportReportService(): Promise<RuntimeSuppor
         readSupportConfigurationCounts(),
         readSupportCertificateCounts(),
         readSupportCertificateJobCounts(),
+        controllerRequest('/internal/v1/background/status', {
+            timeoutMs: 1_200,
+            responseLimit: 8 * 1_024,
+            privileged: true,
+            allowNotFound: true,
+        }),
     ])
     const report = createRuntimeSupportReport(
         {
@@ -67,6 +75,8 @@ export async function exportRuntimeSupportReportService(): Promise<RuntimeSuppor
             configuration: value(configuration),
             certificates: value(certificates),
             certificateJobs: value(jobs),
+            bunWorkers: workerObservability.snapshot(),
+            controllerWorkers: value(controllerWorkers),
         },
         capturedAt,
     )

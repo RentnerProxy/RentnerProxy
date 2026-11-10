@@ -1,3 +1,4 @@
+use super::background::{Outcome, Worker};
 use super::{CertificateMetadata, MAX_CANDIDATE_ACTIVATIONS_PER_TICK, ProxyRuntime, certificates};
 use std::{
     sync::{Arc, atomic::Ordering},
@@ -14,30 +15,55 @@ impl ProxyRuntime {
         challenges: crate::server::challenges::ChallengeStore,
     ) {
         let mut task = self.renewal_task.lock().await;
-        if task.is_some() {
+        if task.is_some() || self.stopping.load(Ordering::SeqCst) {
             return;
         }
         let runtime = Arc::clone(self);
+        let resident = runtime.background.start(Worker::Renewal);
         *task = Some(tokio::spawn(async move {
+            let _resident = resident;
             let mut timer = interval(Duration::from_secs(60));
             let mut cursor = 0_usize;
             timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 timer.tick().await;
-                runtime.retry_certificate_candidates().await;
-                let _ = runtime.certificate_store.expire_manual_dns_orders().await;
-                runtime.recover_manual_dns().await;
-                runtime.recover_dns_cleanup().await;
+                let pass = runtime.background.begin(Worker::Renewal);
+                let candidates = runtime.retry_certificate_candidates().await;
+                let expiry = runtime.certificate_store.expire_manual_dns_orders().await;
+                let manual = runtime.recover_manual_dns().await;
+                let cleanup = runtime.recover_dns_cleanup().await;
                 let checks_runtime = Arc::clone(&runtime);
                 tokio::spawn(async move {
-                    checks_runtime
+                    let pass = checks_runtime.background.begin(Worker::Orders);
+                    let succeeded = checks_runtime
                         .dns_connections
                         .recover_permission_checks()
                         .await;
+                    pass.finish(if succeeded {
+                        Outcome::Idle
+                    } else {
+                        Outcome::Failure
+                    });
                 });
-                runtime
+                let renewal = runtime
                     .renew_due_certificates(challenges.clone(), cursor)
                     .await;
+                pass.finish(
+                    if expiry.is_err()
+                        || !manual
+                        || !cleanup
+                        || matches!(candidates, Outcome::Failure)
+                        || matches!(renewal, Outcome::Failure)
+                    {
+                        Outcome::Failure
+                    } else if matches!(candidates, Outcome::Success)
+                        || matches!(renewal, Outcome::Success)
+                    {
+                        Outcome::Success
+                    } else {
+                        Outcome::Idle
+                    },
+                );
                 cursor = cursor.wrapping_add(1);
             }
         }));
@@ -47,16 +73,17 @@ impl ProxyRuntime {
         self: &Arc<Self>,
         challenges: crate::server::challenges::ChallengeStore,
         cursor: usize,
-    ) {
+    ) -> Outcome {
         let Ok(mut certificates) = self.certificate_store.list().await else {
-            return;
+            return Outcome::Failure;
         };
         if certificates.is_empty() {
-            return;
+            return Outcome::Idle;
         }
         let offset = cursor % certificates.len();
         certificates.rotate_left(offset);
         let mut starts = 0;
+        let mut failed = false;
         for certificate in certificates {
             if self.stopping.load(Ordering::SeqCst) || starts >= MAX_ACME_STARTS_PER_TICK {
                 break;
@@ -73,15 +100,21 @@ impl ProxyRuntime {
                 continue;
             }
             starts += 1;
-            if retry {
-                let _ = self
-                    .start_scheduled_acme_retry(certificate.id, challenges.clone())
-                    .await;
+            let result = if retry {
+                self.start_scheduled_acme_retry(certificate.id, challenges.clone())
+                    .await
             } else {
-                let _ = self
-                    .start_scheduled_acme_renewal(certificate.id, challenges.clone())
-                    .await;
-            }
+                self.start_scheduled_acme_renewal(certificate.id, challenges.clone())
+                    .await
+            };
+            failed |= result.is_err();
+        }
+        if failed {
+            Outcome::Failure
+        } else if starts == 0 {
+            Outcome::Idle
+        } else {
+            Outcome::Success
         }
     }
 
@@ -106,21 +139,27 @@ impl ProxyRuntime {
                 .is_some_and(|deadline| deadline <= now)
     }
 
-    async fn retry_certificate_candidates(self: &Arc<Self>) {
+    async fn retry_certificate_candidates(self: &Arc<Self>) -> Outcome {
         let Ok(mut ids) = self.certificate_store.pending_candidate_ids().await else {
-            return;
+            return Outcome::Failure;
         };
         if ids.is_empty() {
-            return;
+            return Outcome::Idle;
         }
         let offset = self.candidate_cursor.fetch_add(1, Ordering::Relaxed) % ids.len();
         ids.rotate_left(offset);
+        let mut outcome = Outcome::Idle;
         for id in ids.into_iter().take(MAX_CANDIDATE_ACTIVATIONS_PER_TICK) {
             if self.stopping.load(Ordering::SeqCst) {
                 break;
             }
-            let _ = self.retry_certificate_candidate(&id, true).await;
+            match self.retry_certificate_candidate(&id, true).await {
+                Ok(Some(_)) if !matches!(outcome, Outcome::Failure) => outcome = Outcome::Success,
+                Err(_) => outcome = Outcome::Failure,
+                _ => {}
+            }
         }
+        outcome
     }
 
     pub(super) fn renewal_is_due(certificate: &CertificateMetadata) -> bool {

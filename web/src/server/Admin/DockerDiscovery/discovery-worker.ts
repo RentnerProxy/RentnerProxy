@@ -13,6 +13,7 @@ import { reconcileDiscoveryInTransaction } from './discovery-reconcile.server.ts
 import { appendAuditEventInTransactionService } from '@/server/Audit/audit.service.ts'
 import { createDiscoveryObserver, DiscoverySuperseded } from './discovery-observer.ts'
 import { DockerDiscoveryError } from './docker-discovery.errors.ts'
+import { observeWorkerOperation } from '@/server/Foundation/worker-operation.ts'
 import type { DockerDiscoverySnapshot } from '@/lib/DockerDiscovery/Types/docker-discovery.types.ts'
 
 async function recordDiscoveryFailure(): Promise<void> {
@@ -129,7 +130,12 @@ export function createDockerDiscoveryWorker() {
             ).enabled,
         read: readObservation,
         watch: (cursor, signal) => dockerDiscoveryController.watch(cursor, signal),
-        reconcile: runDiscoveryCycle,
+        reconcile: (snapshot, signal, assertCurrent, resetBudget) =>
+            observeWorkerOperation(
+                'docker_discovery',
+                () => runDiscoveryCycle(snapshot, signal, assertCurrent, resetBudget),
+                signal,
+            ),
         subscribe: subscribeToDiscoveryChanges,
         failed: recordDiscoveryFailure,
     })

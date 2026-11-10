@@ -29,6 +29,9 @@ import {
 } from './certificate-jobs.storage.server.ts'
 import { getCertificateJobManualDnsState } from './certificate-jobs.manual.ts'
 import type { CertificateJobRow } from './Types/certificate-jobs-storage.types.ts'
+import { observeWorkerOperation } from '@/server/Foundation/worker-operation.ts'
+import { workerObservability } from '@/server/Foundation/worker-observability.ts'
+import type { WorkerOutcome } from '@/server/Foundation/Types/worker-observability.types.ts'
 
 const certificateJobController = {
     get: getControllerCertificate,
@@ -131,35 +134,36 @@ async function processCertificateJob(
     job: CertificateJobRow,
     controller = certificateJobController,
     runtime = certificateJobRuntime,
-): Promise<void> {
+): Promise<WorkerOutcome> {
     try {
         const ready = await withCertificateJobClaim(job, async (transaction, current) => {
             await validateCertificateJobContext(transaction, current)
             return true
         })
-        if (!ready) return
+        if (!ready) return 'deferred'
         const metadata = await loadOrIssueJobCertificate(job, controller)
-        if (!metadata) return
+        if (!metadata) return 'deferred'
         const manualState = getCertificateJobManualDnsState(metadata)
         if (
             metadata.status === 'valid' &&
             !metadata.candidate &&
             (manualState === 'not_manual' || manualState === 'complete')
         ) {
-            if (!(await bindIssuedJobCertificate(job, metadata))) return
-            if (await confirmJobRuntime(job, runtime)) return
+            if (!(await bindIssuedJobCertificate(job, metadata))) return 'deferred'
+            if (await confirmJobRuntime(job, runtime)) return 'success'
             await releaseCertificateJob(job, {
                 stage: 'applying',
                 lastErrorCode: 'runtime_apply_failed',
                 retryRequested: false,
             })
-            return
+            return 'failure'
         }
         await saveJobCertificateMetadata(job, metadata)
         await releaseCertificateJob(
             job,
             manualState === 'pending' ? { nextAttemptAt: new Date(Date.now() + 30_000) } : {},
         )
+        return manualState === 'failed' || metadata.status === 'failed' ? 'failure' : 'deferred'
     } catch (error) {
         if (error instanceof CertificateJobDomainError) {
             await releaseCertificateJob(job, {
@@ -167,7 +171,8 @@ async function processCertificateJob(
                 lastErrorCode: error.code,
                 retryRequested: false,
             })
-            return
+            workerObservability.count('certificate_jobs', 'exhausted')
+            return 'failure'
         }
         const code = error instanceof CertificateDomainError ? error.code : 'controller_unavailable'
         const temporary =
@@ -179,19 +184,26 @@ async function processCertificateJob(
             ...(temporary ? {} : { stage: 'failed' }),
             lastErrorCode: code,
         })
+        workerObservability.count('certificate_jobs', temporary ? 'retry' : 'exhausted')
+        return 'failure'
     }
 }
 
 export async function runCertificateJobsOnce(
     controller = certificateJobController,
     runtime = certificateJobRuntime,
-): Promise<void> {
+): Promise<WorkerOutcome> {
     const jobs = await Promise.all(Array.from({ length: 4 }, () => claimCertificateJob()))
-    await Promise.all(
+    const outcomes = await Promise.all(
         jobs
             .filter((job): job is CertificateJobRow => job !== null)
             .map((job) => processCertificateJob(job, controller, runtime)),
     )
+    return outcomes.includes('failure')
+        ? 'failure'
+        : outcomes.includes('success')
+          ? 'success'
+          : 'deferred'
 }
 
 let timer: ReturnType<typeof setTimeout> | null = null
@@ -203,7 +215,13 @@ export function startCertificateJobWorker(): void {
     stopped = false
     const tick = () => {
         if (stopped) return
-        running = runCertificateJobsOnce()
+        running = observeWorkerOperation(
+            'certificate_jobs',
+            runCertificateJobsOnce,
+            undefined,
+            (outcome) => outcome,
+        )
+            .then(() => undefined)
             .catch(() => undefined)
             .finally(() => {
                 running = null
@@ -222,3 +240,5 @@ export async function stopCertificateJobWorker(): Promise<void> {
     timer = null
     await running
 }
+
+workerObservability.sample('certificate_jobs', { concurrency: 4 })

@@ -9,12 +9,14 @@ test('monitoring completion publishes only after accepted durable writes', async
         `
         import { mock } from 'bun:test'
         let probe
+        let workerDependencies
         let complete
         let publications = 0
         mock.module('./server/Auth/Core/database.server.ts', () => ({ getAuthDatabase: () => { throw new Error('Unexpected database access') } }))
         mock.module('./server/Controller/domain-diagnostics.server.ts', () => ({ inspectControllerDomain: async () => {} }))
         mock.module('./server/RuntimeDiagnostics/domain-diagnostics-data.ts', () => ({ readHostMonitoringContextInTransaction: async () => {} }))
         mock.module('./server/HostMonitoring/host-monitoring.probe.ts', () => ({ createHostMonitoringProbe: dependencies => { probe = dependencies; return async () => {} } }))
+        mock.module('./server/HostMonitoring/host-monitoring.worker.ts', () => ({ createHostMonitoringWorker: dependencies => { workerDependencies = dependencies; return {} } }))
         mock.module('./server/HostMonitoring/host-monitoring.repository.ts', () => ({
             claimDueHostMonitoringPolicies: async () => [],
             completeHostMonitoringClaims: (...args) => complete(...args),
@@ -26,6 +28,7 @@ test('monitoring completion publishes only after accepted durable writes', async
         await import('./server/HostMonitoring/host-monitoring.worker.server.ts')
         const pending = Promise.withResolvers()
         const signal = new AbortController().signal
+        await workerDependencies.runClaim({}, signal)
         complete = items => {
             if (items.length !== 16 || items.some(item => item.signal !== signal)) throw new Error('Wrong completion batch')
             return pending.promise

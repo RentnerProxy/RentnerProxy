@@ -35,17 +35,31 @@ import {
     reconcileHostAvailabilityInTransaction,
 } from './host-availability.repository.ts'
 import { nextNotificationDeliveryAt } from './notification-scheduling.ts'
+import { workerObservability } from '@/server/Foundation/worker-observability.ts'
 
 export async function readNextNotificationDeliveryAt(): Promise<number | null> {
-    return getAuthDatabase().transaction(
+    const sample = await getAuthDatabase().transaction(
         async (transaction) => {
             const configuration = await readNotificationConfiguration(transaction)
-            if (!configuration.enabled || configuration.pausedAfterRestore) return null
+            if (!configuration.enabled || configuration.pausedAfterRestore)
+                return { nextDueAt: null, backlog: null, oldestPendingAt: null }
             const runtime = await readNotificationRuntime(transaction)
-            return nextNotificationDeliveryAt(runtime.engine, configuration, Date.now())
+            const pending = runtime.engine.deliveries.filter(
+                (delivery) => delivery.status === 'pending' || delivery.status === 'inflight',
+            )
+            return {
+                nextDueAt: nextNotificationDeliveryAt(runtime.engine, configuration, Date.now()),
+                backlog: pending.length,
+                oldestPendingAt:
+                    pending.length > 0
+                        ? Math.min(...pending.map((delivery) => delivery.createdAt))
+                        : null,
+            }
         },
         { isolationLevel: 'repeatable read', accessMode: 'read only' },
     )
+    workerObservability.sample('notifications', sample)
+    return sample.nextDueAt
 }
 
 export async function claimNotificationCollection(): Promise<NotificationCollectionClaim | null> {

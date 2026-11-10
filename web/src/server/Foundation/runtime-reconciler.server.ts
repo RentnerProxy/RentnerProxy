@@ -2,6 +2,7 @@ import '@tanstack/react-start/server-only'
 // oxlint-disable no-await-in-loop -- Runtime revisions must be applied serially.
 
 import type { ProxyRuntimeMutationStatus } from '@/lib/ProxyRuntime/Types/proxy-runtime.types.ts'
+import { workerObservability } from './worker-observability.ts'
 import type {
     RuntimeReconcileDependencies,
     RuntimeReconcileOptions,
@@ -69,6 +70,7 @@ export function createRuntimeReconciler<T>(
                 continue
             }
             const target = requested
+            const finish = options.workerId ? workerObservability.begin(options.workerId) : () => {}
             try {
                 const snapshot = await dependencies.load()
                 if (stopped) break
@@ -80,6 +82,7 @@ export function createRuntimeReconciler<T>(
                 const applied = await dependencies.apply(snapshot)
                 if (stopped) break
                 if (typeof applied !== 'boolean') {
+                    finish('failure')
                     // Only bounded symbolic diagnostics cross into logs; never include response bodies.
                     const code = /^[a-z][a-z0-9_]{0,63}$/u.test(applied.code)
                         ? applied.code
@@ -97,6 +100,7 @@ export function createRuntimeReconciler<T>(
                         continue
                     }
                     await waitForWakeOrDelay(retryDelay)
+                    if (options.workerId) workerObservability.count(options.workerId, 'retry')
                     retryDelay = Math.min(retryDelay * 2, MAX_RETRY_DELAY_MS)
                     continue
                 }
@@ -111,13 +115,18 @@ export function createRuntimeReconciler<T>(
                     continue
                 completed = target
                 retryDelay = INITIAL_RETRY_DELAY_MS
+                finish('success')
                 resolveWaiters('applied')
             } catch {
+                finish('failure')
                 if (stopped) break
                 resolveWaiters('pending')
                 console.warn(`[${options.name}] reconcile unavailable`)
                 await waitForWakeOrDelay(retryDelay)
                 retryDelay = Math.min(retryDelay * 2, MAX_RETRY_DELAY_MS)
+                if (options.workerId) workerObservability.count(options.workerId, 'retry')
+            } finally {
+                finish(stopped ? 'cancelled' : 'deferred')
             }
         }
     }

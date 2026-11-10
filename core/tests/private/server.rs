@@ -184,6 +184,59 @@ fn custom_payload() -> Vec<u8> {
 }
 
 #[tokio::test]
+async fn background_status_authorizes_before_observing_and_never_caches() {
+    let runtime = ProxyRuntime::new(
+        RuntimeSettings::new(
+            std::env::temp_dir().join("background-http-synthetic"),
+            18080,
+        ),
+        None,
+    );
+    let router = app_with_state(AppState::new(Arc::clone(&runtime), default_token()));
+    for authorization in [None, Some("Bearer synthetic-wrong-token")] {
+        let mut builder = Request::builder().uri("/internal/v1/background/status");
+        if let Some(authorization) = authorization {
+            builder = builder.header("authorization", authorization);
+        }
+        let response = router
+            .clone()
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+    assert_eq!(runtime.background.observations.load(Ordering::Relaxed), 0);
+    let response = router
+        .oneshot(request_with_method(
+            "GET",
+            "/internal/v1/background/status",
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    assert_eq!(runtime.background.observations.load(Ordering::Relaxed), 1);
+    let body = axum::body::to_bytes(response.into_body(), 8192)
+        .await
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(value["workers"].as_array().unwrap().len(), 5);
+    assert_eq!(value["workers"][0]["state"], "unknown");
+    assert_eq!(value["workers"][0]["lastSuccess"], serde_json::Value::Null);
+    assert!(!String::from_utf8_lossy(&body).contains(DEFAULT_TOKEN));
+    let response = app()
+        .oneshot(request_with_method(
+            "GET",
+            "/internal/v1/background/status",
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn health_payload_is_stable_and_public() {
     let response = app()
         .oneshot(

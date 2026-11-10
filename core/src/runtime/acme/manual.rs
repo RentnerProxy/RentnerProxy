@@ -1,3 +1,4 @@
+use crate::runtime::background::{Outcome, Worker};
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
 use instant_acme::{
@@ -40,6 +41,7 @@ impl ProxyRuntime {
         id: String,
         request: CertificateIssueRequest,
     ) {
+        let pass = self.background.begin(Worker::Orders);
         let operation_id = match self.certificate_store.get(&id).await {
             Ok(metadata) => match metadata.current_operation {
                 Some(operation) => operation.id,
@@ -53,8 +55,10 @@ impl ProxyRuntime {
         )
         .await
         .unwrap_or(Err(CertificateError::AcmeFailed));
-        self.finish_manual_dns_result(&id, &request, &operation_id, result)
-            .await;
+        pass.finish(
+            self.finish_manual_dns_result(&id, &request, &operation_id, result)
+                .await,
+        );
     }
 
     pub(crate) async fn start_manual_dns_continue(
@@ -83,13 +87,18 @@ impl ProxyRuntime {
         Ok(metadata)
     }
 
-    pub(crate) async fn recover_manual_dns(self: &Arc<Self>) {
+    pub(crate) async fn recover_manual_dns(self: &Arc<Self>) -> bool {
+        let pass = self.background.begin(Worker::Orders);
         if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
-            return;
+            return false;
         }
-        let _ = self.certificate_store.expire_manual_dns_orders().await;
+        let mut failed = self
+            .certificate_store
+            .expire_manual_dns_orders()
+            .await
+            .is_err();
         let Ok(ids) = self.certificate_store.pending_manual_dns_resume_ids().await else {
-            return;
+            return false;
         };
         for id in ids {
             if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
@@ -98,10 +107,14 @@ impl ProxyRuntime {
             let Ok(permit) = ACME_JOBS.try_acquire() else {
                 break;
             };
-            let Ok(Some((request, order))) =
-                self.certificate_store.begin_manual_dns_recovery(&id).await
-            else {
-                continue;
+            let (request, order) = match self.certificate_store.begin_manual_dns_recovery(&id).await
+            {
+                Ok(Some(work)) => work,
+                Ok(None) => continue,
+                Err(_) => {
+                    failed = true;
+                    continue;
+                }
             };
             let runtime = Arc::clone(self);
             tokio::spawn(async move {
@@ -109,6 +122,12 @@ impl ProxyRuntime {
                 runtime.resume_manual_dns_inner(id, request, order).await;
             });
         }
+        pass.finish(if failed {
+            Outcome::Failure
+        } else {
+            Outcome::Idle
+        });
+        !failed
     }
 
     async fn resume_manual_dns_inner(
@@ -117,6 +136,7 @@ impl ProxyRuntime {
         request: CertificateIssueRequest,
         saved: ManualDnsOrder,
     ) {
+        let pass = self.background.begin(Worker::Orders);
         let operation_id = saved.operation_id.clone();
         let result = timeout(
             DNS_ORDER_TIMEOUT,
@@ -124,8 +144,10 @@ impl ProxyRuntime {
         )
         .await
         .unwrap_or(Err(CertificateError::AcmeFailed));
-        self.finish_manual_dns_result(&id, &request, &operation_id, result)
-            .await;
+        pass.finish(
+            self.finish_manual_dns_result(&id, &request, &operation_id, result)
+                .await,
+        );
     }
 
     async fn finish_manual_dns_result(
@@ -134,9 +156,9 @@ impl ProxyRuntime {
         request: &CertificateIssueRequest,
         operation_id: &str,
         result: Result<ManualOutcome, CertificateError>,
-    ) {
+    ) -> Outcome {
         match result {
-            Ok(ManualOutcome::Paused) => {}
+            Ok(ManualOutcome::Paused) => return Outcome::Idle,
             Ok(ManualOutcome::Issued(certificate, key)) => {
                 match self
                     .certificate_store
@@ -144,7 +166,15 @@ impl ProxyRuntime {
                     .await
                 {
                     Ok(staged) => {
-                        let _ = self.commit_or_reapply_staged_certificate(staged).await;
+                        return if self
+                            .commit_or_reapply_staged_certificate(staged)
+                            .await
+                            .is_ok()
+                        {
+                            Outcome::Success
+                        } else {
+                            Outcome::Failure
+                        };
                     }
                     Err(CertificateError::StoreUnavailable) => {
                         let _ = self
@@ -166,24 +196,24 @@ impl ProxyRuntime {
             }
             Err(error) => {
                 let Ok(metadata) = self.certificate_store.get(id).await else {
-                    return;
+                    return Outcome::Failure;
                 };
                 if metadata.operation == CertificateOperation::Idle
                     || metadata
                         .current_operation
                         .is_none_or(|operation| operation.id != operation_id)
                 {
-                    return;
+                    return Outcome::Failure;
                 }
                 let saved = match self.certificate_store.load_manual_dns_order(id).await {
                     Ok(saved) => saved,
-                    Err(_) => return,
+                    Err(_) => return Outcome::Failure,
                 };
                 if saved
                     .as_ref()
                     .is_some_and(|(_, order)| order.operation_id != operation_id)
                 {
-                    return;
+                    return Outcome::Failure;
                 }
                 if saved.is_none()
                     && matches!(
@@ -192,7 +222,7 @@ impl ProxyRuntime {
                     )
                 {
                     self.certificate_store.finish_failed(id, error).await;
-                    return;
+                    return Outcome::Failure;
                 }
                 let recoverable = !matches!(
                     error,
@@ -218,6 +248,7 @@ impl ProxyRuntime {
                 }
             }
         }
+        Outcome::Failure
     }
 
     async fn prepare_manual_dns(
