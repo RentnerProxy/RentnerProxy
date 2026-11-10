@@ -9,7 +9,8 @@ use tokio::{
 };
 use tokio_util::task::TaskTracker;
 
-const MAX_BACKGROUND_JOBS: usize = 5;
+// Four ACME jobs and one permission recovery leave room for local candidate activation.
+const MAX_BACKGROUND_JOBS: usize = 8;
 
 struct State {
     closed: bool,

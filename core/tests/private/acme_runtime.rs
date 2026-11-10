@@ -448,3 +448,82 @@ async fn shutdown_drains_an_issue_admitted_before_blocked_preparation() {
 async fn disconnected_issue_caller_does_not_abandon_blocked_preparation() {
     blocked_preparation_survives_shutdown(true).await;
 }
+
+#[tokio::test]
+async fn local_candidate_activation_has_capacity_while_acme_and_permission_jobs_are_busy() {
+    for explicit_renewal in [true, false] {
+        let runtime = runtime().await;
+        let request = request();
+        runtime
+            .certificate_store
+            .begin_issue(ID, request.clone(), false)
+            .await
+            .unwrap();
+        let leaf = rcgen::generate_simple_self_signed(request.domains.clone()).unwrap();
+        let staged = runtime
+            .certificate_store
+            .stage_acme(
+                ID,
+                &request,
+                leaf.cert.pem(),
+                leaf.signing_key.serialize_pem(),
+            )
+            .await
+            .unwrap();
+        runtime
+            .certificate_store
+            .finish_candidate_failed(&staged, CertificateError::RuntimeApplyFailed)
+            .await;
+        let fingerprint = runtime
+            .certificate_store
+            .get(ID)
+            .await
+            .unwrap()
+            .candidate
+            .unwrap()
+            .fingerprint;
+
+        // Occupy the four ACME slots and permission-recovery slot without
+        // consuming the process-wide ACME semaphore used by parallel tests.
+        for _ in 0..5 {
+            assert!(
+                runtime
+                    .background_jobs
+                    .spawn("busy_background_job", std::future::pending())
+            );
+        }
+        let activation = tokio::time::timeout(Duration::from_secs(1), async {
+            if explicit_renewal {
+                runtime
+                    .start_acme_renewal(ID.to_owned(), ChallengeStore::new())
+                    .await
+            } else {
+                runtime
+                    .retry_certificate_candidate(ID, false)
+                    .await
+                    .map(Option::unwrap)
+            }
+        })
+        .await;
+        runtime
+            .background_jobs
+            .stop_until(tokio::time::Instant::now() + Duration::from_millis(10))
+            .await;
+
+        let activated = activation
+            .expect("local activation must not wait for network jobs")
+            .unwrap();
+        assert_eq!(activated.status, CertificateStatus::Valid);
+        assert_eq!(activated.operation, CertificateOperation::Idle);
+        assert_eq!(activated.fingerprint.as_deref(), Some(fingerprint.as_str()));
+        assert!(activated.candidate.is_none());
+        assert!(
+            runtime
+                .certificate_store
+                .pending_candidate_ids()
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+}

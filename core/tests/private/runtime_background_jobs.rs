@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use super::BackgroundJobs;
+use super::{BackgroundJobs, MAX_BACKGROUND_JOBS};
 use tokio::{
     sync::{Semaphore, oneshot},
     time::{Instant, timeout},
@@ -16,7 +16,7 @@ async fn admission_is_bounded_and_closes_before_a_preparing_job_finishes() {
     let jobs = Arc::new(BackgroundJobs::new());
     let gate = Arc::new(Semaphore::new(0));
     let completed = Arc::new(Semaphore::new(0));
-    for _ in 0..5 {
+    for _ in 0..MAX_BACKGROUND_JOBS {
         let gate = Arc::clone(&gate);
         let completed = Arc::clone(&completed);
         assert!(jobs.spawn("blocked_preparation", async move {
@@ -38,9 +38,9 @@ async fn admission_is_bounded_and_closes_before_a_preparing_job_finishes() {
             .await
             .is_err()
     );
-    gate.add_permits(5);
+    gate.add_permits(MAX_BACKGROUND_JOBS);
     drain.await.unwrap();
-    assert_eq!(completed.available_permits(), 5);
+    assert_eq!(completed.available_permits(), MAX_BACKGROUND_JOBS);
 }
 
 struct Dropped(Option<oneshot::Sender<()>>);
