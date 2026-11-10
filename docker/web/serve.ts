@@ -51,8 +51,13 @@ async function shutdown(): Promise<void> {
         const pending: Array<Promise<void>> = []
         process.emit('rentnerproxy:shutdown', pending)
         pending.push(live.shutdown())
-        await Promise.all([server.stop(false), ...pending])
-        process.exitCode = 0
+        const outcomes = await Promise.allSettled([server.stop(false), ...pending])
+        const failed = outcomes.some((outcome) => outcome.status === 'rejected')
+        if (failed) console.warn('[web] shutdown did not drain')
+        process.exitCode = failed ? 1 : 0
+    } catch {
+        console.warn('[web] shutdown did not drain')
+        process.exitCode = 1
     } finally {
         clearTimeout(forceExit)
         process.exit()
