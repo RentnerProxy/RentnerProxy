@@ -1,4 +1,5 @@
 import type { BunWorkerReport, ControllerWorkerReport } from '../backgroundWorkerReport.ts'
+import type { BackgroundResourceReport } from '../backgroundResourceReport.ts'
 
 export type SupportReportSection<T> =
     | { readonly state: 'available'; readonly data: T }
@@ -57,6 +58,7 @@ export interface RuntimeSupportReport {
     readonly certificates: SupportReportSection<SupportCertificateCounts>
     readonly certificateJobs: SupportReportSection<SupportJobCounts>
     readonly backgroundWorkers: {
+        readonly resources: SupportReportSection<BackgroundResourceReport>
         readonly bun: SupportReportSection<BunWorkerReport>
         readonly controller: SupportReportSection<ControllerWorkerReport>
         readonly omissions: readonly {
@@ -81,4 +83,5 @@ export interface RuntimeSupportReportInput {
     readonly certificateJobs: unknown
     readonly bunWorkers?: unknown
     readonly controllerWorkers?: unknown
+    readonly backgroundResources?: unknown
 }

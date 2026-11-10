@@ -48,6 +48,16 @@ export interface SubscriptionManagerOptions {
 }
 
 export interface LiveSubscriptionManager {
+    readonly acquireResource: (signal?: AbortSignal) => Promise<() => void>
+    readonly resourceUsage: () => {
+        readonly running: number
+        readonly pending: number
+        readonly oldestPendingAgeMs: number
+        readonly admitted: number
+        readonly busy: number
+        readonly deadline: number
+        readonly cancelled: number
+    }
     readonly connections: Set<LiveConnectionData>
     readonly sample: (subscription: LiveTopicSubscription) => Promise<void>
     readonly sampleAll: () => void

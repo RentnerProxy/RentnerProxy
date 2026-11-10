@@ -8,6 +8,7 @@ import type {
 } from '@/lib/ProxyRuntime/Types/proxy-runtime.types.ts'
 import { requirePermissionService } from '@/server/Auth/Access/authorization.service.ts'
 import { getAuthDatabase } from '@/server/Auth/Core/database.server.ts'
+import { getBackgroundDatabase } from '@/server/Foundation/background-database.server.ts'
 import { isProxyRuntimeReconciliationEnabled } from '@/server/env.server.ts'
 import {
     applyProxyRuntimeConfigurationResult,
@@ -26,13 +27,25 @@ export async function getProxyRuntimeSnapshotService(): Promise<ProxyRuntimeSnap
     })
 }
 
+export async function getBackgroundProxyRuntimeSnapshotService(
+    resource: 'critical' | 'notifications' = 'critical',
+): Promise<ProxyRuntimeSnapshot> {
+    return getBackgroundDatabase(resource).transaction(
+        (transaction) => readProxyRuntimeSnapshot(transaction),
+        {
+            isolationLevel: 'repeatable read',
+            accessMode: 'read only',
+        },
+    )
+}
+
 export const reconcileProxyConfigurationService = createProxyReconciler({
     enabled: isProxyRuntimeReconciliationEnabled(),
-    loadSnapshot: getProxyRuntimeSnapshotService,
+    loadSnapshot: getBackgroundProxyRuntimeSnapshotService,
     applySnapshot: applyProxyRuntimeConfigurationResult,
     checkDrift: async () => {
         const [snapshot, runtime] = await Promise.all([
-            getProxyRuntimeSnapshotService(),
+            getBackgroundProxyRuntimeSnapshotService(),
             getProxyRuntimeStatus(),
         ])
         return compareProxyRuntimeStatus(snapshot.revision, runtime).state !== 'synced'

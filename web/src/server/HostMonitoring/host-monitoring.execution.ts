@@ -16,7 +16,7 @@ import type {
     HostMonitoringContext,
     HostMonitoringOutcome,
 } from '@/lib/HostMonitoring/Types/host-monitoring.types.ts'
-import { getAuthDatabase } from '@/server/Auth/Core/database.server.ts'
+import { getBackgroundDatabase } from '@/server/Foundation/background-database.server.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
 import { readHostMonitoringContextsInTransaction } from '@/server/RuntimeDiagnostics/domain-diagnostics-data.ts'
 import { recordHostAvailabilityTransitionInTransaction } from '@/server/Notifications/host-availability.repository.ts'
@@ -35,6 +35,32 @@ import {
 } from './host-monitoring.storage.ts'
 class ExpiredHostMonitoringClaim extends Error {}
 
+/** The durable minimum preserves enabled cadence; disabled/idle workers need only a bounded fallback wake. */
+export async function readNextHostMonitoringAdmissionAt(): Promise<number | null> {
+    return getBackgroundDatabase('monitoring').transaction(
+        async (transaction) => {
+            const [row] = await transaction
+                .select({
+                    due: sql<
+                        string | null
+                    >`min(greatest(${hostCheckPolicies.nextCheckAt}, coalesce(${hostCheckPolicies.leaseExpiresAt}, ${hostCheckPolicies.nextCheckAt})))::text`,
+                })
+                .from(hostCheckPolicies)
+                .innerJoin(proxyHosts, eq(proxyHosts.id, hostCheckPolicies.proxyHostId))
+                .innerJoin(
+                    hostDomains,
+                    and(
+                        eq(hostDomains.proxyHostId, hostCheckPolicies.proxyHostId),
+                        eq(hostDomains.domain, hostCheckPolicies.domain),
+                    ),
+                )
+                .where(and(eq(hostCheckPolicies.enabled, true), eq(proxyHosts.enabled, true)))
+            return row?.due ? new Date(row.due).getTime() : null
+        },
+        { accessMode: 'read only' },
+    )
+}
+
 /** Admits the oldest eligible policy through the same global ceiling as batch claimers. */
 export async function claimDueHostMonitoringPolicy(): Promise<HostMonitoringClaim | null> {
     return (await claimDueHostMonitoringPolicies(1))[0] ?? null
@@ -46,7 +72,7 @@ export async function claimDueHostMonitoringPolicies(
 ): Promise<HostMonitoringClaim[]> {
     if (!Number.isInteger(limit) || limit < 1 || limit > HOST_MONITORING_LIMITS.claimBatchSize)
         throw new Error('Invalid monitoring claim batch size.')
-    return getAuthDatabase().transaction(async (transaction) => {
+    return getBackgroundDatabase('monitoring').transaction(async (transaction) => {
         await prepareWorkerTransaction(transaction, false)
         const [active] = await transaction
             .select({ count: sql<number>`count(*)::integer` })
@@ -110,7 +136,7 @@ export async function readHostMonitoringClaimContexts(
     if (claims.length === 0) return []
     if (claims.length > HOST_MONITORING_LIMITS.claimBatchSize)
         throw new Error('Invalid monitoring context batch size.')
-    return getAuthDatabase().transaction(
+    return getBackgroundDatabase('monitoring').transaction(
         async (transaction) => {
             const timeout = `${HOST_MONITORING_LIMITS.transactionTimeoutMs}ms`
             await transaction.execute(
@@ -203,7 +229,7 @@ function nextScheduledCheck(policy: HostMonitoringPolicy) {
 
 /** Clears only the still-owned live lease and advances its fixed cadence without immediate catch-up work. */
 export async function releaseHostMonitoringClaim(claim: HostMonitoringClaim): Promise<boolean> {
-    return getAuthDatabase().transaction(async (transaction) => {
+    return getBackgroundDatabase('monitoring').transaction(async (transaction) => {
         await prepareWorkerTransaction(transaction, false)
         const policy = await currentClaim(transaction, claim)
         if (!policy) return false
@@ -219,7 +245,7 @@ export async function completeHostMonitoringClaim(
     contextMatches: HostMonitoringContextMatches,
     context: HostMonitoringContext,
 ): Promise<boolean> {
-    return getAuthDatabase()
+    return getBackgroundDatabase('monitoring')
         .transaction(async (transaction) => {
             await prepareWorkerTransaction(transaction)
             return completeHostMonitoringClaimInTransaction(
@@ -391,7 +417,7 @@ export async function completeHostMonitoringClaims(
     if (items.length === 0) return []
     if (items.length > HOST_MONITORING_LIMITS.persistenceBatchSize)
         throw new Error('Invalid monitoring completion batch size.')
-    return getAuthDatabase().transaction(async (transaction) => {
+    return getBackgroundDatabase('monitoring').transaction(async (transaction) => {
         await prepareWorkerTransaction(transaction)
         const contexts = await readHostMonitoringContextsInTransaction(
             transaction,

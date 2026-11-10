@@ -23,8 +23,9 @@ test('monitoring completion publishes only after accepted durable writes', async
             readHostMonitoringClaimContexts: async claims => claims.map(() => null),
             releaseHostMonitoringClaim: async () => {},
             pruneHostMonitoringHistory: async () => {},
+            readNextHostMonitoringAdmissionAt: async () => null,
         }))
-        mock.module('./server/WebSockets/applicationChanges.ts', () => ({ publishApplicationChange: () => publications++ }))
+        mock.module('./server/WebSockets/applicationChanges.ts', () => ({ publishApplicationChange: () => publications++, subscribeToApplicationChanges: () => () => {} }))
         await import('./server/HostMonitoring/host-monitoring.worker.server.ts')
         const pending = Promise.withResolvers()
         const signal = new AbortController().signal
@@ -95,6 +96,78 @@ async function flush() {
 }
 
 describe('host monitoring worker', () => {
+    test('idle/disabled admission sleeps until durable next-due with one timer and wakes on changes', async () => {
+        const time = scheduler()
+        let current = 1_000
+        let due: number | null = 2_000
+        let reads = 0
+        let wake: (() => void) | undefined
+        let unsubscribed = false
+        const worker = createHostMonitoringWorker(
+            dependencies({
+                claim: async () => {
+                    reads++
+                    return []
+                },
+                now: () => current,
+                schedule: time.schedule,
+                nextAdmissionAt: async () => due,
+                subscribe: (callback) => {
+                    wake = callback
+                    return () => {
+                        unsubscribed = true
+                    }
+                },
+            }),
+        )
+        worker.start()
+        await flush()
+        expect(time.delays.at(-1)).toBe(1_000)
+        expect(time.pending.size).toBe(1)
+        due = null
+        current = 2_000
+        time.fire()
+        await flush()
+        expect(time.delays.at(-1)).toBe(HOST_MONITORING_LIMITS.idlePollMaximumMs)
+        for (let index = 0; index < 10; index++) {
+            current += HOST_MONITORING_LIMITS.idlePollMaximumMs
+            time.fire()
+            // oxlint-disable-next-line no-await-in-loop -- Advance one deterministic idle admission at a time.
+            await flush()
+        }
+        expect(reads).toBe(12)
+        expect(time.pending.size).toBe(1)
+        wake!()
+        expect(time.delays.at(-1)).toBe(HOST_MONITORING_LIMITS.pollIntervalMs)
+        await worker.stop()
+        expect(time.pending.size).toBe(0)
+        expect(unsubscribed).toBe(true)
+    })
+
+    test('an invalidation racing an idle due read cannot be lost behind the long sleep', async () => {
+        const time = scheduler()
+        const due = Promise.withResolvers<number | null>()
+        let wake: (() => void) | undefined
+        const worker = createHostMonitoringWorker(
+            dependencies({
+                schedule: time.schedule,
+                nextAdmissionAt: () => due.promise,
+                subscribe: (callback) => {
+                    wake = callback
+                    return () => {}
+                },
+            }),
+        )
+        worker.start()
+        await flush()
+        wake!()
+        due.resolve(null)
+        await flush()
+        expect(time.delays.at(-1)).toBe(HOST_MONITORING_LIMITS.pollIntervalMs)
+        expect(time.pending.size).toBe(1)
+        await worker.stop()
+    })
+
     test('bounds in-flight storage plus running probes at 64 with batches of 16', async () => {
         const done = Promise.withResolvers<void>()
         const late = Promise.withResolvers<readonly string[]>()

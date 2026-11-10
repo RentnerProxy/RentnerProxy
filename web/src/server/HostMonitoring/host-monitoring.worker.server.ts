@@ -3,7 +3,10 @@ import { HOST_MONITORING_LIMITS } from '@/config/host-monitoring.config.ts'
 import { observeWorkerOperation } from '@/server/Foundation/worker-operation.ts'
 import { workerObservability } from '@/server/Foundation/worker-observability.ts'
 import { inspectControllerDomain } from '@/server/Controller/domain-diagnostics.server.ts'
-import { publishApplicationChange } from '@/server/WebSockets/applicationChanges.ts'
+import {
+    publishApplicationChange,
+    subscribeToApplicationChanges,
+} from '@/server/WebSockets/applicationChanges.ts'
 import { createHostMonitoringBatcher } from './host-monitoring.batch.ts'
 import { createHostMonitoringWorker } from './host-monitoring.worker.ts'
 import { createHostMonitoringProbe } from './host-monitoring.probe.ts'
@@ -14,6 +17,7 @@ import {
     readHostMonitoringClaimContexts,
     releaseHostMonitoringClaim,
     pruneHostMonitoringHistory,
+    readNextHostMonitoringAdmissionAt,
 } from './host-monitoring.repository.ts'
 import type {
     HostMonitoringClaim,
@@ -45,6 +49,16 @@ const complete = createHostMonitoringBatcher<HostMonitoringCompletion, boolean>(
     },
 })
 
+// A cancelled 64-probe flight must not create 64 waiting SQL transactions.
+// Reuse the bounded owner batcher to drain fenced releases through one SQL slot.
+const release = createHostMonitoringBatcher<HostMonitoringClaim, boolean>({
+    size: 1,
+    delayMs: 0,
+    run: async ([claim]) => [
+        { status: 'fulfilled', value: await releaseHostMonitoringClaim(claim!) },
+    ],
+})
+
 export const hostMonitoringWorker = createHostMonitoringWorker({
     claim: (limit) =>
         observeWorkerOperation(
@@ -71,7 +85,7 @@ export const hostMonitoringWorker = createHostMonitoringWorker({
                     workerObservability.count('host_monitoring', 'admissionRejected')
                 return stored
             },
-            release: releaseHostMonitoringClaim,
+            release,
         })
         return observeWorkerOperation(
             'host_monitoring',
@@ -81,7 +95,7 @@ export const hostMonitoringWorker = createHostMonitoringWorker({
         )
     },
     releaseCancelled: async (claim) => {
-        await releaseHostMonitoringClaim(claim)
+        await release(claim)
     },
     prune: async () => {
         await observeWorkerOperation(
@@ -93,6 +107,8 @@ export const hostMonitoringWorker = createHostMonitoringWorker({
         )
         await sampleHostMonitoringBacklog()
     },
+    nextAdmissionAt: readNextHostMonitoringAdmissionAt,
+    subscribe: subscribeToApplicationChanges,
     unavailable: () =>
         console.warn('[host-monitoring] Worker temporarily unavailable.', {
             retryMs: HOST_MONITORING_LIMITS.pollIntervalMs,

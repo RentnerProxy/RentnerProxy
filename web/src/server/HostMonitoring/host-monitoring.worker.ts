@@ -13,6 +13,9 @@ export function createHostMonitoringWorker<Claim>(
     let started = false
     let stopped = false
     let nextPruneAt = 0
+    let pollDelayMs: number = HOST_MONITORING_LIMITS.pollIntervalMs
+    let wakeRevision = 0
+    let unsubscribe: (() => void) | undefined
     const running = new Set<Promise<void>>()
     const unavailable = new Set<'claim' | 'probe' | 'prune'>()
     const now = dependencies.now ?? Date.now
@@ -75,7 +78,7 @@ export function createHostMonitoringWorker<Claim>(
             cancelTimer = null
             schedule()
             void runOnce()
-        }, HOST_MONITORING_LIMITS.pollIntervalMs)
+        }, pollDelayMs)
     }
 
     /** Coalesces admission ticks and reserves free slots before each storage claim batch. */
@@ -85,6 +88,8 @@ export function createHostMonitoringWorker<Claim>(
         prune(signal)
         if (admission) return admission
         admission = (async () => {
+            const revision = wakeRevision
+            pollDelayMs = HOST_MONITORING_LIMITS.pollIntervalMs
             // Cap this tick too: fast completions must not create an endless drain.
             let remaining = HOST_MONITORING_LIMITS.workerConcurrency - running.size
             try {
@@ -108,13 +113,32 @@ export function createHostMonitoringWorker<Claim>(
                     unavailable.delete('claim')
                     for (const claim of claims) launch(claim, signal)
                     remaining -= limit
-                    if (claims.length < limit) return
+                    if (claims.length < limit) {
+                        if (claims.length === 0 && dependencies.nextAdmissionAt) {
+                            // eslint-disable-next-line no-await-in-loop -- Read the durable due time only after an empty claim batch.
+                            const due = await dependencies.nextAdmissionAt()
+                            if (!signal.aborted && revision === wakeRevision)
+                                pollDelayMs = Math.max(
+                                    HOST_MONITORING_LIMITS.pollIntervalMs,
+                                    Math.min(
+                                        HOST_MONITORING_LIMITS.idlePollMaximumMs,
+                                        due === null
+                                            ? HOST_MONITORING_LIMITS.idlePollMaximumMs
+                                            : due - now(),
+                                    ),
+                                )
+                        }
+                        return
+                    }
                 }
             } catch {
                 warn('claim', signal)
             }
         })().finally(() => {
             admission = null
+            cancelTimer?.()
+            cancelTimer = null
+            schedule()
         })
         return admission
     }
@@ -127,6 +151,14 @@ export function createHostMonitoringWorker<Claim>(
             if (stopped) controller = new AbortController()
             started = true
             stopped = false
+            unsubscribe = dependencies.subscribe?.(() => {
+                wakeRevision++
+                if (pollDelayMs === HOST_MONITORING_LIMITS.pollIntervalMs) return
+                pollDelayMs = HOST_MONITORING_LIMITS.pollIntervalMs
+                cancelTimer?.()
+                cancelTimer = null
+                schedule()
+            })
             schedule()
             void runOnce()
         },
@@ -137,6 +169,8 @@ export function createHostMonitoringWorker<Claim>(
             started = false
             cancelTimer?.()
             cancelTimer = null
+            unsubscribe?.()
+            unsubscribe = undefined
             controller.abort()
             stopping = (async () => {
                 await Promise.all([admission, pruning])

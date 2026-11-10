@@ -6,6 +6,7 @@ import { AuthDomainError } from '@/server/Auth/Core/errors.server.ts'
 import { controllerRequest } from '@/server/Controller/transport.server.ts'
 import { getProxyRuntimeStatus } from '@/server/Controller/proxy.server.ts'
 import { checkDatabaseHealth } from '@/server/Foundation/database-health.server.ts'
+import { getBackgroundDatabaseResourceSnapshot } from '@/server/Foundation/background-database.server.ts'
 import { checkValkeyHealth } from '@/server/Valkey/health.server.ts'
 import { workerObservability } from '@/server/Foundation/worker-observability.ts'
 import {
@@ -77,6 +78,10 @@ export async function exportRuntimeSupportReportService(): Promise<RuntimeSuppor
             certificateJobs: value(jobs),
             bunWorkers: workerObservability.snapshot(),
             controllerWorkers: value(controllerWorkers),
+            backgroundResources: {
+                sampledAt: Date.now(),
+                database: getBackgroundDatabaseResourceSnapshot(),
+            },
         },
         capturedAt,
     )

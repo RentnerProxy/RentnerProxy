@@ -25,6 +25,7 @@ import { createSubscriptionManager } from './realtimeSubscriptions.ts'
 import type { LiveConnectionData } from './Types/realtime-subscriptions.types.ts'
 import { createRealtimeLifecycle } from './realtimeLifecycle.ts'
 import { createRealtimeHandler } from './realtimeHandler.ts'
+import { ResourceAdmissionError } from '@/server/Foundation/resource-admission.ts'
 
 export function createLiveWebSocketRuntime(
     options: LiveWebSocketRuntimeOptions,
@@ -125,13 +126,29 @@ export function createLiveWebSocketRuntime(
             pending.add(reservation)
             pendingReservations -= 1
             pendingReservation = false
-            const authStatus = await readLiveHandshake(
-                reservation,
-                snapshotPath,
-                snapshotTimeoutMs,
-                maxPayloadBytes,
-                options.readSnapshot,
-            )
+            const waiting = new AbortController()
+            reservation.handshakeAbortController = waiting
+            let release: (() => void) | undefined
+            let authStatus: number
+            try {
+                release = await manager.acquireResource(waiting.signal)
+                if (reservation.closed || shuttingDown)
+                    return { handled: true, response: statusResponse(503) }
+                authStatus = await readLiveHandshake(
+                    reservation,
+                    snapshotPath,
+                    snapshotTimeoutMs,
+                    maxPayloadBytes,
+                    options.readSnapshot,
+                )
+            } catch (error) {
+                if (!(error instanceof ResourceAdmissionError)) throw error
+                return { handled: true, response: statusResponse(503) }
+            } finally {
+                release?.()
+                if (reservation.handshakeAbortController === waiting)
+                    reservation.handshakeAbortController = null
+            }
             if (shuttingDown) return { handled: true, response: statusResponse(503) }
             if (authStatus !== 200) return { handled: true, response: statusResponse(authStatus) }
             try {

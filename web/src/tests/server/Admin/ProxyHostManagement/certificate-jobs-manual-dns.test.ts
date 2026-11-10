@@ -3,6 +3,28 @@ import { getCertificateJobManualDnsState } from '@/server/Admin/ProxyHostManagem
 import type { ControllerCertificateMetadata } from '@/server/Controller/Types/certificates.types.ts'
 import { runBunScript } from '@/tests/Helpers/runBunScript.ts'
 
+test('a rejected claim admission still drains every acquired sibling lease before reporting the failure', async () => {
+    const output = await runBunScript(
+        `
+        import { mock } from 'bun:test'
+        let count = 0
+        const drained = []
+        mock.module('./server/Admin/ProxyHostManagement/certificate-jobs.lease.server.ts', () => ({
+            claimCertificateJob: async () => { const id = ++count; if (id === 2) throw new Error('Resource admission busy'); return { id } },
+            withCertificateJobClaim: async job => { drained.push(job.id); return false },
+            releaseCertificateJob: async () => {},
+        }))
+        mock.module('./server/Admin/ProxyHostManagement/certificate-jobs.binding.server.ts', () => ({ certificateJobRuntime: {}, bindIssuedJobCertificate: async () => false, confirmJobRuntime: async () => false }))
+        const { runCertificateJobsOnce } = await import('./server/Admin/ProxyHostManagement/certificate-jobs.worker.server.ts')
+        let error
+        try { await runCertificateJobsOnce() } catch (failure) { error = failure.message }
+        console.log(JSON.stringify({ drained, error }))
+    `,
+        { cwd: new URL('../../../..', import.meta.url) },
+    )
+    expect(JSON.parse(output)).toEqual({ drained: [1, 3, 4], error: 'Resource admission busy' })
+})
+
 test('manual binding job releases its claim while paused, survives long wait/restart without reissuing, and binds only the completed certificate', async () => {
     const output = await runBunScript(
         `

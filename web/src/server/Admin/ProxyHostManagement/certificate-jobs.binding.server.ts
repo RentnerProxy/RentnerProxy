@@ -3,7 +3,7 @@ import '@tanstack/react-start/server-only'
 import { and, eq, ne } from 'drizzle-orm'
 import { certificateJobs, certificates, proxyHosts, redirectHosts } from '@/db/schema.ts'
 import { certificateCoversDomains } from '@/lib/Admin/CertificateManagement/certificateValidation.ts'
-import { getAuthDatabase } from '@/server/Auth/Core/database.server.ts'
+import { getBackgroundDatabase } from '@/server/Foundation/background-database.server.ts'
 import { appendAuditEventInTransactionService } from '@/server/Audit/audit.service.ts'
 import type { ControllerCertificateMetadata } from '@/server/Controller/Types/certificates.types.ts'
 import { getProxyRuntimeStatus } from '@/server/Controller/proxy.server.ts'
@@ -121,7 +121,7 @@ export async function confirmJobRuntime(
     runtime = certificateJobRuntime,
 ): Promise<boolean> {
     await runtime.reconcile()
-    const desired = await getAuthDatabase().transaction(
+    const desired = await getBackgroundDatabase('critical').transaction(
         (transaction) => readProxyRuntimeSnapshot(transaction),
         { isolationLevel: 'repeatable read', accessMode: 'read only' },
     )

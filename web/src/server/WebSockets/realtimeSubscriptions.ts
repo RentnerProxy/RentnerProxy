@@ -6,6 +6,11 @@ import type {
 } from './Types/realtime-subscriptions.types.ts'
 
 import { LIVE_INTERVALS, LIVE_MAX_SUBSCRIPTIONS } from '@/config/realtime.config.ts'
+import { BACKGROUND_RESOURCE_ENVELOPE } from '@/config/background-resources.config.ts'
+import {
+    createResourceAdmission,
+    ResourceAdmissionError,
+} from '@/server/Foundation/resource-admission.ts'
 import type { LiveTopic } from '@/lib/Live/Types/realtime.types.ts'
 import { comparisonKey, snapshotMessage } from '@/lib/Live/snapshot.ts'
 
@@ -24,6 +29,24 @@ function unsubscribe(connection: LiveConnectionData, topic: LiveTopic): void {
 }
 
 export function createSubscriptionManager(options: SubscriptionManagerOptions) {
+    const admission = createResourceAdmission(BACKGROUND_RESOURCE_ENVELOPE.realtime)
+    let pressureLoggedAt = -Infinity
+    async function acquireResource(signal?: AbortSignal) {
+        try {
+            return await admission.acquire(signal)
+        } catch (error) {
+            if (
+                error instanceof ResourceAdmissionError &&
+                error.reason !== 'cancelled' &&
+                Date.now() - pressureLoggedAt >=
+                    BACKGROUND_RESOURCE_ENVELOPE.realtime.pressureLogIntervalMs
+            ) {
+                pressureLoggedAt = Date.now()
+                console.warn('[realtime] Snapshot admission deferred', admission.snapshot())
+            }
+            throw error
+        }
+    }
     async function sample(subscription: LiveTopicSubscription): Promise<void> {
         const { connection } = subscription
         if (!subscription.active || connection.closed) return
@@ -35,8 +58,15 @@ export function createSubscriptionManager(options: SubscriptionManagerOptions) {
         subscription.pending = false
         const controller = new AbortController()
         subscription.abortController = controller
-        subscription.abortTimer = setTimeout(() => controller.abort(), options.snapshotTimeoutMs)
+        let release: (() => void) | undefined
+        let deferred = false
         try {
+            release = await acquireResource(controller.signal)
+            if (!subscription.active || connection.closed) return
+            subscription.abortTimer = setTimeout(
+                () => controller.abort(),
+                options.snapshotTimeoutMs,
+            )
             const result = await options.readSnapshot(subscription, controller.signal)
             if (!subscription.active || connection.closed) return
             if (result.kind === 'failure') {
@@ -76,12 +106,17 @@ export function createSubscriptionManager(options: SubscriptionManagerOptions) {
                 return
             }
             subscription.lastComparison = comparison
+        } catch (error) {
+            if (!(error instanceof ResourceAdmissionError)) throw error
+            // The existing periodic sampler retries; no additional callback/retry timer is queued.
+            deferred = true
         } finally {
+            release?.()
             subscription.inflight = false
             if (subscription.abortTimer !== null) clearTimeout(subscription.abortTimer)
             subscription.abortTimer = null
             subscription.abortController = null
-            if (subscription.pending && subscription.active && !connection.closed) {
+            if (!deferred && subscription.pending && subscription.active && !connection.closed) {
                 subscription.pending = false
                 queueMicrotask(() => void sample(subscription))
             }
@@ -138,6 +173,8 @@ export function createSubscriptionManager(options: SubscriptionManagerOptions) {
         subscribe,
         unsubscribe,
         dispose,
+        resourceUsage: admission.snapshot,
+        acquireResource,
     }
     return manager
 }

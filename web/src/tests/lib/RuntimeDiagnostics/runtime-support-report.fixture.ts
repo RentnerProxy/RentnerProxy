@@ -10,6 +10,8 @@ import { CONTROLLER_SERVICE } from '@/config/controller.config.ts'
 import type { RuntimeSupportReportInput } from '@/lib/RuntimeDiagnostics/Types/runtime-support-report.types.ts'
 import { createWorkerObservability } from '@/server/Foundation/worker-observability.ts'
 import { controllerWorkerIds } from '@/config/background-workers.config.ts'
+import { BACKGROUND_DATABASE_POLICY } from '@/config/background-resources.config.ts'
+import { createResourceAdmission } from '@/server/Foundation/resource-admission.ts'
 
 export const SUPPORT_FIXTURE_REVISION = 'sha256:' + 'a'.repeat(64)
 
@@ -52,6 +54,15 @@ export function supportReportFixture(): RuntimeSupportReportInput {
             errors: counters([...SUPPORT_CERTIFICATE_JOB_ERROR_CODES, 'none', 'other'], 'none'),
         },
         bunWorkers: createWorkerObservability({ now: () => 1_791_282_000_000 }).snapshot(),
+        backgroundResources: {
+            sampledAt: 1_791_282_000_000,
+            database: Object.fromEntries(
+                Object.entries(BACKGROUND_DATABASE_POLICY.classes).map(([resource, policy]) => [
+                    resource,
+                    createResourceAdmission(policy).snapshot(),
+                ]),
+            ),
+        },
         controllerWorkers: {
             epoch: { startedAt: 1_791_282_000_000, sequence: 0 },
             observedAt: 1_791_282_000_000,

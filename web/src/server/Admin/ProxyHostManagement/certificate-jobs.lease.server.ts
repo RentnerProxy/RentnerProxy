@@ -3,13 +3,13 @@ import '@tanstack/react-start/server-only'
 import { randomUUID } from 'node:crypto'
 import { and, asc, eq, inArray, isNull, lte, or, sql } from 'drizzle-orm'
 import { certificateJobs } from '@/db/schema.ts'
-import { getAuthDatabase } from '@/server/Auth/Core/database.server.ts'
+import { getBackgroundDatabase } from '@/server/Foundation/background-database.server.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
 import { lockProxyRuntimeSettings } from '@/server/ProxyRuntime/proxy-runtime-settings.ts'
 import type { CertificateJobRow } from './Types/certificate-jobs-storage.types.ts'
 
 export async function claimCertificateJob(): Promise<CertificateJobRow | null> {
-    return getAuthDatabase().transaction(async (transaction) => {
+    return getBackgroundDatabase('critical').transaction(async (transaction) => {
         await lockProxyRuntimeSettings(transaction)
         const now = new Date()
         const [job] = await transaction
@@ -51,7 +51,7 @@ export async function withCertificateJobClaim<T>(
 ): Promise<T | undefined> {
     const token = job.leaseToken
     if (!token) return undefined
-    return getAuthDatabase().transaction(async (transaction) => {
+    return getBackgroundDatabase('critical').transaction(async (transaction) => {
         await lockProxyRuntimeSettings(transaction)
         const [current] = await transaction
             .select()

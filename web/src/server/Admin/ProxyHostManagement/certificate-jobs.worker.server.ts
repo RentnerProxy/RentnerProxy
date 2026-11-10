@@ -193,12 +193,17 @@ export async function runCertificateJobsOnce(
     controller = certificateJobController,
     runtime = certificateJobRuntime,
 ): Promise<WorkerOutcome> {
-    const jobs = await Promise.all(Array.from({ length: 4 }, () => claimCertificateJob()))
-    const outcomes = await Promise.all(
-        jobs
-            .filter((job): job is CertificateJobRow => job !== null)
-            .map((job) => processCertificateJob(job, controller, runtime)),
+    const claims = await Promise.allSettled(Array.from({ length: 4 }, () => claimCertificateJob()))
+    // Admission can defer one slot while a sibling has already acquired a durable lease.
+    // Drain every successful claim before reporting the failed admission to the owner.
+    const jobs = claims.flatMap((claim) =>
+        claim.status === 'fulfilled' && claim.value ? [claim.value] : [],
     )
+    const outcomes = await Promise.all(
+        jobs.map((job) => processCertificateJob(job, controller, runtime)),
+    )
+    const failed = claims.find((claim) => claim.status === 'rejected')
+    if (failed?.status === 'rejected') throw failed.reason
     return outcomes.includes('failure')
         ? 'failure'
         : outcomes.includes('success')

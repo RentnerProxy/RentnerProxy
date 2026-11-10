@@ -3,7 +3,7 @@ import { enqueueBackupOutcomesInTransaction } from '@/server/Notifications/backu
 import { publishApplicationChange } from '@/server/WebSockets/applicationChanges.ts'
 import { eq, sql } from 'drizzle-orm'
 import { systemSettings } from '@/db/schema.ts'
-import { getAuthDatabase } from '@/server/Auth/Core/database.server.ts'
+import { getBackgroundDatabase } from '@/server/Foundation/background-database.server.ts'
 import { appendAuditEventsInTransactionService } from '@/server/Audit/audit.service.ts'
 import { backupsController } from '@/server/Controller/backups.server.ts'
 import { backupAuditCursorSchema, createBackupAuditIngestor } from './backup-outcomes.ts'
@@ -16,7 +16,7 @@ const ingest = createBackupAuditIngestor({
     status: (signal) => backupsController.status(signal),
     acknowledge: (cursor, signal) => backupsController.acknowledgeAudit(cursor, signal),
     transaction: (run) =>
-        getAuthDatabase().transaction(async (transaction) => {
+        getBackgroundDatabase('housekeeping').transaction(async (transaction) => {
             await transaction.execute(sql`set local statement_timeout = '5000ms'`)
             await transaction.execute(sql`set local lock_timeout = '5000ms'`)
             await transaction
