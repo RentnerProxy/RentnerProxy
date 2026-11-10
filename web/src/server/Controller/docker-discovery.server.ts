@@ -3,6 +3,8 @@ import { z } from 'zod'
 import {
     dockerDiscoverySnapshotSchema,
     dockerDiscoveryErrors,
+    dockerDiscoveryCursorSchema,
+    dockerDiscoveryObservationSchema,
 } from '@/lib/DockerDiscovery/validation.ts'
 import { DockerDiscoveryError } from '@/server/Admin/DockerDiscovery/docker-discovery.errors.ts'
 import type {
@@ -10,6 +12,7 @@ import type {
     DockerDiscoverySaveRequest,
 } from './Types/docker-discovery.types.ts'
 import { controllerRequest } from './transport.server.ts'
+import type { DockerDiscoveryCursor } from '@/lib/DockerDiscovery/Types/docker-discovery.types.ts'
 
 function decode(value: unknown) {
     const error = z.strictObject({ error: z.enum(dockerDiscoveryErrors) }).safeParse(value)
@@ -44,8 +47,44 @@ export function createDockerDiscoveryController(
             if (!parsed.success) throw new DockerDiscoveryError('controller_unavailable')
             return parsed.data
         },
-        async status() {
-            return decode(await request('/internal/v1/discovery/docker/status', options))
+        async status(signal?: AbortSignal) {
+            return decode(
+                await request('/internal/v1/discovery/docker/status', {
+                    ...options,
+                    ...(signal ? { signal } : {}),
+                }),
+            )
+        },
+        async watch(cursor: DockerDiscoveryCursor | null, signal: AbortSignal) {
+            const query =
+                cursor === null
+                    ? null
+                    : new URLSearchParams({
+                          runtimeId: dockerDiscoveryCursorSchema.parse(cursor).runtimeId,
+                          generation: String(cursor.generation),
+                      }).toString()
+            const value = await request(
+                query === null
+                    ? '/internal/v1/discovery/docker/watch'
+                    : `/internal/v1/discovery/docker/watch?${query}`,
+                {
+                    ...options,
+                    timeoutMs: 30_000,
+                    signal,
+                },
+            )
+            const error = z.strictObject({ error: z.enum(dockerDiscoveryErrors) }).safeParse(value)
+            if (error.success) throw new DockerDiscoveryError(error.data.error)
+            const parsed = dockerDiscoveryObservationSchema.safeParse(value)
+            if (!parsed.success) throw new DockerDiscoveryError('controller_unavailable')
+            if (
+                parsed.data.snapshot === null &&
+                (!cursor ||
+                    cursor.runtimeId !== parsed.data.cursor.runtimeId ||
+                    cursor.generation !== parsed.data.cursor.generation)
+            )
+                throw new DockerDiscoveryError('controller_unavailable')
+            return parsed.data
         },
         async save(input: DockerDiscoverySaveRequest) {
             const value = decode(

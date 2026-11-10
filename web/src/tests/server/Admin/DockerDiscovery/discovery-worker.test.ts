@@ -1,5 +1,5 @@
 import { expect, mock, spyOn, test } from 'bun:test'
-import { createDiscoveryWorker } from '@/server/Admin/DockerDiscovery/discovery-worker.ts'
+import { createDiscoveryWorker } from '@/server/Admin/DockerDiscovery/discovery-scheduler.ts'
 
 test('event bursts share one reconciliation and shutdown drains it without new writes', async () => {
     let finish: (() => void) | undefined

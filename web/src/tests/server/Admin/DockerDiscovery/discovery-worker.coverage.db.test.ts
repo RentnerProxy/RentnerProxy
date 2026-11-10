@@ -1,6 +1,7 @@
+// oxlint-disable no-await-in-loop -- Settle each virtual timer turn before advancing the next interval.
 import { afterAll, afterEach, beforeAll, beforeEach, expect, jest, mock, spyOn } from 'bun:test'
 import { eq, inArray } from 'drizzle-orm'
-import { proxyHosts, systemSettings } from '@/db/schema.ts'
+import { proxyHosts, systemSettings, userRoles, users } from '@/db/schema.ts'
 import {
     discoveryCandidate,
     discoveryRegistry,
@@ -18,9 +19,12 @@ import {
 } from '@/server/Admin/DockerDiscovery/discovery-storage.server.ts'
 import { discoveryEndpointHash } from '@/server/Admin/DockerDiscovery/discovery-plan.ts'
 import {
-    createDiscoveryWorker,
+    createDockerDiscoveryWorker,
     dockerDiscoveryWorker,
 } from '@/server/Admin/DockerDiscovery/discovery-worker.ts'
+import { createDiscoveryWorker } from '@/server/Admin/DockerDiscovery/discovery-scheduler.ts'
+import * as storage from '@/server/Admin/DockerDiscovery/discovery-storage.server.ts'
+import type { DockerDiscoveryObservation } from '@/lib/DockerDiscovery/Types/docker-discovery.types.ts'
 import {
     backendCoverageEnabled,
     cleanupBackendCoverage,
@@ -32,6 +36,11 @@ import {
 const registryKey = 'docker_discovery_management_v1'
 const savedSettings: (typeof systemSettings.$inferSelect)[] = []
 const ownedHosts: string[] = []
+let generation = 0
+const observed = (snapshot: ReturnType<typeof discoverySnapshot>) => ({
+    cursor: { runtimeId: 'a'.repeat(32), generation: ++generation },
+    snapshot,
+})
 beforeAll(async () => {
     if (backendCoverageEnabled) await initializeBackendRegistry()
 })
@@ -85,8 +94,12 @@ integrationTest(
     'discovery worker remains dormant when disabled and reconciles a real managed host exactly once',
     async () => {
         const actor = await createBackendActor()
-        const status = spyOn(dockerDiscoveryController, 'status').mockResolvedValue(
-            discoverySnapshot([discoveryCandidate({ domains: [`worker-${actor}.example.com`] })]),
+        const status = spyOn(dockerDiscoveryController, 'watch').mockResolvedValue(
+            observed(
+                discoverySnapshot([
+                    discoveryCandidate({ domains: [`worker-${actor}.example.com`] }),
+                ]),
+            ),
         )
         const reconcile = spyOn(runtime, 'reconcileProxyConfigurationService').mockResolvedValue(
             'applied',
@@ -115,13 +128,54 @@ integrationTest(
     },
 )
 
+integrationTest.each(['revoked', 'disabled', 'endpoint', 'revision', 'incomplete'] as const)(
+    'a snapshot cannot mutate hosts after %s changes during collection',
+    async (change) => {
+        const actor = await createBackendActor()
+        await configure(actor)
+        const snapshot = discoverySnapshot([
+            discoveryCandidate({ domains: [`fenced-${actor}.example.com`] }),
+        ])
+        const watch = spyOn(dockerDiscoveryController, 'watch').mockImplementation(async () => {
+            if (change === 'revoked')
+                await database.delete(userRoles).where(eq(userRoles.userId, actor))
+            if (change === 'disabled')
+                await database.update(users).set({ status: 'disabled' }).where(eq(users.id, actor))
+            if (change === 'endpoint')
+                await configure(actor, {
+                    endpointHash: discoveryEndpointHash('http://replacement:2375'),
+                })
+            if (change === 'revision') await configure(actor, { connectorRevision: 2 })
+            if (change === 'incomplete') snapshot.stale = true
+            return observed(snapshot)
+        })
+        const apply = spyOn(runtime, 'reconcileProxyConfigurationService').mockResolvedValue(
+            'applied',
+        )
+        const worker = createDockerDiscoveryWorker()
+        try {
+            await worker.trigger()
+            const current = await registry()
+            ownedHosts.push(...current.owners.map((owner) => owner.hostId))
+            expect(current.owners).toHaveLength(0)
+            expect(current.error).toBe(
+                ['revoked', 'disabled'].includes(change) ? 'authorization_required' : null,
+            )
+            expect(watch).toHaveBeenCalledTimes(1)
+            expect(apply).not.toHaveBeenCalled()
+        } finally {
+            await worker.stop()
+        }
+    },
+)
+
 integrationTest(
     'discovery failures persist one outage transition and recover without exposing provider error details',
     async () => {
         const actor = await createBackendActor()
         await configure(actor)
         const warning = spyOn(console, 'warn').mockImplementation(() => undefined)
-        const status = spyOn(dockerDiscoveryController, 'status').mockRejectedValue(
+        const status = spyOn(dockerDiscoveryController, 'watch').mockRejectedValue(
             new Error('private controller transport detail'),
         )
         await dockerDiscoveryWorker.trigger()
@@ -131,7 +185,7 @@ integrationTest(
         expect((await registry()).revision).toBe(failed.revision)
         expect(warning).toHaveBeenCalledTimes(1)
         expect(JSON.stringify(warning.mock.calls)).not.toContain('private')
-        status.mockResolvedValue(discoverySnapshot([]))
+        status.mockResolvedValue(observed(discoverySnapshot([])))
         await dockerDiscoveryWorker.trigger()
         expect((await registry()).error).toBeNull()
     },
@@ -142,7 +196,7 @@ integrationTest(
     async () => {
         const actor = await createBackendActor()
         await configure(actor, { runtimeStatus: 'pending' })
-        spyOn(dockerDiscoveryController, 'status').mockResolvedValue(discoverySnapshot([]))
+        spyOn(dockerDiscoveryController, 'watch').mockResolvedValue(observed(discoverySnapshot([])))
         const originalReconciler = runtime.reconcileProxyConfigurationService
         const reconcile = spyOn(runtime, 'reconcileProxyConfigurationService').mockImplementation(
             Object.assign(
@@ -200,4 +254,220 @@ integrationTest(
             jest.useRealTimers()
         }
     },
+)
+
+integrationTest.each([false, true])(
+    'real PostgreSQL idle work is bounded to the one-minute fallback, enabled: %s',
+    async (enabled) => {
+        const actor = await createBackendActor()
+        await configure(actor, { enabled })
+        const original = storage.readDiscoveryRegistry
+        const reads = spyOn(storage, 'readDiscoveryRegistry').mockImplementation(original)
+        const stable = observed(discoverySnapshot([]))
+        const watch = spyOn(dockerDiscoveryController, 'watch').mockImplementation(
+            async (cursor, signal) => {
+                if (!cursor) return stable
+                return new Promise<DockerDiscoveryObservation>((resolve, reject) => {
+                    const cancel = () => {
+                        clearTimeout(timer)
+                        reject(new Error('cancelled'))
+                    }
+                    const timer = setTimeout(() => {
+                        signal.removeEventListener('abort', cancel)
+                        resolve({ cursor, snapshot: null })
+                    }, 25_000)
+                    signal.addEventListener('abort', cancel, { once: true })
+                })
+            },
+        )
+        const apply = spyOn(runtime, 'reconcileProxyConfigurationService').mockResolvedValue(
+            'applied',
+        )
+        const worker = createDockerDiscoveryWorker()
+        jest.useFakeTimers()
+        try {
+            await worker.start()
+            const startupReads = reads.mock.calls.length
+            const startupRequests = watch.mock.calls.length
+            for (let second = 0; second < 60; second += 2) {
+                jest.advanceTimersByTime(2000)
+                await Promise.resolve()
+                await Promise.resolve()
+                await Promise.resolve()
+            }
+            // Joins the already-started safety pass; the extra dirty hint is cancelled by stop below.
+            await worker.trigger()
+            expect(reads.mock.calls.length - startupReads).toBe(enabled ? 2 : 1)
+            expect(watch.mock.calls.length - startupRequests).toBeLessThanOrEqual(enabled ? 4 : 0)
+            expect(apply).not.toHaveBeenCalled()
+            console.info(
+                JSON.stringify({
+                    fixture: 'discovery-idle',
+                    enabled,
+                    windowMs: 60_000,
+                    startupExcluded: true,
+                    registryReads: reads.mock.calls.length - startupReads,
+                    controllerRequestsStarted: watch.mock.calls.length - startupRequests,
+                    reconciliationPasses: enabled ? 1 : 0,
+                }),
+            )
+        } finally {
+            await worker.stop()
+            jest.useRealTimers()
+        }
+    },
+)
+
+integrationTest(
+    'an inventory hint commits a host before apply admission and shutdown drains its truthful receipt',
+    async () => {
+        const actor = await createBackendActor()
+        await configure(actor)
+        const first = observed(discoverySnapshot([]))
+        const next = Promise.withResolvers<DockerDiscoveryObservation>()
+        spyOn(dockerDiscoveryController, 'watch').mockImplementation(async (cursor, signal) => {
+            if (!cursor) return first
+            return new Promise((resolve, reject) => {
+                const cancel = () => reject(new Error('cancelled'))
+                signal.addEventListener('abort', cancel, { once: true })
+                void next.promise.then((value) => {
+                    signal.removeEventListener('abort', cancel)
+                    resolve(value)
+                })
+            })
+        })
+        const applied = Promise.withResolvers<void>()
+        let eventAt = 0
+        let applyAdmissionMs = 0
+        const original = runtime.reconcileProxyConfigurationService
+        const apply = spyOn(runtime, 'reconcileProxyConfigurationService').mockImplementation(
+            Object.assign(
+                async (): Promise<'applied'> => {
+                    applyAdmissionMs = performance.now() - eventAt
+                    const committed = await registry()
+                    ownedHosts.push(...committed.owners.map((owner) => owner.hostId))
+                    expect(committed.owners).toHaveLength(1)
+                    expect(
+                        (
+                            await database
+                                .select()
+                                .from(proxyHosts)
+                                .where(eq(proxyHosts.id, committed.owners[0]!.hostId))
+                        )[0]?.forwardHost,
+                    ).toBe('172.22.0.5')
+                    applied.resolve()
+                    return 'applied'
+                },
+                { start: original.start, stop: original.stop, checkDrift: original.checkDrift },
+            ),
+        )
+        const worker = createDockerDiscoveryWorker()
+        let deadline: ReturnType<typeof setTimeout> | undefined
+        try {
+            await worker.start()
+            const began = performance.now()
+            eventAt = began
+            next.resolve(
+                observed(
+                    discoverySnapshot([
+                        discoveryCandidate({ domains: [`event-${actor}.example.com`] }),
+                    ]),
+                ),
+            )
+            await Promise.race([
+                applied.promise,
+                new Promise<never>((_resolve, reject) => {
+                    deadline = setTimeout(
+                        () =>
+                            reject(
+                                new Error('Discovery event-to-apply exceeded its reference bound'),
+                            ),
+                        3000,
+                    )
+                }),
+            ])
+            expect(performance.now() - began).toBeLessThan(3000)
+            await worker.stop()
+            expect((await registry()).runtimeStatus).toBe('applied')
+            expect(apply).toHaveBeenCalledTimes(1)
+            console.info(
+                JSON.stringify({
+                    fixture: 'discovery-event',
+                    eventToApplyAdmissionMs: applyAdmissionMs,
+                    committedHostVerifiedBeforeApply: true,
+                    boundMs: 3000,
+                    runtimeApply: 'injected',
+                }),
+            )
+        } finally {
+            if (deadline) clearTimeout(deadline)
+            await worker.stop()
+        }
+    },
+)
+
+integrationTest(
+    'a real fair batch continues past sixteen hosts without another inventory hint',
+    async () => {
+        const actor = await createBackendActor()
+        await configure(actor)
+        const inventory = observed(
+            discoverySnapshot(
+                Array.from({ length: 20 }, (_unused, index) =>
+                    discoveryCandidate({
+                        containerId: index.toString(16).padStart(64, '0'),
+                        sourceId: `batch-${index}`,
+                        domains: [`batch-${index}-${actor}.example.com`],
+                    }),
+                ),
+            ),
+        )
+        const watch = spyOn(dockerDiscoveryController, 'watch').mockImplementation(
+            async (cursor, signal) => {
+                if (!cursor) return inventory
+                return new Promise((_resolve, reject) => {
+                    const cancel = () => reject(new Error('cancelled'))
+                    signal.addEventListener('abort', cancel, { once: true })
+                    if (signal.aborted) cancel()
+                })
+            },
+        )
+        const complete = Promise.withResolvers<void>()
+        const original = runtime.reconcileProxyConfigurationService
+        const apply = spyOn(runtime, 'reconcileProxyConfigurationService').mockImplementation(
+            Object.assign(
+                async (): Promise<'applied'> => {
+                    const committed = await registry()
+                    ownedHosts.push(...committed.owners.map((owner) => owner.hostId))
+                    if (committed.owners.length === 20) complete.resolve()
+                    return 'applied'
+                },
+                { start: original.start, stop: original.stop, checkDrift: original.checkDrift },
+            ),
+        )
+        const worker = createDockerDiscoveryWorker()
+        let deadline: ReturnType<typeof setTimeout> | undefined
+        try {
+            await worker.start()
+            expect((await registry()).owners).toHaveLength(16)
+            await Promise.race([
+                complete.promise,
+                new Promise<never>((_resolve, reject) => {
+                    deadline = setTimeout(
+                        () => reject(new Error('Fair batch continuation did not converge')),
+                        5000,
+                    )
+                }),
+            ])
+            await worker.stop()
+            expect((await registry()).owners).toHaveLength(20)
+            expect((await registry()).runtimeStatus).toBe('applied')
+            expect(apply).toHaveBeenCalledTimes(2)
+            expect(watch.mock.calls.filter(([cursor]) => cursor === null)).toHaveLength(1)
+        } finally {
+            if (deadline) clearTimeout(deadline)
+            await worker.stop()
+        }
+    },
+    10_000,
 )

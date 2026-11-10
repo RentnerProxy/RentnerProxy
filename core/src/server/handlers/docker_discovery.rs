@@ -1,9 +1,23 @@
 use super::{no_store_json, no_store_status_json};
 use crate::{
-    runtime::docker_discovery::models::{Error, Inspect, Save},
+    runtime::docker_discovery::models::{Error, Inspect, Save, Watch},
     server::AppState,
 };
+use axum::extract::{Query, rejection::QueryRejection};
 use axum::{body::Bytes, extract::rejection::BytesRejection, http::StatusCode, response::Response};
+
+pub(in crate::server) async fn watch(
+    state: AppState,
+    query: Result<Query<Watch>, QueryRejection>,
+) -> Response {
+    let Ok(Query(request)) = query else {
+        return error(Error::InvalidInput);
+    };
+    match state.runtime.docker_discovery.watch(request).await {
+        Ok(value) => no_store_json(value),
+        Err(e) => error(e),
+    }
+}
 
 fn error(error: Error) -> Response {
     let status = match error {

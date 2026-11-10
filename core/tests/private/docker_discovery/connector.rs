@@ -308,6 +308,7 @@ async fn events_coalesce_reconnect_and_configuration_replacement_cancel_old_read
         .await
         .unwrap();
     assert_eq!(ready(&discovery).await.candidates.len(), 1);
+    let initial = discovery.watch(models::Watch::default()).await.unwrap();
     let event_request = fixture
         .requests
         .lock()
@@ -358,22 +359,28 @@ async fn events_coalesce_reconnect_and_configuration_replacement_cancel_old_read
         .send(Bytes::from(event))
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let value = discovery.status().await.unwrap();
-            if value
-                .candidates
-                .first()
-                .and_then(|v| v.target.as_ref())
-                .is_some_and(|v| v.address == "172.22.0.9")
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
+    let changed = tokio::time::timeout(
+        Duration::from_secs(5),
+        discovery.watch(models::Watch {
+            runtime_id: Some(initial.cursor.runtime_id.clone()),
+            generation: Some(initial.cursor.generation),
+        }),
+    )
     .await
+    .unwrap()
     .unwrap();
+    assert_eq!(changed.cursor.runtime_id, initial.cursor.runtime_id);
+    assert_eq!(changed.cursor.generation, initial.cursor.generation + 1);
+    let inventory = changed.snapshot.unwrap();
+    assert_eq!(
+        inventory.configuration.revision,
+        initial.snapshot.unwrap().configuration.revision,
+        "inventory changes are independent of configuration revisions"
+    );
+    assert_eq!(
+        inventory.candidates[0].target.as_ref().unwrap().address,
+        "172.22.0.9"
+    );
     assert_eq!(
         fixture.requests.lock().await.len() - before,
         2,
@@ -405,6 +412,15 @@ async fn events_coalesce_reconnect_and_configuration_replacement_cancel_old_read
             .unwrap()
             .address,
         "172.22.0.9"
+    );
+    assert_eq!(
+        discovery
+            .watch(models::Watch::default())
+            .await
+            .unwrap()
+            .cursor,
+        changed.cursor,
+        "clean EOF and identical resync inventory do not advance the generation"
     );
     fixture.fail.store(true, Ordering::SeqCst);
     fixture.streams.lock().await.clear();

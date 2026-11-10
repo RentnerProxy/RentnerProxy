@@ -23,6 +23,7 @@ impl Discovery {
     pub(crate) fn stop_accepting(&self) {
         self.stopping.store(true, Ordering::SeqCst);
         self.wake.notify_one();
+        self.changes.send_modify(|_| {});
     }
     #[cfg(test)]
     pub(crate) async fn stop(&self) {
