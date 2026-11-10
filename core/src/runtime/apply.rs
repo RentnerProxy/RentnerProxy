@@ -67,11 +67,13 @@ impl ProxyRuntime {
                     .await;
             }
             runtime
-                .certificate_store
-                .commit_staged(&staged)
+                .storage_async(move |runtime| async move {
+                    runtime.certificate_store.commit_staged(&staged).await
+                })
                 .await
+                .map_err(|_| RuntimeError::ApplyFailed)?
                 .map_err(|_| RuntimeError::ApplyFailed)?;
-            if let Err(error) = runtime.certificate_store.collect_garbage().await {
+            if let Err(error) = runtime.collect_certificate_garbage().await {
                 warn!(
                     ?error,
                     stage = "certificate_gc",
@@ -89,7 +91,7 @@ impl ProxyRuntime {
 
     /// Applies or rolls back a staged configuration while charging replacement attempts to recovery health.
     async fn apply_locked(
-        &self,
+        self: &Arc<Self>,
         configuration: ValidatedProxyConfig,
         staged: Option<&StagedCertificate>,
         sequence: Option<u64>,
@@ -108,7 +110,7 @@ impl ProxyRuntime {
         let json = self
             .render_proxy_config_for_apply(&configuration, staged, RenderPurpose::Activation)
             .await?;
-        let host_sources = self.render_active_host_sources(&configuration)?;
+        let host_sources = self.render_active_host_sources(&configuration).await?;
         if sequence.is_some_and(|value| value != self.apply_sequence.load(Ordering::SeqCst)) {
             return Err(RuntimeError::Busy);
         }
@@ -125,6 +127,7 @@ impl ProxyRuntime {
         let unchanged = previous == json && previous_revision == configuration.revision;
         let recovery_authorized = self
             .restore_active_configuration()
+            .await
             .is_some_and(|snapshot| snapshot.revision == configuration.revision);
         if staged.is_some() && !recovery_authorized {
             warn!(
@@ -140,13 +143,14 @@ impl ProxyRuntime {
         // Certificate-only replacement uses the already durable active policy;
         // its material pointer is committed separately after the engine probe.
         if staged.is_none() {
-            if fenced && let Err(error) = self.fence_configuration_activation() {
+            if fenced && let Err(error) = self.fence_configuration_activation().await {
                 warn!(revision = %configuration.revision, stage = "snapshot_prepare", "Recovery activation fence was not persisted");
                 return Err(error);
             }
-            if let Err(error) = self.persist_active_configuration(&configuration) {
+            if let Err(error) = self.persist_active_configuration(&configuration).await {
                 if fenced {
-                    self.restore_recovery_configuration(previous_configuration.as_ref());
+                    self.restore_recovery_configuration(previous_configuration.as_ref())
+                        .await;
                 }
                 warn!(revision = %configuration.revision, stage = "snapshot_prepare", "Recovery configuration was not persisted");
                 return Err(error);
@@ -158,7 +162,8 @@ impl ProxyRuntime {
                     .await;
             }
             if fenced {
-                self.restore_recovery_configuration(previous_configuration.as_ref());
+                self.restore_recovery_configuration(previous_configuration.as_ref())
+                    .await;
             }
             warn!(revision = %configuration.revision, stage = "caddy_load", ?error, "Caddy apply failed");
             return Err(if error == EngineError::Unavailable {
@@ -171,23 +176,32 @@ impl ProxyRuntime {
             self.restore_verified_locked(&previous, &previous_revision, false)
                 .await;
             if fenced {
-                self.restore_recovery_configuration(previous_configuration.as_ref());
+                self.restore_recovery_configuration(previous_configuration.as_ref())
+                    .await;
             }
             warn!(revision = %configuration.revision, stage = "runtime_probe", ?error, "Caddy did not confirm activation");
             return Err(RuntimeError::ApplyFailed);
         }
 
         if let Some(staged) = staged
-            && self.certificate_store.commit_staged(staged).await.is_err()
+            && self.storage_async({
+                let staged = staged.clone();
+                move |runtime| async move {
+                    runtime.certificate_store.commit_staged(&staged).await
+                }
+            }).await
+            .and_then(|result| result.map_err(|_| RuntimeError::ApplyFailed))
+            .is_err()
         {
             self.restore_verified_locked(&previous, &previous_revision, false)
                 .await;
             return Err(RuntimeError::ApplyFailed);
         }
-        if fenced && self.finish_configuration_activation().is_err() {
+        if fenced && self.finish_configuration_activation().await.is_err() {
             // Only failures before unlink reach rollback. After unlink the
             // durable, verified candidate remains the committed authority.
-            self.restore_recovery_configuration(previous_configuration.as_ref());
+            self.restore_recovery_configuration(previous_configuration.as_ref())
+                .await;
             self.restore_verified_locked(&previous, &previous_revision, false)
                 .await;
             warn!(revision = %configuration.revision, stage = "snapshot_commit", "Recovery activation fence was not committed");
@@ -199,11 +213,19 @@ impl ProxyRuntime {
             Some(utc_now())
         };
         if let Some(applied_at) = &applied_at
-            && atomic_write(
-                &self.settings.state_dir.join(LAST_APPLY_FILE),
-                applied_at.as_bytes(),
-            )
-            .is_err()
+            && self
+                .storage({
+                    let applied_at = applied_at.clone();
+                    move |runtime| {
+                        atomic_write(
+                            &runtime.settings.state_dir.join(LAST_APPLY_FILE),
+                            applied_at.as_bytes(),
+                        )
+                    }
+                })
+                .await
+                .and_then(|result| result.map_err(|_| RuntimeError::ApplyFailed))
+                .is_err()
         {
             warn!(
                 stage = "timestamp",
@@ -221,7 +243,7 @@ impl ProxyRuntime {
         *self.active_configuration.lock().await = Some(configuration.clone());
 
         if staged.is_some()
-            && let Err(error) = self.certificate_store.collect_garbage().await
+            && let Err(error) = self.collect_certificate_garbage().await
         {
             warn!(
                 ?error,
@@ -236,6 +258,14 @@ impl ProxyRuntime {
         } else {
             ApplyOutcome::Applied
         })
+    }
+
+    async fn collect_certificate_garbage(self: &Arc<Self>) -> Result<(), RuntimeError> {
+        self.storage_async(
+            |runtime| async move { runtime.certificate_store.collect_garbage().await },
+        )
+        .await?
+        .map_err(|_| RuntimeError::ApplyFailed)
     }
 
     /// Restores the last verified configuration, optionally replacing Caddy after uncertain activation.

@@ -4,10 +4,17 @@ export interface RuntimeReconcileDependencies<T> {
     readonly enabled?: boolean
     readonly load: () => Promise<T>
     readonly revision: (snapshot: T) => string
-    readonly apply: (snapshot: T) => Promise<boolean>
+    readonly apply: (snapshot: T) => Promise<boolean | RuntimeApplyFailure>
     readonly drift?:
         | { readonly check: () => Promise<boolean> }
         | { readonly matches: (snapshot: T) => Promise<boolean> }
+}
+
+export interface RuntimeApplyFailure {
+    readonly applied: false
+    readonly retryable: boolean
+    readonly code: string
+    readonly status: number | null
 }
 
 export interface RuntimeReconcileOptions {

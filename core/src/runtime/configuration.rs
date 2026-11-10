@@ -13,14 +13,58 @@ use crate::{
     models::{ProxyConfigRequest, ValidatedProxyConfig},
     proxy::{is_canonical_uuid, revision_from_config, validate_proxy_config},
 };
-use std::{collections::BTreeMap, io::Read, path::Path};
+use std::{collections::BTreeMap, io::Read, path::Path, sync::Arc};
 
 #[cfg(test)]
 #[path = "../../tests/private/configuration_boundaries.rs"]
 mod boundary_tests;
 
 impl ProxyRuntime {
-    pub(super) fn restore_active_configuration(&self) -> Option<ValidatedProxyConfig> {
+    pub(super) async fn restore_active_configuration(
+        self: &Arc<Self>,
+    ) -> Option<ValidatedProxyConfig> {
+        self.storage(Self::restore_active_configuration_blocking)
+            .await
+            .ok()
+            .flatten()
+    }
+
+    pub(super) async fn persist_active_configuration(
+        self: &Arc<Self>,
+        configuration: &ValidatedProxyConfig,
+    ) -> Result<(), RuntimeError> {
+        let configuration = configuration_request(configuration);
+        self.storage(move |runtime| runtime.persist_active_configuration_blocking(&configuration))
+            .await?
+    }
+
+    pub(super) async fn fence_configuration_activation(
+        self: &Arc<Self>,
+    ) -> Result<(), RuntimeError> {
+        self.storage(Self::fence_configuration_activation_blocking)
+            .await?
+    }
+
+    pub(super) async fn finish_configuration_activation(
+        self: &Arc<Self>,
+    ) -> Result<(), RuntimeError> {
+        self.storage(Self::finish_configuration_activation_blocking)
+            .await?
+    }
+
+    pub(super) async fn restore_recovery_configuration(
+        self: &Arc<Self>,
+        configuration: Option<&ValidatedProxyConfig>,
+    ) {
+        let configuration = configuration.map(configuration_request);
+        let _ = self
+            .storage(move |runtime| {
+                runtime.restore_recovery_configuration_blocking(configuration.as_ref());
+            })
+            .await;
+    }
+
+    fn restore_active_configuration_blocking(&self) -> Option<ValidatedProxyConfig> {
         // Recovery requires positive durable-writer authority, never inferred
         // from a legacy snapshot. Pending activation and storage errors close it.
         if self.configuration_activation_is_fenced() {
@@ -35,7 +79,7 @@ impl ProxyRuntime {
         let authority = directory
             .read_file(ACTIVE_CONFIGURATION_AUTHORITY_FILE, 128)
             .ok()?;
-        let expected = configuration_authority(&configuration);
+        let expected = configuration_authority(&configuration.revision);
         (authority.as_slice() == expected.as_bytes()).then_some(configuration)
     }
 
@@ -50,22 +94,13 @@ impl ProxyRuntime {
     }
 
     /// Persists the versioned candidate; the separate activation fence prevents premature recovery.
-    pub(super) fn persist_active_configuration(
+    fn persist_active_configuration_blocking(
         &self,
-        configuration: &ValidatedProxyConfig,
+        request: &ProxyConfigRequest,
     ) -> Result<(), RuntimeError> {
         #[cfg(test)]
         self.recovery_write_fault(super::RecoveryWriteFault::BeforeSnapshotWrite)?;
-        let request = ProxyConfigRequest {
-            version: crate::proxy::configuration_version(&configuration.proxy_hosts),
-            revision: configuration.revision.clone(),
-            proxy_hosts: configuration.proxy_hosts.clone(),
-            redirect_hosts: configuration.redirect_hosts.clone(),
-            http_settings: configuration.http_settings.clone(),
-            trusted_cas: configuration.trusted_cas.clone(),
-            default_site: configuration.default_site.clone(),
-        };
-        let bytes = serde_json::to_vec(&request).map_err(|_| RuntimeError::ApplyFailed)?;
+        let bytes = serde_json::to_vec(request).map_err(|_| RuntimeError::ApplyFailed)?;
         if bytes.len() > MAX_RENDERED_PROXY_CONFIG_BYTES {
             return Err(RuntimeError::ConfigTooLarge);
         }
@@ -85,7 +120,7 @@ impl ProxyRuntime {
                 .settings
                 .state_dir
                 .join(ACTIVE_CONFIGURATION_AUTHORITY_FILE),
-            configuration_authority(configuration).as_bytes(),
+            configuration_authority(&request.revision).as_bytes(),
         )
         .map_err(|_| RuntimeError::ApplyFailed)?;
         #[cfg(test)]
@@ -93,7 +128,7 @@ impl ProxyRuntime {
         Ok(())
     }
 
-    pub(super) fn fence_configuration_activation(&self) -> Result<(), RuntimeError> {
+    fn fence_configuration_activation_blocking(&self) -> Result<(), RuntimeError> {
         #[cfg(test)]
         self.recovery_write_fault(super::RecoveryWriteFault::BeforeFenceWrite)?;
         atomic_write(
@@ -103,7 +138,7 @@ impl ProxyRuntime {
         .map_err(|_| RuntimeError::ApplyFailed)
     }
 
-    pub(super) fn finish_configuration_activation(&self) -> Result<(), RuntimeError> {
+    fn finish_configuration_activation_blocking(&self) -> Result<(), RuntimeError> {
         #[cfg(test)]
         self.recovery_write_fault(super::RecoveryWriteFault::BeforeFenceRemoval)?;
         let removal = state_dir(&self.settings.state_dir)
@@ -135,13 +170,10 @@ impl ProxyRuntime {
         }
     }
 
-    pub(super) fn restore_recovery_configuration(
-        &self,
-        configuration: Option<&ValidatedProxyConfig>,
-    ) {
+    fn restore_recovery_configuration_blocking(&self, configuration: Option<&ProxyConfigRequest>) {
         // Rollback only runs before the fence unlink commit point. Preserve the
         // existing fence if storage cannot prepare or complete durable rollback.
-        if self.fence_configuration_activation().is_err() {
+        if self.fence_configuration_activation_blocking().is_err() {
             tracing::warn!(
                 stage = "snapshot_rollback",
                 "Recovery snapshot rollback was not prepared"
@@ -149,7 +181,7 @@ impl ProxyRuntime {
             return;
         }
         let restored = match configuration {
-            Some(configuration) => self.persist_active_configuration(configuration),
+            Some(configuration) => self.persist_active_configuration_blocking(configuration),
             None => state_dir(&self.settings.state_dir)
                 .and_then(|directory| {
                     directory.remove_file(ACTIVE_CONFIGURATION_FILE)?;
@@ -157,7 +189,7 @@ impl ProxyRuntime {
                 })
                 .map_err(|_| RuntimeError::ApplyFailed),
         };
-        if restored.is_err() || self.finish_configuration_activation().is_err() {
+        if restored.is_err() || self.finish_configuration_activation_blocking().is_err() {
             tracing::warn!(
                 stage = "snapshot_rollback",
                 "Recovery remains fenced after snapshot rollback"
@@ -176,7 +208,7 @@ impl ProxyRuntime {
     }
 
     pub(crate) async fn preview_config(
-        &self,
+        self: &Arc<Self>,
         config: &ValidatedProxyConfig,
     ) -> Result<String, RuntimeError> {
         self.render_proxy_config_for_apply(config, None, RenderPurpose::Preview)
@@ -191,8 +223,8 @@ impl ProxyRuntime {
         Ok((state.active_json.clone(), state.active_revision.clone()))
     }
 
-    pub(crate) fn preview_host_config(
-        &self,
+    pub(crate) async fn preview_host_config(
+        self: &Arc<Self>,
         config: &ValidatedProxyConfig,
         id: &str,
     ) -> Result<String, RuntimeError> {
@@ -204,7 +236,7 @@ impl ProxyRuntime {
             .iter()
             .find(|host| host.id == id)
             .ok_or(RuntimeError::HostConfigNotFound)?;
-        let upstream_tls = self.upstream_tls_render_settings(config, false)?;
+        let upstream_tls = self.upstream_tls_render_settings(config, false).await?;
         let source = render_host_config_for_runtime(
             host,
             &config.http_settings,
@@ -240,11 +272,11 @@ impl ProxyRuntime {
         Ok((source, revision))
     }
 
-    pub(super) fn render_active_host_sources(
-        &self,
+    pub(super) async fn render_active_host_sources(
+        self: &Arc<Self>,
         config: &ValidatedProxyConfig,
     ) -> Result<BTreeMap<String, String>, RuntimeError> {
-        let upstream_tls = self.upstream_tls_render_settings(config, false)?;
+        let upstream_tls = self.upstream_tls_render_settings(config, false).await?;
         render_host_sources_for_runtime(
             config,
             self.settings.public_https_port,
@@ -255,7 +287,7 @@ impl ProxyRuntime {
     }
 
     pub(super) async fn render_proxy_config_for_apply(
-        &self,
+        self: &Arc<Self>,
         configuration: &ValidatedProxyConfig,
         staged: Option<&StagedCertificate>,
         purpose: RenderPurpose,
@@ -266,7 +298,7 @@ impl ProxyRuntime {
     }
 
     pub(super) async fn render_proxy_config_for_provider(
-        &self,
+        self: &Arc<Self>,
         configuration: &ValidatedProxyConfig,
         staged: Option<&StagedCertificate>,
         purpose: RenderPurpose,
@@ -300,15 +332,20 @@ impl ProxyRuntime {
                 return Err(RuntimeError::ApplyFailed);
             }
             let material = match staged_certificate {
-                Some(staged) => self
-                    .certificate_store
-                    .staged_material(staged)
-                    .map_err(|_| RuntimeError::ApplyFailed)?,
-                None => self
-                    .certificate_store
-                    .material(certificate_id)
-                    .await
-                    .map_err(|_| RuntimeError::ApplyFailed)?,
+                Some(staged) => {
+                    let staged = staged.clone();
+                    self.storage(move |runtime| runtime.certificate_store.staged_material(&staged))
+                        .await?
+                        .map_err(|_| RuntimeError::ApplyFailed)?
+                }
+                None => {
+                    let id = certificate_id.to_owned();
+                    self.storage_async(move |runtime| async move {
+                        runtime.certificate_store.material(&id).await
+                    })
+                    .await?
+                    .map_err(|_| RuntimeError::ApplyFailed)?
+                }
             };
             materials.insert(
                 certificate_id.to_owned(),
@@ -318,8 +355,9 @@ impl ProxyRuntime {
                 },
             );
         }
-        let upstream_tls =
-            self.upstream_tls_render_settings(configuration, purpose != RenderPurpose::Preview)?;
+        let upstream_tls = self
+            .upstream_tls_render_settings(configuration, purpose != RenderPurpose::Preview)
+            .await?;
         let crowdsec = provider.render_settings();
         let rendered = render_config_with_tls_and_crowdsec(
             configuration,
@@ -348,8 +386,8 @@ impl ProxyRuntime {
         Ok(rendered)
     }
 
-    fn upstream_tls_render_settings(
-        &self,
+    async fn upstream_tls_render_settings(
+        self: &Arc<Self>,
         configuration: &ValidatedProxyConfig,
         materialize: bool,
     ) -> Result<UpstreamTlsRenderSettings, RuntimeError> {
@@ -358,28 +396,46 @@ impl ProxyRuntime {
                 upstream_tls.verify && upstream_tls.trusted_ca_id.is_none()
             })
         });
-        if uses_system_trust && !is_readable_system_ca_bundle(&self.settings.system_ca_bundle) {
-            return Err(RuntimeError::ApplyFailed);
-        }
-        let mut trusted_ca_paths = BTreeMap::new();
-        for trusted_ca in &configuration.trusted_cas {
-            let material = if materialize {
-                self.trusted_ca_store.materialize(trusted_ca)
-            } else {
-                self.trusted_ca_store.material_for(trusted_ca)
+        let trusted_cas = configuration.trusted_cas.clone();
+        self.storage(move |runtime| {
+            if uses_system_trust
+                && !is_readable_system_ca_bundle(&runtime.settings.system_ca_bundle)
+            {
+                return Err(RuntimeError::ApplyFailed);
             }
-            .map_err(|_| RuntimeError::ApplyFailed)?;
-            trusted_ca_paths.insert(trusted_ca.id.clone(), material.pem_path);
-        }
-        Ok(UpstreamTlsRenderSettings {
-            system_ca_bundle: self.settings.system_ca_bundle.clone(),
-            trusted_ca_paths,
+            let mut trusted_ca_paths = BTreeMap::new();
+            for trusted_ca in &trusted_cas {
+                let material = if materialize {
+                    runtime.trusted_ca_store.materialize(trusted_ca)
+                } else {
+                    runtime.trusted_ca_store.material_for(trusted_ca)
+                }
+                .map_err(|_| RuntimeError::ApplyFailed)?;
+                trusted_ca_paths.insert(trusted_ca.id.clone(), material.pem_path);
+            }
+            Ok(UpstreamTlsRenderSettings {
+                system_ca_bundle: runtime.settings.system_ca_bundle.clone(),
+                trusted_ca_paths,
+            })
         })
+        .await?
     }
 }
 
-fn configuration_authority(configuration: &ValidatedProxyConfig) -> String {
-    format!("durable-apply-v1\n{}\n", configuration.revision)
+fn configuration_request(configuration: &ValidatedProxyConfig) -> ProxyConfigRequest {
+    ProxyConfigRequest {
+        version: crate::proxy::configuration_version(&configuration.proxy_hosts),
+        revision: configuration.revision.clone(),
+        proxy_hosts: configuration.proxy_hosts.clone(),
+        redirect_hosts: configuration.redirect_hosts.clone(),
+        http_settings: configuration.http_settings.clone(),
+        trusted_cas: configuration.trusted_cas.clone(),
+        default_site: configuration.default_site.clone(),
+    }
+}
+
+fn configuration_authority(revision: &str) -> String {
+    format!("durable-apply-v1\n{revision}\n")
 }
 
 fn is_readable_system_ca_bundle(path: &Path) -> bool {

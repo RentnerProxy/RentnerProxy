@@ -113,6 +113,7 @@ pub(in crate::server) async fn preview_proxy_host_config(
     let config = state
         .runtime
         .preview_host_config(&configuration, &host_id)
+        .await
         .map_err(runtime_error)?;
     Ok(no_store_json(ProxyConfigPreviewResponse {
         config: redacted_config_source(&config)?,

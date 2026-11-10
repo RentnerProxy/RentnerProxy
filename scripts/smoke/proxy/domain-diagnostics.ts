@@ -1,6 +1,29 @@
 import assert from 'node:assert/strict'
+import { z } from 'zod'
 import { domainDiagnosticsResultSchema } from '../../../web/src/lib/RuntimeDiagnostics/domainDiagnostics.ts'
 import type { DomainDiagnosticsSmokeOptions } from './Types/domain-diagnostics.types.ts'
+
+const configurationStatusSchema = z.object({
+    available: z.boolean(),
+    running: z.boolean(),
+    activeRevision: z.string().nullable(),
+    lastApplyAt: z.string().nullable(),
+    recovery: z
+        .object({
+            workerRunning: z.boolean(),
+            circuitOpen: z.boolean(),
+            restartsInWindow: z.number().int().nonnegative(),
+            faults: z.number().int().nonnegative(),
+            consecutiveProbeFailures: z.number().int().nonnegative().optional(),
+        })
+        .transform(({ workerRunning, circuitOpen, faults, consecutiveProbeFailures }) => ({
+            workerRunning,
+            circuitOpen,
+            faults,
+            consecutiveProbeFailures,
+        }))
+        .optional(),
+})
 
 export async function runDomainDiagnosticsSmoke({
     controller,
@@ -20,7 +43,8 @@ export async function runDomainDiagnosticsSmoke({
     const readStatus = async () => {
         const response = await controller('/internal/v1/proxy/status')
         assert.equal(response.status, 200)
-        return JSON.stringify(await response.json())
+        // Worker ticks and aging restarts change telemetry independently of diagnostics.
+        return configurationStatusSchema.parse(await response.json())
     }
     const before = await readStatus()
     const inspect = (body: unknown) =>
@@ -86,5 +110,5 @@ export async function runDomainDiagnosticsSmoke({
         assert.equal(arbitraryResult.stages.upstream.code, 'skipped')
     }
 
-    assert.equal(await readStatus(), before, 'diagnosis must not apply or reload configuration')
+    assert.deepEqual(await readStatus(), before, 'diagnosis must not apply or reload configuration')
 }

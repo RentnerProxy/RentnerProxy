@@ -1,4 +1,8 @@
-import type { ControllerRequestOptions } from './Types/transport.types.ts'
+import type {
+    ControllerRequestFailure,
+    ControllerRequestOptions,
+    ControllerRequestResult,
+} from './Types/transport.types.ts'
 import '@tanstack/react-start/server-only'
 import { z } from 'zod'
 import { readBoundedStream } from '@/lib/Http/readBoundedStream.ts'
@@ -21,6 +25,16 @@ async function readBoundedJson(
     return JSON.parse(
         Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('utf8'),
     ) as unknown
+}
+
+export async function controllerRequestResult(
+    path: Parameters<typeof controllerRequest>[0],
+    options: ControllerRequestOptions,
+): Promise<ControllerRequestResult> {
+    return requestController(path, {
+        ...options,
+        preserveErrors: true,
+    })
 }
 
 export async function controllerRequest(
@@ -60,11 +74,37 @@ export async function controllerRequest(
         | `/internal/v1/ddns/${'status' | 'config' | 'preview' | 'enable' | 'disable' | 'sync'}`,
     options: ControllerRequestOptions,
 ): Promise<unknown> {
-    if (options.signal?.aborted) return null
+    return requestController(path, options)
+}
+
+type ControllerTransportOptions = ControllerRequestOptions & { readonly preserveErrors?: boolean }
+
+function requestController(
+    path: Parameters<typeof controllerRequest>[0],
+    options: ControllerTransportOptions & { readonly preserveErrors: true },
+): Promise<ControllerRequestResult>
+function requestController(
+    path: Parameters<typeof controllerRequest>[0],
+    options: ControllerRequestOptions,
+): Promise<unknown>
+async function requestController(
+    path: Parameters<typeof controllerRequest>[0],
+    options: ControllerTransportOptions,
+): Promise<unknown> {
+    const failure = (
+        kind: ControllerRequestFailure['kind'],
+        status: number | null = null,
+        code: string | null = null,
+    ): ControllerRequestFailure | null =>
+        options.preserveErrors ? { ok: false, kind, status, code } : null
+    const success = (payload: unknown): unknown =>
+        options.preserveErrors ? { ok: true, payload } : payload
+    if (options.signal?.aborted) return failure('aborted')
     const baseUrl = getControllerBaseUrl()
     const safePath = path.split('?')[0] ?? path
-    if (!baseUrl) return null
-    if (!isLoopbackControllerUrl(baseUrl) && !baseUrl.startsWith('https://')) return null
+    if (!baseUrl) return failure('configuration')
+    if (!isLoopbackControllerUrl(baseUrl) && !baseUrl.startsWith('https://'))
+        return failure('configuration')
 
     const headers: Record<string, string> = { accept: 'application/json' }
     const isDnsConnectionRequest =
@@ -73,7 +113,7 @@ export async function controllerRequest(
         path.startsWith('/internal/v1/dns/connections/')
     if (options.privileged || path.startsWith('/internal/')) {
         const token = getControllerToken()
-        if (!token) return null
+        if (!token) return failure('configuration')
         headers.authorization = 'Bearer ' + token
     }
 
@@ -82,7 +122,12 @@ export async function controllerRequest(
     const abortFromCaller = () => requestAbort.abort()
     options.signal?.addEventListener('abort', abortFromCaller, { once: true })
     if (options.signal?.aborted) requestAbort.abort()
-    const timeout = setTimeout(() => requestAbort.abort(), options.timeoutMs)
+    let timedOut = false
+    let responseStatus: number | null = null
+    const timeout = setTimeout(() => {
+        timedOut = true
+        requestAbort.abort()
+    }, options.timeoutMs)
 
     try {
         const response = await fetch(baseUrl + path, {
@@ -92,22 +137,33 @@ export async function controllerRequest(
             signal: requestAbort.signal,
             redirect: 'error',
         })
+        responseStatus = response.status
 
         if (
-            (!response.ok && !options.acceptErrorResponse && !options.acceptNonOkJson) ||
+            (!response.ok &&
+                !options.preserveErrors &&
+                !options.acceptErrorResponse &&
+                !options.acceptNonOkJson) ||
             !response.headers.get('content-type')?.includes('application/json')
         ) {
             void response.body?.cancel().catch(() => undefined)
-            if (response.status === 404 && options.allowNotFound) return null
+            if (response.status === 404 && options.allowNotFound && !options.preserveErrors)
+                return null
             console.warn('[controller] request unavailable', {
                 path: safePath,
                 status: response.status,
             })
-            return null
+            return failure(response.ok ? 'invalid_response' : 'http', response.status)
         }
 
         const payload = await readBoundedJson(response, options.responseLimit, requestAbort.signal)
-        if (response.ok) return payload
+        if (response.ok) return success(payload)
+        if (options.preserveErrors) {
+            const error = z
+                .strictObject({ error: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/u) })
+                .safeParse(payload)
+            return failure('http', response.status, error.success ? error.data.error : null)
+        }
         if (options.acceptNonOkJson) return payload
 
         const errorSchema = z.object({ error: z.string().max(64) })
@@ -117,7 +173,16 @@ export async function controllerRequest(
         return error.success ? error.data : null
     } catch {
         console.warn('[controller] request unavailable', { path: safePath })
-        return null
+        return failure(
+            options.signal?.aborted
+                ? 'aborted'
+                : timedOut
+                  ? 'timeout'
+                  : responseStatus === null
+                    ? 'network'
+                    : 'invalid_response',
+            responseStatus,
+        )
     } finally {
         options.signal?.removeEventListener('abort', abortFromCaller)
         clearTimeout(timeout)

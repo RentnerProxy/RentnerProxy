@@ -20,7 +20,18 @@ export function createProxyReconciler(
                     snapshot,
                     CONTROLLER_APPLY_TIMEOUT_MS,
                 )
-                return applied !== null && applied.activeRevision === snapshot.revision
+                if (applied === null) return false
+                if ('ok' in applied) {
+                    if (!applied.ok)
+                        return {
+                            applied: false,
+                            retryable: applied.retryable,
+                            code: applied.code ?? applied.kind,
+                            status: applied.status,
+                        }
+                    return applied.value.activeRevision === snapshot.revision
+                }
+                return applied.activeRevision === snapshot.revision
             },
             ...(dependencies.checkDrift ? { drift: { check: dependencies.checkDrift } } : {}),
         },
