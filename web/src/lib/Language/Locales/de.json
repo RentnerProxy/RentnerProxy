@@ -3825,7 +3825,7 @@
             "closedAt": "Abgeschlossen am",
             "closedReason": "Abschlussgrund",
             "openIncident": "Offen",
-            "historyLimit": "Bis zu {{count}} letzte Prüfungen werden angezeigt. Aufbewahrung: {{days}} Tage, {{samples}} Prüfungen und {{incidents}} Ausfälle.",
+            "historyLimit": "Bis zu {{count}} letzte Prüfungen werden angezeigt. Konfigurierte Höchstwerte: {{days}} Tage, {{samples}} Prüfungen und {{incidents}} Vorfälle. Insgesamt werden 100.000 Prüfungen und 10.000 Vorfälle gleichmäßig auf die Monitoring-Regeln verteilt; die tatsächliche Historie kann kürzer sein. Offene Vorfälle bleiben erhalten.",
             "period": "Zeitraum",
             "recent": "Letzte Prüfungen",
             "hour": "Letzte Stunde",
