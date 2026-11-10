@@ -303,6 +303,24 @@ fn event_parser_bounds_partial_lines_deduplicates_and_ignores_unrelated_events()
     assert_eq!(decoder.push(&event.as_bytes()[..20]), Ok(Unchanged));
     assert_eq!(decoder.push(&event.as_bytes()[20..]), Ok(Changed));
     assert_eq!(decoder.push(event.as_bytes()), Ok(Unchanged));
+    // Out-of-order timestamps still invalidate complete inventory; exact repeats do not.
+    for (kind, action, time) in [
+        ("container", "create", 9),
+        ("container", "start", 8),
+        ("container", "stop", 7),
+        ("container", "destroy", 6),
+        ("container", "update", 5),
+        ("network", "connect", 4),
+        ("network", "disconnect", 3),
+        ("network", "destroy", 2),
+    ] {
+        let event = format!(
+            "{}\n",
+            json!({"Type":kind,"Action":action,"Actor":{"ID":"a".repeat(64)},"timeNano":time})
+        );
+        assert_eq!(decoder.push(event.as_bytes()), Ok(Changed));
+        assert_eq!(decoder.push(event.as_bytes()), Ok(Unchanged));
+    }
     assert_eq!(decoder.push(&vec![b'x'; 16_385]), Ok(Reconnect));
     let mut decoder = client::Events::default();
     assert_eq!(decoder.push(format!("{}\n", json!({"Type":"container","Action":"exec_start","Actor":{"ID":"a".repeat(64)},"timeNano":124})).as_bytes()), Ok(Unchanged));
