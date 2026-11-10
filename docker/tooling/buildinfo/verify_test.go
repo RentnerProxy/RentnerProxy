@@ -12,6 +12,7 @@ import (
 func fixture(profile string) *debug.BuildInfo {
 	info := &debug.BuildInfo{GoVersion: "go1.27.3"}
 	if profile == "caddy" {
+		info.GoVersion = "go1.27.4"
 		info.Deps = []*debug.Module{
 			{Path: "golang.org/x/net", Version: "v0.59.0", Replace: &debug.Module{Path: "golang.org/x/net", Version: "v0.62.0"}},
 			{Path: "github.com/crowdsecurity/crowdsec", Version: "v1.8.2"},
@@ -42,7 +43,14 @@ func TestPolicies(t *testing.T) {
 				t.Fatal(err)
 			}
 			cases := map[string]func(*debug.BuildInfo){
-				"compiler":             func(i *debug.BuildInfo) { i.GoVersion = "go1.27.1" },
+				"compiler": func(i *debug.BuildInfo) { i.GoVersion = "go1.27.1" },
+				"other profile compiler": func(i *debug.BuildInfo) {
+					if profile == "caddy" {
+						i.GoVersion = "go1.27.3"
+					} else {
+						i.GoVersion = "go1.27.4"
+					}
+				},
 				"missing dependency":   func(i *debug.BuildInfo) { i.Deps = i.Deps[1:] },
 				"duplicate dependency": func(i *debug.BuildInfo) { i.Deps = append(i.Deps, i.Deps[0]) },
 				"missing CGO":          func(i *debug.BuildInfo) { i.Settings = i.Settings[1:] },
