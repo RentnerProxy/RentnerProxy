@@ -10,3 +10,13 @@ export interface ControllerRequestOptions {
     readonly acceptErrorResponse?: boolean
     readonly acceptNonOkJson?: boolean
 }
+
+export type ControllerRequestFailure = {
+    readonly ok: false
+    readonly kind: 'configuration' | 'timeout' | 'aborted' | 'network' | 'invalid_response' | 'http'
+    readonly status: number | null
+    readonly code: string | null
+}
+
+export type ControllerRequestResult =
+    { readonly ok: true; readonly payload: unknown } | ControllerRequestFailure

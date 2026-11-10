@@ -7,10 +7,10 @@ use std::collections::BTreeMap;
 #[serde(rename_all = "camelCase")]
 struct CanonicalSnapshot<'a> {
     version: u8,
-    proxy_hosts: Vec<ProxyHost>,
-    redirect_hosts: Vec<RedirectHost>,
+    proxy_hosts: &'a [ProxyHost],
+    redirect_hosts: &'a [RedirectHost],
     http_settings: &'a ProxyHttpSettings,
-    trusted_cas: Vec<TrustedCa>,
+    trusted_cas: &'a [TrustedCa],
     #[serde(skip_serializing_if = "DefaultSite::is_default")]
     default_site: &'a DefaultSite,
 }
@@ -54,7 +54,29 @@ pub(crate) fn revision_for_configuration_with_redirects(
 }
 
 /// Hashes the canonical versioned configuration without sorting a pool's ordered member list.
+#[cfg(test)]
 pub(crate) fn revision_for_full_configuration(
+    hosts: &[ProxyHost],
+    redirect_hosts: &[RedirectHost],
+    http_settings: &ProxyHttpSettings,
+    trusted_cas: &[TrustedCa],
+    default_site: &DefaultSite,
+) -> String {
+    let mut hosts = hosts.to_vec();
+    let mut redirect_hosts = redirect_hosts.to_vec();
+    let mut trusted_cas = trusted_cas.to_vec();
+    canonicalize_configuration(&mut hosts, &mut redirect_hosts, &mut trusted_cas);
+    revision_for_canonical_configuration(
+        &hosts,
+        &redirect_hosts,
+        http_settings,
+        &trusted_cas,
+        default_site,
+    )
+}
+
+/// Hashes collections already sorted by `canonicalize_configuration` without copying them.
+pub(super) fn revision_for_canonical_configuration(
     hosts: &[ProxyHost],
     redirect_hosts: &[RedirectHost],
     http_settings: &ProxyHttpSettings,
@@ -63,10 +85,10 @@ pub(crate) fn revision_for_full_configuration(
 ) -> String {
     hash_snapshot(&CanonicalSnapshot {
         version: super::configuration_version(hosts),
-        proxy_hosts: canonical_hosts(hosts),
-        redirect_hosts: canonical_redirect_hosts(redirect_hosts),
+        proxy_hosts: hosts,
+        redirect_hosts,
         http_settings,
-        trusted_cas: canonical_trusted_cas(trusted_cas),
+        trusted_cas,
         default_site,
     })
 }
@@ -117,28 +139,20 @@ fn find_revision(routes: &[ProbeRoute]) -> Option<String> {
     None
 }
 
-pub(super) fn canonical_hosts(hosts: &[ProxyHost]) -> Vec<ProxyHost> {
-    let mut hosts = hosts.to_vec();
-    for host in &mut hosts {
+pub(super) fn canonicalize_configuration(
+    hosts: &mut [ProxyHost],
+    redirect_hosts: &mut [RedirectHost],
+    trusted_cas: &mut [TrustedCa],
+) {
+    for host in hosts.iter_mut() {
         host.domains.sort_unstable();
     }
     hosts.sort_unstable_by(|left, right| left.id.cmp(&right.id));
-    hosts
-}
-
-pub(super) fn canonical_redirect_hosts(hosts: &[RedirectHost]) -> Vec<RedirectHost> {
-    let mut hosts = hosts.to_vec();
-    for host in &mut hosts {
+    for host in redirect_hosts.iter_mut() {
         host.domains.sort_unstable();
     }
-    hosts.sort_unstable_by(|left, right| left.id.cmp(&right.id));
-    hosts
-}
-
-pub(super) fn canonical_trusted_cas(trusted_cas: &[TrustedCa]) -> Vec<TrustedCa> {
-    let mut trusted_cas = trusted_cas.to_vec();
+    redirect_hosts.sort_unstable_by(|left, right| left.id.cmp(&right.id));
     trusted_cas.sort_unstable_by(|left, right| left.id.cmp(&right.id));
-    trusted_cas
 }
 
 #[derive(Deserialize)]

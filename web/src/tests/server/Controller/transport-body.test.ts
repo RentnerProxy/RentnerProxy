@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, spyOn, test } from 'bun:test'
-import { controllerRequest } from '@/server/Controller/transport.server.ts'
+import { controllerRequest, controllerRequestResult } from '@/server/Controller/transport.server.ts'
 import type { ControllerRequestOptions } from '@/server/Controller/Types/transport.types.ts'
 
 const originalUrl = process.env.RENTNERPROXY_CONTROLLER_URL
@@ -44,6 +44,31 @@ test('a missing JSON body remains null', async () => {
     expect(
         await read(new Response(null, { headers: { 'content-type': 'application/json' } })),
     ).toBeNull()
+})
+
+test('typed transport distinguishes caller cancellation, deadlines and malformed bodies', async () => {
+    const cancelled = new AbortController()
+    cancelled.abort()
+    expect(
+        await controllerRequestResult('/health', { timeoutMs: 20, signal: cancelled.signal }),
+    ).toMatchObject({ ok: false, kind: 'aborted' })
+    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(new ReadableStream(), { headers: { 'content-type': 'application/json' } }),
+    )
+    expect(await controllerRequestResult('/health', { timeoutMs: 20 })).toMatchObject({
+        ok: false,
+        kind: 'timeout',
+        status: 200,
+    })
+    fetchSpy.mockRestore()
+    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response('{', { headers: { 'content-type': 'application/json' } }),
+    )
+    expect(await controllerRequestResult('/health', { timeoutMs: 20 })).toMatchObject({
+        ok: false,
+        kind: 'invalid_response',
+        status: 200,
+    })
 })
 
 test.each(['http://controller.example:8081', 'http://192.0.2.1:8081'])(

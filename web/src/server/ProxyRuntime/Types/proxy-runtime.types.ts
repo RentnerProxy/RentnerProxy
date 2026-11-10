@@ -1,4 +1,5 @@
 import type { ProxyUpstreamPool } from '@/lib/ProxyRuntime/Types/upstream-pool.types.ts'
+import type { ControllerRequestFailure } from '@/server/Controller/Types/transport.types.ts'
 import type { ResponseCacheSettings } from '@/lib/ResponseCache/Types/response-cache.types.ts'
 import type { ProxyHostForwardScheme } from '@/config/Types/proxy-hosts-config.types.ts'
 import type { RedirectHostStatusCode } from '@/config/Types/redirect-hosts-config.types.ts'
@@ -68,6 +69,12 @@ export interface ProxyRuntimeApplyResponse {
     readonly activeRevision: string
     readonly lastApplyAt: string | null
 }
+
+export type ProxyRuntimeApplyResult =
+    | { readonly ok: true; readonly value: ProxyRuntimeApplyResponse }
+    | (ControllerRequestFailure & {
+          readonly retryable: boolean
+      })
 
 import type { PERMISSIONS } from '@/config/permissions.config.ts'
 

@@ -23,6 +23,7 @@ mod recovery_health;
 pub(crate) mod renderer;
 mod renewal;
 mod state;
+mod storage;
 mod task;
 mod tls;
 mod trusted_cas;
@@ -160,6 +161,7 @@ pub(crate) struct ProxyRuntime {
     engine: Option<Arc<dyn ProxyEngine>>,
     state: Mutex<RuntimeState>,
     apply_lock: Mutex<()>,
+    storage_worker: storage::StorageWorker,
     apply_sequence: AtomicU64,
     stopping: AtomicBool,
     initialization_started: AtomicBool,
@@ -249,6 +251,7 @@ impl ProxyRuntime {
                 host_sources: BTreeMap::new(),
             }),
             apply_lock: Mutex::new(()),
+            storage_worker: storage::StorageWorker::new(),
             apply_sequence: AtomicU64::new(0),
             stopping: AtomicBool::new(false),
             initialization_started: AtomicBool::new(false),

@@ -10,7 +10,7 @@ import { requirePermissionService } from '@/server/Auth/Access/authorization.ser
 import { getAuthDatabase } from '@/server/Auth/Core/database.server.ts'
 import { isProxyRuntimeReconciliationEnabled } from '@/server/env.server.ts'
 import {
-    applyProxyRuntimeConfiguration,
+    applyProxyRuntimeConfigurationResult,
     getProxyRuntimeStatus,
 } from '@/server/Controller/proxy.server.ts'
 import { createProxyReconciler } from './proxy-reconcile.ts'
@@ -29,7 +29,7 @@ export async function getProxyRuntimeSnapshotService(): Promise<ProxyRuntimeSnap
 export const reconcileProxyConfigurationService = createProxyReconciler({
     enabled: isProxyRuntimeReconciliationEnabled(),
     loadSnapshot: getProxyRuntimeSnapshotService,
-    applySnapshot: applyProxyRuntimeConfiguration,
+    applySnapshot: applyProxyRuntimeConfigurationResult,
     checkDrift: async () => {
         const [snapshot, runtime] = await Promise.all([
             getProxyRuntimeSnapshotService(),

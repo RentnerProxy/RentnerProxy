@@ -34,6 +34,142 @@ fn accepts_only_v7_and_returns_canonical_hosts() {
 }
 
 #[test]
+fn validation_canonicalizes_owned_collections_without_changing_the_revision() {
+    use crate::models::{RedirectHost, TrustedCa};
+    use crate::proxy::validate_trusted_ca_pem;
+
+    let certificate = super::fixtures::trusted_ca_certificate();
+    let material = validate_trusted_ca_pem(&certificate.pem()).unwrap();
+    let mut payload = request(Vec::new());
+    for index in 1..=2 {
+        let ca_id = format!("0198d98a-0000-7000-8000-00000000000{index}");
+        let mut target = host(
+            &format!("018f4b4a-7d1f-7abc-8def-0123456789a{index}"),
+            &[&format!("z{index}.example"), &format!("a{index}.example")],
+            "https",
+            "backend.internal",
+            443,
+        );
+        target.upstream_tls = Some(UpstreamTls {
+            server_name: Some("backend.internal".into()),
+            trusted_ca_id: Some(ca_id.clone()),
+            verify: true,
+        });
+        payload.proxy_hosts.push(target);
+        payload.trusted_cas.push(TrustedCa {
+            id: ca_id,
+            pem: material.pem.clone(),
+            fingerprint_sha256: material.fingerprint_sha256.clone(),
+        });
+        payload.redirect_hosts.push(RedirectHost {
+            id: format!("018f4b4a-7d1f-7abc-8def-1123456789a{index}"),
+            domains: vec![
+                format!("z{index}.redirect.test"),
+                format!("a{index}.redirect.test"),
+            ],
+            destination: "https://destination.test".into(),
+            status_code: 308,
+            preserve_request_uri: true,
+            certificate_id: None,
+        });
+    }
+    payload.revision = revision_for_configuration_with_redirects(
+        &payload.proxy_hosts,
+        &payload.redirect_hosts,
+        &payload.http_settings,
+        &payload.trusted_cas,
+    );
+    let expected = validate_proxy_config(payload.clone()).unwrap();
+    let mut uppercase = payload.clone();
+    uppercase.proxy_hosts[0].domains[0].make_ascii_uppercase();
+    uppercase.revision = revision_for_configuration_with_redirects(
+        &uppercase.proxy_hosts,
+        &uppercase.redirect_hosts,
+        &uppercase.http_settings,
+        &uppercase.trusted_cas,
+    );
+    assert_eq!(
+        validate_proxy_config(uppercase),
+        Err(ProxyValidationError::ValidationFailed)
+    );
+    payload.proxy_hosts.reverse();
+    payload.redirect_hosts.reverse();
+    payload.trusted_cas.reverse();
+    for target in &mut payload.proxy_hosts {
+        target.domains.reverse();
+    }
+    for redirect in &mut payload.redirect_hosts {
+        redirect.domains.reverse();
+    }
+    let hosts_allocation = payload.proxy_hosts.as_ptr();
+    let redirects_allocation = payload.redirect_hosts.as_ptr();
+    let cas_allocation = payload.trusted_cas.as_ptr();
+    let domains_allocation = payload.proxy_hosts[1].domains.as_ptr();
+    let accepted = validate_proxy_config(payload).unwrap();
+    assert_eq!(accepted, expected);
+    assert_eq!(accepted.proxy_hosts.as_ptr(), hosts_allocation);
+    assert_eq!(accepted.redirect_hosts.as_ptr(), redirects_allocation);
+    assert_eq!(accepted.trusted_cas.as_ptr(), cas_allocation);
+    assert_eq!(accepted.proxy_hosts[0].domains.as_ptr(), domains_allocation);
+}
+
+#[test]
+fn validation_keeps_ordered_pool_members_and_failover_for_v8_and_v9() {
+    use crate::models::{
+        PassiveUpstreamHealth, UpstreamFailover, UpstreamMember, UpstreamPool,
+        UpstreamSelectionPolicy,
+    };
+
+    for version in [8, 9] {
+        let mut target = host(
+            "018f4b4a-7d1f-7abc-8def-0123456789ab",
+            &["z.example", "a.example"],
+            "http",
+            "z.internal",
+            8080,
+        );
+        target.upstream_pool = Some(UpstreamPool {
+            policy: UpstreamSelectionPolicy::First,
+            members: vec![
+                UpstreamMember {
+                    host: "z.internal".into(),
+                    port: 8080,
+                },
+                UpstreamMember {
+                    host: "a.internal".into(),
+                    port: 8081,
+                },
+            ],
+            failover: (version == 9).then_some(UpstreamFailover {
+                active: None,
+                passive: Some(PassiveUpstreamHealth {
+                    fail_duration_seconds: 30,
+                    max_fails: 1,
+                }),
+                retries: None,
+            }),
+        });
+        let original = request(vec![target.clone()]);
+        assert_eq!(original.version, version);
+        let revision = original.revision.clone();
+        let accepted = validate_proxy_config(original).unwrap();
+        assert_eq!(accepted.proxy_hosts[0].upstream_pool, target.upstream_pool);
+        target.upstream_pool.as_mut().unwrap().members.reverse();
+        target.forward_host = "a.internal".into();
+        target.forward_port = 8081;
+        let reordered = request(vec![target]);
+        assert_ne!(reordered.revision, revision);
+        let mut stale_revision = reordered.clone();
+        stale_revision.revision = revision;
+        assert_eq!(
+            validate_proxy_config(stale_revision),
+            Err(ProxyValidationError::ValidationFailed)
+        );
+        assert!(validate_proxy_config(reordered).is_ok());
+    }
+}
+
+#[test]
 fn v7_revision_matches_the_typescript_proxy_known_vector() {
     let hosts = vec![host(
         "018f2f52-7c1b-7cc0-9f3c-6a9952c54019",

@@ -26,9 +26,11 @@ pub(crate) use revision::revision_for_configuration_with_redirects;
 #[cfg(test)]
 pub(crate) use revision::revision_for_configuration_with_trusted_cas;
 #[cfg(test)]
+pub(crate) use revision::revision_for_full_configuration;
+#[cfg(test)]
 pub(crate) use revision::revision_for_hosts;
-use revision::{canonical_hosts, canonical_redirect_hosts, canonical_trusted_cas};
-pub(crate) use revision::{revision_for_full_configuration, revision_from_config};
+pub(crate) use revision::revision_from_config;
+use revision::{canonicalize_configuration, revision_for_canonical_configuration};
 pub(crate) use trusted_ca::{
     MAX_TRUSTED_CA_PEM_BYTES, TrustedCaValidationRequest, validate_trusted_ca,
     validate_trusted_ca_pem,
@@ -180,14 +182,16 @@ pub(crate) fn validate_proxy_config(
         return Err(ProxyValidationError::ValidationFailed);
     }
 
-    let canonical_hosts = canonical_hosts(&request.proxy_hosts);
-    let canonical_redirect_hosts = canonical_redirect_hosts(&request.redirect_hosts);
-    let canonical_trusted_cas = canonical_trusted_cas(&request.trusted_cas);
-    let actual_revision = revision_for_full_configuration(
-        &canonical_hosts,
-        &canonical_redirect_hosts,
+    canonicalize_configuration(
+        &mut request.proxy_hosts,
+        &mut request.redirect_hosts,
+        &mut request.trusted_cas,
+    );
+    let actual_revision = revision_for_canonical_configuration(
+        &request.proxy_hosts,
+        &request.redirect_hosts,
         &request.http_settings,
-        &canonical_trusted_cas,
+        &request.trusted_cas,
         &request.default_site,
     );
     if request.revision != actual_revision {
@@ -197,10 +201,10 @@ pub(crate) fn validate_proxy_config(
     Ok(ValidatedProxyConfig {
         default_site: request.default_site,
         revision: request.revision,
-        proxy_hosts: canonical_hosts,
-        redirect_hosts: canonical_redirect_hosts,
+        proxy_hosts: request.proxy_hosts,
+        redirect_hosts: request.redirect_hosts,
         http_settings: request.http_settings,
-        trusted_cas: canonical_trusted_cas,
+        trusted_cas: request.trusted_cas,
     })
 }
 

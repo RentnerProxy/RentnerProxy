@@ -4,6 +4,7 @@ import { afterEach, describe, expect, mock, spyOn, test } from 'bun:test'
 import {
     getProxyRuntimeStatus,
     applyProxyRuntimeConfiguration,
+    applyProxyRuntimeConfigurationResult,
     previewProxyConfiguration,
     previewProxyHostConfiguration,
 } from '@/server/Controller/proxy.server.ts'
@@ -464,6 +465,219 @@ describe('proxy runtime reconciliation', () => {
 })
 
 describe('controller runtime client', () => {
+    test.each([
+        [422, 'validation_failed', false],
+        [400, 'invalid_configuration', false],
+        [413, 'invalid_configuration', false],
+        [401, 'unauthorized', true],
+        [403, 'unauthorized', true],
+        [404, 'not_found', true],
+        [409, 'busy', true],
+        [503, 'runtime_unavailable', true],
+        [502, 'apply_failed', true],
+    ] as const)('preserves safe apply diagnostics for HTTP %s', async (status, code, retryable) => {
+        process.env.RENTNERPROXY_CONTROLLER_URL = 'http://127.0.0.1:8081'
+        process.env.RENTNERPROXY_CONTROLLER_TOKEN = 'A'.repeat(32)
+        const fetchMock = spyOn(globalThis, 'fetch').mockImplementation((async () =>
+            Response.json({ error: code }, { status })) as unknown as typeof fetch)
+        try {
+            expect(await applyProxyRuntimeConfigurationResult(snapshot())).toEqual({
+                ok: false,
+                kind: 'http',
+                status,
+                code,
+                retryable,
+            })
+            expect(await applyProxyRuntimeConfiguration(snapshot())).toBeNull()
+        } finally {
+            fetchMock.mockRestore()
+        }
+    })
+
+    test('does not preserve arbitrary error bodies or exception messages in apply diagnostics', async () => {
+        process.env.RENTNERPROXY_CONTROLLER_URL = 'http://127.0.0.1:8081'
+        process.env.RENTNERPROXY_CONTROLLER_TOKEN = 'A'.repeat(32)
+        const fetchMock = spyOn(globalThis, 'fetch').mockResolvedValue(
+            Response.json({ error: 'private_payload' }, { status: 422 }),
+        )
+        try {
+            expect(await applyProxyRuntimeConfigurationResult(snapshot())).toEqual({
+                ok: false,
+                kind: 'http',
+                status: 422,
+                code: null,
+                retryable: true,
+            })
+            fetchMock.mockRejectedValue(new Error('token=private'))
+            expect(await applyProxyRuntimeConfigurationResult(snapshot())).toEqual({
+                ok: false,
+                kind: 'network',
+                status: null,
+                code: null,
+                retryable: true,
+            })
+        } finally {
+            fetchMock.mockRestore()
+        }
+    })
+
+    test.each(['configuration', 401, 403, 404] as const)(
+        'recovers from %s without changing desired state or requesting another apply',
+        async (failure) => {
+            process.env.RENTNERPROXY_CONTROLLER_URL = 'http://127.0.0.1:8081'
+            process.env.RENTNERPROXY_CONTROLLER_TOKEN =
+                failure === 'configuration' ? '' : 'A'.repeat(32)
+            const current = snapshot()
+            const success = {
+                status: 'applied',
+                activeRevision: current.revision,
+                lastApplyAt: null,
+            }
+            const fetchMock = spyOn(globalThis, 'fetch').mockResolvedValue(
+                failure === 'configuration'
+                    ? Response.json(success)
+                    : Response.json(
+                          { error: failure === 404 ? 'not_found' : 'unauthorized' },
+                          { status: failure },
+                      ),
+            )
+            const reconciler = createProxyReconciler({
+                loadSnapshot: async () => current,
+                applySnapshot: applyProxyRuntimeConfigurationResult,
+            })
+            try {
+                expect(await reconciler()).toBe('pending')
+                expect(fetchMock).toHaveBeenCalledTimes(failure === 'configuration' ? 0 : 1)
+                process.env.RENTNERPROXY_CONTROLLER_TOKEN = 'B'.repeat(32)
+                fetchMock.mockResolvedValue(Response.json(success))
+                await Bun.sleep(1_100)
+                expect(fetchMock).toHaveBeenCalledTimes(failure === 'configuration' ? 1 : 2)
+                expect(fetchMock.mock.calls.at(-1)?.[1]?.headers).toMatchObject({
+                    authorization: 'Bearer ' + 'B'.repeat(32),
+                })
+            } finally {
+                await reconciler.stop()
+                fetchMock.mockRestore()
+            }
+        },
+    )
+
+    test('carries a real controller rejection through the reconciler without logging payloads', async () => {
+        process.env.RENTNERPROXY_CONTROLLER_URL = 'http://127.0.0.1:8081'
+        process.env.RENTNERPROXY_CONTROLLER_TOKEN = 'A'.repeat(32)
+        const fetchMock = spyOn(globalThis, 'fetch').mockImplementation((async () =>
+            Response.json(
+                { error: 'validation_failed' },
+                { status: 422 },
+            )) as unknown as typeof fetch)
+        const warnings = spyOn(console, 'warn').mockImplementation(() => undefined)
+        const reconciler = createProxyReconciler({
+            loadSnapshot: async () => snapshot(),
+            applySnapshot: applyProxyRuntimeConfigurationResult,
+        })
+        try {
+            expect(await reconciler()).toBe('pending')
+            expect(warnings).toHaveBeenCalledWith('[proxy-runtime] reconcile rejected', {
+                code: 'validation_failed',
+                status: 422,
+                retryable: false,
+            })
+            expect(fetchMock).toHaveBeenCalledTimes(1)
+            fetchMock.mockResolvedValue(
+                new Response('{', { headers: { 'content-type': 'application/json' } }),
+            )
+            expect(await applyProxyRuntimeConfigurationResult(snapshot())).toEqual({
+                ok: false,
+                kind: 'invalid_response',
+                status: 200,
+                code: null,
+                retryable: true,
+            })
+        } finally {
+            await reconciler.stop()
+            warnings.mockRestore()
+            fetchMock.mockRestore()
+        }
+    })
+
+    test('parks rejected revisions, accepts explicit retries and applies changed desired state', async () => {
+        let desired = snapshot()
+        let rejected = true
+        const applySnapshot = mock(async (current: ProxyRuntimeSnapshot) =>
+            rejected
+                ? {
+                      ok: false as const,
+                      kind: 'http' as const,
+                      status: 422,
+                      code: 'validation_failed',
+                      retryable: false,
+                  }
+                : {
+                      ok: true as const,
+                      value: {
+                          status: 'applied' as const,
+                          activeRevision: current.revision,
+                          lastApplyAt: null,
+                      },
+                  },
+        )
+        const reconciler = createProxyReconciler({
+            loadSnapshot: async () => desired,
+            applySnapshot,
+            checkDrift: async () => true,
+        })
+        try {
+            expect(await reconciler()).toBe('pending')
+            await Bun.sleep(1_100)
+            expect(applySnapshot).toHaveBeenCalledTimes(1)
+            await reconciler.checkDrift()
+            await Bun.sleep(20)
+            expect(applySnapshot).toHaveBeenCalledTimes(1)
+            expect(await reconciler()).toBe('pending')
+            expect(applySnapshot).toHaveBeenCalledTimes(2)
+            rejected = false
+            desired = snapshot({ forwardPort: 4_001 })
+            await reconciler.checkDrift()
+            await Bun.sleep(20)
+            expect(applySnapshot).toHaveBeenCalledTimes(3)
+            expect(await reconciler()).toBe('applied')
+        } finally {
+            await reconciler.stop()
+        }
+    })
+
+    test('retries typed transient apply failures without a new request and stops cleanly', async () => {
+        const current = snapshot()
+        const applySnapshot = mock(async () =>
+            applySnapshot.mock.calls.length === 1
+                ? {
+                      ok: false as const,
+                      kind: 'http' as const,
+                      status: 409,
+                      code: 'busy',
+                      retryable: true,
+                  }
+                : {
+                      ok: true as const,
+                      value: {
+                          status: 'applied' as const,
+                          activeRevision: current.revision,
+                          lastApplyAt: null,
+                      },
+                  },
+        )
+        const reconciler = createProxyReconciler({
+            loadSnapshot: async () => current,
+            applySnapshot,
+        })
+        try {
+            expect(await reconciler()).toBe('pending')
+            await Bun.sleep(1_100)
+            expect(applySnapshot).toHaveBeenCalledTimes(2)
+        } finally {
+            await reconciler.stop()
+        }
+    })
     test.each([
         ['http://controller.example:8081', false],
         ['https://controller.example:8443', true],

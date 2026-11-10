@@ -72,7 +72,13 @@ impl ProxyRuntime {
         id: &str,
         request: CertificateImportRequest,
     ) -> Result<CertificateMetadata, CertificateError> {
-        let staged = self.certificate_store.stage_manual(id, request).await?;
+        let id = id.to_owned();
+        let staged = self
+            .storage_async(move |runtime| async move {
+                runtime.certificate_store.stage_manual(&id, request).await
+            })
+            .await
+            .map_err(|_| CertificateError::StoreUnavailable)??;
         self.commit_or_reapply_staged_certificate(staged).await
     }
 
@@ -82,20 +88,34 @@ impl ProxyRuntime {
     ) -> Result<CertificateMetadata, CertificateError> {
         let id = staged.id().to_owned();
         let recorded = self
-            .certificate_store
-            .record_operation_stage(&id, CertificateOperationStage::Applying)
-            .await;
+            .storage_async(move |runtime| async move {
+                runtime
+                    .certificate_store
+                    .record_operation_stage(&id, CertificateOperationStage::Applying)
+                    .await
+            })
+            .await
+            .and_then(|result| result.map_err(|_| super::RuntimeError::ApplyFailed));
         if recorded.is_err() || self.apply_staged_for_active(staged.clone()).await.is_err() {
             if staged.is_acme() {
-                self.certificate_store
-                    .finish_candidate_failed(&staged, CertificateError::RuntimeApplyFailed)
+                let _ = self
+                    .storage_async(move |runtime| async move {
+                        runtime
+                            .certificate_store
+                            .finish_candidate_failed(&staged, CertificateError::RuntimeApplyFailed)
+                            .await;
+                    })
                     .await;
             } else {
-                self.certificate_store.discard_staged(&staged).await;
+                let _ = self
+                    .storage_async(move |runtime| async move {
+                        runtime.certificate_store.discard_staged(&staged).await;
+                    })
+                    .await;
             }
             return Err(CertificateError::RuntimeApplyFailed);
         }
-        self.certificate_store.get(&id).await
+        self.certificate_store.get(staged.id()).await
     }
 
     pub(crate) async fn retry_certificate_candidate(
@@ -106,10 +126,40 @@ impl ProxyRuntime {
         if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(CertificateError::OperationInProgress);
         }
+        let runtime = Arc::clone(self);
+        let id = id.to_owned();
+        // Own preparation as well as publication: preparation acquires a lease
+        // before waiting for the index, so caller cancellation must not drop it.
+        tokio::spawn(async move {
+            runtime
+                .retry_certificate_candidate_inner(&id, scheduled)
+                .await
+        })
+        .await
+        .unwrap_or_else(|error| {
+            super::task::report_join_failure("certificate_candidate_retry", &error);
+            Err(CertificateError::StoreUnavailable)
+        })
+    }
+
+    async fn retry_certificate_candidate_inner(
+        self: &Arc<Self>,
+        id: &str,
+        scheduled: bool,
+    ) -> Result<Option<CertificateMetadata>, CertificateError> {
+        if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(CertificateError::OperationInProgress);
+        }
+        let id = id.to_owned();
         let Some(staged) = self
-            .certificate_store
-            .begin_candidate_activation(id, scheduled)
-            .await?
+            .storage_async(move |runtime| async move {
+                runtime
+                    .certificate_store
+                    .begin_candidate_activation(&id, scheduled)
+                    .await
+            })
+            .await
+            .map_err(|_| CertificateError::StoreUnavailable)??
         else {
             return Ok(None);
         };
@@ -118,7 +168,10 @@ impl ProxyRuntime {
             .map(Some)
     }
 
-    pub(crate) async fn delete_certificate(&self, id: &str) -> Result<(), CertificateError> {
+    pub(crate) async fn delete_certificate(
+        self: &Arc<Self>,
+        id: &str,
+    ) -> Result<(), CertificateError> {
         let _guard = timeout(self.settings.lock_wait, self.apply_lock.lock())
             .await
             .map_err(|_| CertificateError::InUse)?;
@@ -127,16 +180,19 @@ impl ProxyRuntime {
         let in_use =
             !state.engine_available || state.active_json.replace('\\', "/").contains(&marker);
         drop(state);
-        let cached_in_use = self.restore_active_configuration().is_some_and(|config| {
-            config
-                .proxy_hosts
-                .iter()
-                .any(|host| host.certificate_id.as_deref() == Some(id))
-                || config
-                    .redirect_hosts
+        let cached_in_use = self
+            .restore_active_configuration()
+            .await
+            .is_some_and(|config| {
+                config
+                    .proxy_hosts
                     .iter()
                     .any(|host| host.certificate_id.as_deref() == Some(id))
-        });
+                    || config
+                        .redirect_hosts
+                        .iter()
+                        .any(|host| host.certificate_id.as_deref() == Some(id))
+            });
         self.certificate_store
             .delete_if_unused(id, in_use || cached_in_use)
             .await

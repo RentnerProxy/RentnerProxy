@@ -17,7 +17,8 @@ import type {
     ProxyRuntimeSnapshot,
 } from '@/server/ProxyRuntime/Types/proxy-runtime.types.ts'
 
-import { controllerRequest } from './transport.server.ts'
+import { controllerRequest, controllerRequestResult } from './transport.server.ts'
+import type { ProxyRuntimeApplyResult } from '@/server/ProxyRuntime/Types/proxy-runtime.types.ts'
 import { CONTROLLER_APPLY_TIMEOUT_MS } from '@/config/controller.config.ts'
 
 const STATUS_TIMEOUT_MS = 2_000
@@ -73,10 +74,27 @@ export async function applyProxyRuntimeConfiguration(
     snapshot: ProxyRuntimeSnapshot,
     timeoutMs = CONTROLLER_APPLY_TIMEOUT_MS,
 ): Promise<ProxyRuntimeApplyResponse | null> {
-    const body = JSON.stringify(snapshot)
-    if (Buffer.byteLength(body) > MAX_RUNTIME_PAYLOAD_BYTES || timeoutMs <= 0) return null
+    const result = await applyProxyRuntimeConfigurationResult(snapshot, timeoutMs)
+    return result.ok ? result.value : null
+}
 
-    const payload = await controllerRequest('/internal/v1/proxy/config', {
+export async function applyProxyRuntimeConfigurationResult(
+    snapshot: ProxyRuntimeSnapshot,
+    timeoutMs = CONTROLLER_APPLY_TIMEOUT_MS,
+): Promise<ProxyRuntimeApplyResult> {
+    const body = JSON.stringify(snapshot)
+    if (Buffer.byteLength(body) > MAX_RUNTIME_PAYLOAD_BYTES)
+        return {
+            ok: false,
+            kind: 'configuration',
+            status: null,
+            code: 'invalid_configuration',
+            retryable: false,
+        }
+    if (timeoutMs <= 0)
+        return { ok: false, kind: 'configuration', status: null, code: null, retryable: true }
+
+    const response = await controllerRequestResult('/internal/v1/proxy/config', {
         timeoutMs: Math.min(timeoutMs, CONTROLLER_APPLY_TIMEOUT_MS),
         privileged: true,
         confidential: snapshot.proxyHosts.some(
@@ -84,8 +102,29 @@ export async function applyProxyRuntimeConfiguration(
         ),
         body,
     })
-    const result = applySchema.safeParse(payload)
-    return result.success && result.data.activeRevision === snapshot.revision ? result.data : null
+    if (!response.ok) {
+        const codes = [
+            'busy',
+            'runtime_unavailable',
+            'apply_failed',
+            'invalid_configuration',
+            'validation_failed',
+            'unauthorized',
+            'not_found',
+        ]
+        const code = response.code !== null && codes.includes(response.code) ? response.code : null
+        // Only a rejected desired snapshot is stable across retries. Credentials,
+        // controller endpoints and their configuration can recover independently.
+        const rejectedSnapshot =
+            response.kind === 'http' &&
+            (response.status === 400 || response.status === 413 || response.status === 422) &&
+            (code === 'invalid_configuration' || code === 'validation_failed')
+        return { ...response, code, retryable: !rejectedSnapshot }
+    }
+    const result = applySchema.safeParse(response.payload)
+    return result.success && result.data.activeRevision === snapshot.revision
+        ? { ok: true, value: result.data }
+        : { ok: false, kind: 'invalid_response', status: 200, code: null, retryable: true }
 }
 
 export async function getActiveProxyConfiguration(): Promise<ProxyConfigSource | null> {

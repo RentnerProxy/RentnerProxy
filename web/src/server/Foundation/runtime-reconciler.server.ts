@@ -24,6 +24,7 @@ export function createRuntimeReconciler<T>(
     let driftTimer: ReturnType<typeof setInterval> | null = null
     let wakeResolver: (() => void) | null = null
     let publicFlight: Promise<ProxyRuntimeMutationStatus> | null = null
+    let rejectedRevision: string | null = null
     const waiters = new Set<RuntimeReconcileWaiter>()
 
     function wake(): void {
@@ -71,9 +72,36 @@ export function createRuntimeReconciler<T>(
             try {
                 const snapshot = await dependencies.load()
                 if (stopped) break
+                if (rejectedRevision === dependencies.revision(snapshot)) {
+                    completed = target
+                    resolveWaiters('pending')
+                    continue
+                }
                 const applied = await dependencies.apply(snapshot)
                 if (stopped) break
+                if (typeof applied !== 'boolean') {
+                    // Only bounded symbolic diagnostics cross into logs; never include response bodies.
+                    const code = /^[a-z][a-z0-9_]{0,63}$/u.test(applied.code)
+                        ? applied.code
+                        : 'apply_failed'
+                    console.warn(`[${options.name}] reconcile rejected`, {
+                        code,
+                        status: applied.status,
+                        retryable: applied.retryable,
+                    })
+                    resolveWaiters('pending')
+                    if (!applied.retryable) {
+                        rejectedRevision = dependencies.revision(snapshot)
+                        completed = target
+                        retryDelay = INITIAL_RETRY_DELAY_MS
+                        continue
+                    }
+                    await waitForWakeOrDelay(retryDelay)
+                    retryDelay = Math.min(retryDelay * 2, MAX_RETRY_DELAY_MS)
+                    continue
+                }
                 if (!applied) throw new Error('apply_failed')
+                rejectedRevision = null
                 const latest = await dependencies.load()
                 if (stopped) break
                 if (
@@ -106,6 +134,7 @@ export function createRuntimeReconciler<T>(
 
     function reconcile(): Promise<ProxyRuntimeMutationStatus> {
         if (stopped || dependencies.enabled === false) return Promise.resolve('pending')
+        rejectedRevision = null
         enqueue()
         if (publicFlight) return publicFlight
         const target = requested

@@ -18,7 +18,7 @@ mod shutdown_tests;
 
 impl ProxyRuntime {
     /// Serializes startup and records an unavailable state when ownership or initialization cannot be proven.
-    pub(crate) async fn initialize(&self) {
+    pub(crate) async fn initialize(self: &Arc<Self>) {
         let _guard = self.apply_lock.lock().await;
         if let Err(error) = self.initialize_locked().await {
             self.mark_unavailable().await;
@@ -27,18 +27,23 @@ impl ProxyRuntime {
     }
 
     /// Chooses initial-start or recovery semantics before restoring persisted proxy state.
-    pub(super) async fn initialize_locked(&self) -> Result<(), RuntimeError> {
+    pub(super) async fn initialize_locked(self: &Arc<Self>) -> Result<(), RuntimeError> {
         let recovering = self.initialization_started.swap(true, Ordering::SeqCst);
         self.initialize_with_restart_budget(recovering).await
     }
 
     /// Validates state, claims the engine, and starts the restored or baseline configuration within the restart budget.
-    async fn initialize_with_restart_budget(&self, recovering: bool) -> Result<(), RuntimeError> {
+    async fn initialize_with_restart_budget(
+        self: &Arc<Self>,
+        recovering: bool,
+    ) -> Result<(), RuntimeError> {
         self.initialization_started.store(true, Ordering::SeqCst);
         if self.stopping.load(Ordering::SeqCst) {
             return Err(RuntimeError::Unavailable);
         }
-        prepare_state_dir(&self.settings.state_dir).map_err(|_| RuntimeError::Unavailable)?;
+        self.storage(|runtime| prepare_state_dir(&runtime.settings.state_dir))
+            .await?
+            .map_err(|_| RuntimeError::Unavailable)?;
         if let Some(engine) = &self.engine
             && let Err(error) = self.run_stage(engine.claim_ownership()).await
         {
@@ -47,63 +52,29 @@ impl ProxyRuntime {
             }
             return Err(RuntimeError::Unavailable);
         }
-        let caddy = state_dir(&self.settings.state_dir)
-            .and_then(|dir| dir.ensure_dir("caddy"))
-            .map_err(|_| RuntimeError::Unavailable)?;
-        caddy
-            .ensure_dir("data")
-            .map_err(|_| RuntimeError::Unavailable)?;
-        let logs = state_dir(&self.settings.state_dir)
-            .and_then(|dir| dir.ensure_dir("logs"))
-            .map_err(|_| RuntimeError::Unavailable)?;
-        match std::fs::symlink_metadata(logs.path().join("access.log")) {
-            Ok(_) => {
-                logs.open_file("access.log")
+        self.storage(|runtime| runtime.prepare_engine_directories())
+            .await??;
+        self.storage_async(|runtime| async move {
+            if runtime.certificate_store.readiness().await != CertificateStoreReadiness::Ready {
+                runtime
+                    .certificate_store
+                    .initialize()
+                    .await
                     .map_err(|_| RuntimeError::Unavailable)?;
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return Err(RuntimeError::Unavailable),
-        }
-        let autosave_dir = caddy
-            .ensure_dir("config")
-            .and_then(|dir| dir.ensure_dir("caddy"))
-            .map_err(|_| RuntimeError::Unavailable)?;
-        let autosave_path = autosave_dir
-            .child_path("autosave.json")
-            .map_err(|_| RuntimeError::Unavailable)?;
-        match std::fs::symlink_metadata(autosave_path) {
-            Ok(_) => {
-                let file = autosave_dir
-                    .open_file("autosave.json")
-                    .map_err(|_| RuntimeError::Unavailable)?;
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    file.set_permissions(std::fs::Permissions::from_mode(0o600))
-                        .map_err(|_| RuntimeError::Unavailable)?;
-                }
-                #[cfg(not(unix))]
-                let _ = file;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return Err(RuntimeError::Unavailable),
-        }
-        if self.certificate_store.readiness().await != CertificateStoreReadiness::Ready {
-            self.certificate_store
+            runtime
+                .trusted_ca_store
                 .initialize()
-                .await
-                .map_err(|_| RuntimeError::Unavailable)?;
-        }
-        self.trusted_ca_store
-            .initialize()
-            .map_err(|_| RuntimeError::Unavailable)?;
+                .map_err(|_| RuntimeError::Unavailable)
+        })
+        .await??;
         self.initialize_crowdsec_locked().await;
         let provider = self.active_crowdsec_provider().await;
         let crowdsec = provider.render_settings();
         let baseline =
             render_config_with_crowdsec(None, &self.settings.render_settings(), crowdsec.as_ref())
                 .map_err(|_| RuntimeError::ApplyFailed)?;
-        let restored = self.restore_active_configuration();
+        let restored = self.restore_active_configuration().await;
         let restored = if let Some(configuration) = restored {
             self.render_proxy_config_for_apply(&configuration, None, RenderPurpose::Recovery)
                 .await
@@ -157,20 +128,67 @@ impl ProxyRuntime {
             fallback.map_err(|_| RuntimeError::Unavailable)?;
             (None, baseline)
         };
-        let host_sources = configuration
-            .as_ref()
-            .map(|config| self.render_active_host_sources(config))
-            .transpose()?
-            .unwrap_or_default();
+        let host_sources = match configuration.as_ref() {
+            Some(config) => self.render_active_host_sources(config).await?,
+            None => Default::default(),
+        };
+        let last_apply_at = self
+            .storage(|runtime| read_trimmed(&runtime.settings.state_dir.join(LAST_APPLY_FILE)))
+            .await?;
         let mut state = self.state.lock().await;
         state.active_revision = configuration.as_ref().map(|config| config.revision.clone());
-        state.last_apply_at = read_trimmed(&self.settings.state_dir.join(LAST_APPLY_FILE));
+        state.last_apply_at = last_apply_at;
         state.active_json = json;
         state.host_sources = host_sources;
         state.initialized = true;
         state.engine_available = true;
         drop(state);
         *self.active_configuration.lock().await = configuration;
+        Ok(())
+    }
+
+    fn prepare_engine_directories(&self) -> Result<(), RuntimeError> {
+        let caddy = state_dir(&self.settings.state_dir)
+            .and_then(|dir| dir.ensure_dir("caddy"))
+            .map_err(|_| RuntimeError::Unavailable)?;
+        caddy
+            .ensure_dir("data")
+            .map_err(|_| RuntimeError::Unavailable)?;
+        let logs = state_dir(&self.settings.state_dir)
+            .and_then(|dir| dir.ensure_dir("logs"))
+            .map_err(|_| RuntimeError::Unavailable)?;
+        match std::fs::symlink_metadata(logs.path().join("access.log")) {
+            Ok(_) => {
+                logs.open_file("access.log")
+                    .map_err(|_| RuntimeError::Unavailable)?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(RuntimeError::Unavailable),
+        }
+        let autosave_dir = caddy
+            .ensure_dir("config")
+            .and_then(|dir| dir.ensure_dir("caddy"))
+            .map_err(|_| RuntimeError::Unavailable)?;
+        let autosave_path = autosave_dir
+            .child_path("autosave.json")
+            .map_err(|_| RuntimeError::Unavailable)?;
+        match std::fs::symlink_metadata(autosave_path) {
+            Ok(_) => {
+                let file = autosave_dir
+                    .open_file("autosave.json")
+                    .map_err(|_| RuntimeError::Unavailable)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                        .map_err(|_| RuntimeError::Unavailable)?;
+                }
+                #[cfg(not(unix))]
+                let _ = file;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(RuntimeError::Unavailable),
+        }
         Ok(())
     }
 
@@ -208,7 +226,7 @@ impl ProxyRuntime {
     }
 
     /// Checks child ownership and active-revision serviceability before deciding whether recovery is needed.
-    pub(crate) async fn recover(&self) -> Result<(), RuntimeError> {
+    pub(crate) async fn recover(self: &Arc<Self>) -> Result<(), RuntimeError> {
         let Some(engine) = &self.engine else {
             return Err(RuntimeError::Unavailable);
         };

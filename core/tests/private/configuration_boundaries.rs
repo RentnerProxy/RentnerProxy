@@ -16,12 +16,12 @@ fn rollback_storage_failures_keep_recovery_fenced_until_repaired() {
         .lock()
         .unwrap()
         .push_back(crate::runtime::RecoveryWriteFault::BeforeFenceWrite);
-    runtime.restore_recovery_configuration(None);
+    runtime.restore_recovery_configuration_blocking(None);
     assert_eq!(std::fs::read(&snapshot).unwrap(), b"retain snapshot");
     assert!(!root.join(ACTIVE_CONFIGURATION_FENCE).exists());
     std::fs::remove_file(&snapshot).unwrap();
     std::fs::create_dir(&snapshot).unwrap();
-    runtime.restore_recovery_configuration(None);
+    runtime.restore_recovery_configuration_blocking(None);
     assert!(runtime.configuration_activation_is_fenced());
     assert!(snapshot.is_dir());
     std::fs::remove_dir(&snapshot).unwrap();
@@ -30,9 +30,9 @@ fn rollback_storage_failures_keep_recovery_fenced_until_repaired() {
         .lock()
         .unwrap()
         .push_back(crate::runtime::RecoveryWriteFault::BeforeFenceRemoval);
-    runtime.restore_recovery_configuration(None);
+    runtime.restore_recovery_configuration_blocking(None);
     assert!(runtime.configuration_activation_is_fenced());
-    runtime.restore_recovery_configuration(None);
+    runtime.restore_recovery_configuration_blocking(None);
     assert!(!runtime.configuration_activation_is_fenced());
     assert!(!snapshot.exists());
     assert!(!root.join(ACTIVE_CONFIGURATION_AUTHORITY_FILE).exists());

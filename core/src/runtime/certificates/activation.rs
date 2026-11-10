@@ -9,6 +9,10 @@ use super::{
     CertificateStatus, CertificateStore, OffsetDateTime, Rfc3339, StagedCertificate,
 };
 
+#[cfg(test)]
+#[path = "../../../tests/private/certificate_candidate_cancellation.rs"]
+mod cancellation_tests;
+
 impl CertificateStore {
     pub(crate) async fn pending_candidate_ids(&self) -> Result<Vec<String>, CertificateError> {
         let index = self.index.lock().await;
