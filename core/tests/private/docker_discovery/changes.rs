@@ -183,3 +183,77 @@ async fn invalid_watch_cursors_fail_before_reading_persistent_state() {
         ));
     }
 }
+
+#[tokio::test]
+async fn waiting_readers_and_publishers_cannot_replace_a_newer_ready_inventory() {
+    for publishing in [false, true] {
+        let root = directory();
+        let discovery = Discovery::new(root.clone());
+        let first = discovery
+            .save(save(Some("http://first:2375".into()), true, 0))
+            .await
+            .unwrap();
+        discovery
+            .publish(
+                &first.configuration,
+                Some(vec![candidate(container('a'))]),
+                None,
+            )
+            .await;
+        let mut snapshot = discovery.snapshot.lock().await;
+        let io = discovery.io.lock().await;
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let instance = discovery.clone();
+        let waiting = tokio::spawn(async move {
+            entered.send(()).unwrap();
+            if publishing {
+                instance
+                    .publish(
+                        &first.configuration,
+                        Some(vec![candidate(container('a'))]),
+                        None,
+                    )
+                    .await;
+                Ok(None)
+            } else {
+                instance.status().await.map(Some)
+            }
+        });
+        started.await.unwrap();
+        drop(io);
+        // FIFO I/O admission lets any premature document read finish while snapshot
+        // remains locked. Readers that correctly lock snapshot first have not read yet.
+        drop(discovery.io.lock().await);
+        let replacement = discovery
+            .save(save(Some("http://replacement:2375".into()), true, 1))
+            .await
+            .unwrap();
+        let mut ready = models::Snapshot::for_configuration(replacement.configuration, false);
+        ready.status = Status::Ready;
+        ready.stale = false;
+        ready.candidates = vec![candidate(container('b'))];
+        // Model a completed newer inventory publication before admitting the waiter.
+        *snapshot = ready.clone();
+        discovery.advance_generation();
+        let cursor = discovery.changes.borrow().clone().unwrap();
+        drop(snapshot);
+        let returned = tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        if let Some(returned) = returned {
+            assert!(
+                returned == ready,
+                "a waiting reader must return the newest ready inventory"
+            );
+        }
+        let current = discovery.watch(Watch::default()).await.unwrap();
+        assert!(
+            current.snapshot.as_ref() == Some(&ready),
+            "a waiting publisher must not restore its old endpoint inventory"
+        );
+        assert_eq!(current.cursor, cursor);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
