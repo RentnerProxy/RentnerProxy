@@ -165,6 +165,55 @@ test('legacy channels share no fabricated owner; stalled SMTP leaves a webhook s
     expect(state.deliveries.filter((item) => item.status === 'inflight')).toHaveLength(4)
 })
 
+test.each(['channel', 'owner', 'transport', 'category'] as const)(
+    '%s rate limits bind independently of the global budget and reset at the window boundary',
+    (dimension) => {
+        const base = configuration(dimension === 'channel' ? 1 : 16)
+        const config: NotificationEngineConfiguration = {
+            ...base,
+            channels: base.channels.map((channel, index) =>
+                Object.assign({}, channel, {
+                    ownerUserId:
+                        dimension === 'owner'
+                            ? base.channels[0]!.ownerUserId
+                            : `00000000-0000-4000-8002-${String(index).padStart(12, '0')}`,
+                    kind: dimension === 'transport' ? ('email' as const) : channel.kind,
+                    events: dimension === 'category' ? ['ddns' as const] : channel.events,
+                }),
+            ),
+        }
+        const limit =
+            dimension === 'channel'
+                ? limits.channelRate
+                : dimension === 'owner'
+                  ? limits.ownerRate
+                  : dimension === 'transport'
+                    ? limits.transportRate
+                    : limits.categoryRate
+        let state = observeNotificationSignals(
+            createNotificationState(),
+            config,
+            observations(32, 1000),
+            1000,
+            id,
+        )
+        for (let index = 0; index < limit; index++) {
+            const claimed = claimNotificationDelivery(state, config, 1000, id)
+            expect(claimed.delivery).not.toBeNull()
+            state = finishNotificationDelivery(
+                claimed.state,
+                config,
+                claimed.delivery!.leaseToken,
+                { success: true },
+                1000,
+            )
+        }
+        expect(claimNotificationDelivery(state, config, 1999, id).delivery).toBeNull()
+        expect(nextNotificationDeliveryAt(state, config, 1000)).toBe(2000)
+        expect(claimNotificationDelivery(state, config, 2000, id).delivery).not.toBeNull()
+    },
+)
+
 test('a saturated storm defers admission fairly and delivers every failure and recovery once despite history eviction', () => {
     const config = configuration(8)
     let now = 1000

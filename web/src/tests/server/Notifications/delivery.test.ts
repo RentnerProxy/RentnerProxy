@@ -17,6 +17,7 @@ describe('notification delivery', () => {
         { error: { responseCode: 450 }, retryable: true },
         { error: { responseCode: 550 }, retryable: false },
         { error: { code: 'EAUTH' }, retryable: false },
+        { error: { responseCode: 454, code: 'EAUTH' }, retryable: true },
         { error: { code: 'ETIMEDOUT' }, retryable: true },
     ])(
         'SMTP command rejection and authentication failures have explicit retry classification',

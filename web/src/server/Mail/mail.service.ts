@@ -23,6 +23,18 @@ import type { MailTemplate } from './Types/templates.types.ts'
 
 let mailClient: MailClient | null = null
 
+function retryableSmtpFailure(error: unknown): boolean {
+    if (error === null || typeof error !== 'object') return true
+    if (
+        'responseCode' in error &&
+        typeof error.responseCode === 'number' &&
+        error.responseCode >= 400 &&
+        error.responseCode < 600
+    )
+        return error.responseCode < 500
+    return !('code' in error && error.code === 'EAUTH')
+}
+
 export function createNotificationMailClient(
     configuration: SmtpConfiguration,
 ): NotificationMailClient {
@@ -185,15 +197,7 @@ export async function sendNotificationEmailService(
                         finish({
                             success: false,
                             code: 'smtp_unavailable',
-                            retryable: !(
-                                error !== null &&
-                                typeof error === 'object' &&
-                                (('responseCode' in error &&
-                                    typeof error.responseCode === 'number' &&
-                                    error.responseCode >= 500 &&
-                                    error.responseCode < 600) ||
-                                    ('code' in error && error.code === 'EAUTH'))
-                            ),
+                            retryable: retryableSmtpFailure(error),
                         }),
                 )
         })
