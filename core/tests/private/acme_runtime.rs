@@ -378,3 +378,73 @@ async fn scheduled_retry_resumes_due_stored_attempt_and_keeps_its_operation_kind
     );
     assert!(failed.next_attempt_at.is_some());
 }
+
+async fn blocked_preparation_survives_shutdown(disconnect: bool) {
+    let runtime = runtime().await;
+    fail_account_locally(&runtime).await;
+    let (entered, started) = tokio::sync::oneshot::channel();
+    let (release, blocked) = std::sync::mpsc::channel();
+    let storage_runtime = Arc::clone(&runtime);
+    let storage = tokio::spawn(async move {
+        storage_runtime
+            .storage(move |_| {
+                let _ = entered.send(());
+                blocked.recv().unwrap();
+            })
+            .await
+            .unwrap();
+    });
+    started.await.unwrap();
+
+    // Poll admission while the complete local preparation is unable to enter
+    // storage. Shutdown must own that wait even if its HTTP caller disappears.
+    let request_runtime = Arc::clone(&runtime);
+    let mut caller =
+        Box::pin(request_runtime.start_acme_issue(ID.to_owned(), request(), ChallengeStore::new()));
+    tokio::select! {
+        result = &mut caller => panic!("preparation completed while storage was blocked: {result:?}"),
+        _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+    }
+    runtime.begin_shutdown();
+    assert_eq!(
+        runtime
+            .start_acme_issue(ID.to_owned(), request(), ChallengeStore::new())
+            .await,
+        Err(CertificateError::OperationInProgress),
+    );
+    let caller = if disconnect {
+        drop(caller);
+        None
+    } else {
+        Some(caller)
+    };
+    release.send(()).unwrap();
+    storage.await.unwrap();
+    if let Some(caller) = caller {
+        assert_eq!(
+            caller.await.unwrap().operation,
+            CertificateOperation::Issuing
+        );
+    }
+    runtime
+        .background_jobs
+        .stop_until(tokio::time::Instant::now() + Duration::from_secs(3))
+        .await;
+    let metadata = runtime.certificate_store.get(ID).await.unwrap();
+    assert_eq!(metadata.operation, CertificateOperation::Idle);
+    assert_eq!(metadata.status, CertificateStatus::Failed);
+    assert_eq!(
+        metadata.last_error_code.as_deref(),
+        Some(CertificateError::StoreUnavailable.code())
+    );
+}
+
+#[tokio::test]
+async fn shutdown_drains_an_issue_admitted_before_blocked_preparation() {
+    blocked_preparation_survives_shutdown(false).await;
+}
+
+#[tokio::test]
+async fn disconnected_issue_caller_does_not_abandon_blocked_preparation() {
+    blocked_preparation_survives_shutdown(true).await;
+}

@@ -62,52 +62,48 @@ impl ProxyRuntime {
         id: String,
         action: ManualDnsActionRequest,
     ) -> Result<CertificateMetadata, CertificateError> {
-        if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(CertificateError::OperationInProgress);
-        }
         let permit = ACME_JOBS
             .try_acquire()
             .map_err(|_| CertificateError::OperationInProgress)?;
-        let Some((metadata, request, order)) = self
-            .certificate_store
-            .begin_manual_dns_continuation(&id, &action)
-            .await?
-        else {
-            return self.certificate_store.get(&id).await;
-        };
-        let runtime = Arc::clone(self);
-        tokio::spawn(async move {
+        self.owned_acme_job("acme_manual_dns_continue", move |runtime, response| async move {
             let _permit = permit;
-            runtime.resume_manual_dns_inner(id, request, order).await;
-        });
-        Ok(metadata)
+            match acme_store!(runtime; [id, action]; store => store.begin_manual_dns_continuation(&id, &action)) {
+                Ok(Some((metadata, request, order))) => {
+                    let _ = response.send(Ok(metadata));
+                    runtime.resume_manual_dns_inner(id, request, order).await;
+                }
+                Ok(None) => { let _ = response.send(runtime.certificate_store.get(&id).await); }
+                Err(error) => { let _ = response.send(Err(error)); }
+            }
+        }).await
     }
 
     pub(crate) async fn recover_manual_dns(self: &Arc<Self>) {
         if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
             return;
         }
-        let _ = self.certificate_store.expire_manual_dns_orders().await;
+        let _ = acme_store!(self; []; store => store.expire_manual_dns_orders());
         let Ok(ids) = self.certificate_store.pending_manual_dns_resume_ids().await else {
             return;
         };
         for id in ids {
-            if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
-                break;
-            }
             let Ok(permit) = ACME_JOBS.try_acquire() else {
                 break;
             };
-            let Ok(Some((request, order))) =
-                self.certificate_store.begin_manual_dns_recovery(&id).await
-            else {
-                continue;
-            };
             let runtime = Arc::clone(self);
-            tokio::spawn(async move {
-                let _permit = permit;
-                runtime.resume_manual_dns_inner(id, request, order).await;
-            });
+            if !self
+                .background_jobs
+                .spawn("acme_manual_dns_recovery", async move {
+                    let _permit = permit;
+                    if let Ok(Some((request, order))) =
+                        acme_store!(runtime; [id]; store => store.begin_manual_dns_recovery(&id))
+                    {
+                        runtime.resume_manual_dns_inner(id, request, order).await;
+                    }
+                })
+            {
+                break;
+            }
         }
     }
 
@@ -138,29 +134,20 @@ impl ProxyRuntime {
         match result {
             Ok(ManualOutcome::Paused) => {}
             Ok(ManualOutcome::Issued(certificate, key)) => {
-                match self
-                    .certificate_store
-                    .stage_acme(id, request, certificate, key)
-                    .await
+                match acme_store!(self; [id, request, certificate, key]; store => store.stage_acme(&id, &request, certificate, key))
                 {
                     Ok(staged) => {
                         let _ = self.commit_or_reapply_staged_certificate(staged).await;
                     }
                     Err(CertificateError::StoreUnavailable) => {
-                        let _ = self
-                            .certificate_store
-                            .release_manual_dns_for_recovery(
-                                id,
-                                operation_id,
-                                CertificateError::StoreUnavailable,
-                            )
-                            .await;
+                        let _ = acme_store!(self; [id, operation_id]; store => store.release_manual_dns_for_recovery(
+                            &id,
+                            &operation_id,
+                            CertificateError::StoreUnavailable,
+                        ));
                     }
                     Err(error) => {
-                        let _ = self
-                            .certificate_store
-                            .finish_manual_dns_failed(id, operation_id, error)
-                            .await;
+                        let _ = acme_store!(self; [id, operation_id, error]; store => store.finish_manual_dns_failed(&id, &operation_id, error));
                     }
                 }
             }
@@ -175,7 +162,8 @@ impl ProxyRuntime {
                 {
                     return;
                 }
-                let saved = match self.certificate_store.load_manual_dns_order(id).await {
+                let saved = match acme_store!(self; [id]; store => store.load_manual_dns_order(&id))
+                {
                     Ok(saved) => saved,
                     Err(_) => return,
                 };
@@ -191,7 +179,7 @@ impl ProxyRuntime {
                         CertificateError::AcmeFailed | CertificateError::StoreUnavailable
                     )
                 {
-                    self.certificate_store.finish_failed(id, error).await;
+                    acme_store!(@unit self; [id, error]; store => store.finish_failed(&id, error));
                     return;
                 }
                 let recoverable = !matches!(
@@ -206,15 +194,9 @@ impl ProxyRuntime {
                     )
                 });
                 if recoverable {
-                    let _ = self
-                        .certificate_store
-                        .release_manual_dns_for_recovery(id, operation_id, error)
-                        .await;
+                    let _ = acme_store!(self; [id, operation_id, error]; store => store.release_manual_dns_for_recovery(&id, &operation_id, error));
                 } else {
-                    let _ = self
-                        .certificate_store
-                        .finish_manual_dns_failed(id, operation_id, error)
-                        .await;
+                    let _ = acme_store!(self; [id, operation_id, error]; store => store.finish_manual_dns_failed(&id, &operation_id, error));
                 }
             }
         }
@@ -226,9 +208,7 @@ impl ProxyRuntime {
         request: &CertificateIssueRequest,
         operation_id: &str,
     ) -> Result<ManualOutcome, CertificateError> {
-        self.certificate_store
-            .record_operation_stage(id, CertificateOperationStage::CreatingOrder)
-            .await?;
+        acme_store!(self; [id]; store => store.record_operation_stage(&id, CertificateOperationStage::CreatingOrder))?;
         let observer = AcmeResponseObserver::default();
         let (account, identity, directory) = timeout(
             ACCOUNT_TIMEOUT,
@@ -251,7 +231,7 @@ impl ProxyRuntime {
     }
 
     async fn prepare_manual_dns_with_account(
-        &self,
+        self: &Arc<Self>,
         id: &str,
         request: &CertificateIssueRequest,
         operation_id: &str,
@@ -292,9 +272,7 @@ impl ProxyRuntime {
             last_checked_at: None,
             last_error_code: None,
         };
-        self.certificate_store
-            .store_manual_dns_order(id, saved.clone())
-            .await?;
+        acme_store!(self; [id, saved]; store => store.store_manual_dns_order(&id, saved))?;
         saved.records =
             collect_records(&mut order, request, &saved.expires_at, &observer, None).await?;
         for record in &saved.records {
@@ -302,9 +280,7 @@ impl ProxyRuntime {
         }
         if !saved.records.is_empty() {
             saved.phase = ManualDnsPhase::AwaitingInput;
-            self.certificate_store
-                .park_manual_dns_order(id, saved)
-                .await?;
+            acme_store!(self; [id, saved]; store => store.park_manual_dns_order(&id, saved))?;
             return Ok(ManualOutcome::Paused);
         }
         self.finish_manual_order(id, request, &mut order, saved)
@@ -340,7 +316,7 @@ impl ProxyRuntime {
     }
 
     async fn resume_manual_dns_with_account(
-        &self,
+        self: &Arc<Self>,
         id: &str,
         request: &CertificateIssueRequest,
         mut saved: ManualDnsOrder,
@@ -381,9 +357,7 @@ impl ProxyRuntime {
                 saved.expires_at = earlier_expiry(&saved.expires_at, &record.expires_at)?;
             }
             saved.phase = ManualDnsPhase::AwaitingInput;
-            self.certificate_store
-                .park_manual_dns_order(id, saved)
-                .await?;
+            acme_store!(self; [id, saved]; store => store.park_manual_dns_order(&id, saved))?;
             return Ok(ManualOutcome::Paused);
         }
         for record in &records {
@@ -405,7 +379,7 @@ impl ProxyRuntime {
     }
 
     async fn validate_manual_dns_check(
-        &self,
+        self: &Arc<Self>,
         id: &str,
         order: &mut Order,
         saved: &mut ManualDnsOrder,
@@ -424,17 +398,13 @@ impl ProxyRuntime {
         {
             saved.last_error_code = Some(error.code().to_owned());
             saved.phase = ManualDnsPhase::AwaitingInput;
-            self.certificate_store
-                .park_manual_dns_order(id, saved.clone())
-                .await?;
+            acme_store!(self; [id, saved]; store => store.park_manual_dns_order(&id, saved))?;
             return Ok(true);
         }
         checked?;
         saved.last_error_code = None;
         saved.phase = ManualDnsPhase::Validating;
-        self.certificate_store
-            .store_manual_dns_order(id, saved.clone())
-            .await?;
+        acme_store!(self; [id, saved]; store => store.store_manual_dns_order(&id, saved))?;
         let mut authorizations = order.authorizations();
         while let Some(authorization) = authorizations.next().await {
             let mut authorization = authorization.map_err(|_| CertificateError::AcmeFailed)?;
@@ -463,7 +433,7 @@ impl ProxyRuntime {
     }
 
     async fn finish_manual_order(
-        &self,
+        self: &Arc<Self>,
         id: &str,
         request: &CertificateIssueRequest,
         order: &mut Order,
@@ -471,9 +441,7 @@ impl ProxyRuntime {
     ) -> Result<ManualOutcome, CertificateError> {
         match order.state().status {
             OrderStatus::Pending => {
-                self.certificate_store
-                    .record_operation_stage(id, CertificateOperationStage::WaitingForValidation)
-                    .await?;
+                acme_store!(self; [id]; store => store.record_operation_stage(&id, CertificateOperationStage::WaitingForValidation))?;
                 if order
                     .poll_ready(&RetryPolicy::default())
                     .await
@@ -490,12 +458,8 @@ impl ProxyRuntime {
             ensure_saved_csr(&mut saved, &request.domains)?;
             saved.phase = ManualDnsPhase::Finalizing;
             // Persist both key and exact CSR before the first finalization request.
-            self.certificate_store
-                .store_manual_dns_order(id, saved.clone())
-                .await?;
-            self.certificate_store
-                .record_operation_stage(id, CertificateOperationStage::Finalizing)
-                .await?;
+            acme_store!(self; [id, saved]; store => store.store_manual_dns_order(&id, saved))?;
+            acme_store!(self; [id]; store => store.record_operation_stage(&id, CertificateOperationStage::Finalizing))?;
             order
                 .finalize_csr(
                     saved

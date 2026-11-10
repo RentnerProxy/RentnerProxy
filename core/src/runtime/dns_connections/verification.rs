@@ -85,19 +85,19 @@ fn provider_error(error: CertificateError) -> Error {
 }
 
 impl Store {
-    fn check_provider(&self, entry: &Entry, zone: &str) -> Result<DnsProvider, Error> {
+    async fn check_provider(&self, entry: &Entry, zone: &str) -> Result<DnsProvider, Error> {
         let config = match super::resolve_provider(None, Some(entry))? {
             super::ProviderId::Hetzner => DnsProviderConfig::Hetzner {
                 zone_id: zone.to_owned(),
-                api_token: self.decrypt(entry)?,
+                api_token: self.decrypt(entry).await?,
             },
             super::ProviderId::Desec => DnsProviderConfig::Desec {
                 zone_id: zone.to_owned(),
-                api_token: self.decrypt(entry)?,
+                api_token: self.decrypt(entry).await?,
             },
             super::ProviderId::Cloudflare => DnsProviderConfig::Cloudflare {
                 zone_id: zone.to_owned(),
-                api_token: self.decrypt(entry)?,
+                api_token: self.decrypt(entry).await?,
             },
         };
         let endpoint = self.provider_endpoint(config.provider_id())?;
@@ -141,7 +141,7 @@ impl Store {
             error,
         };
         let metadata = entry.metadata.clone();
-        self.commit(&mut state, next)?;
+        self.commit(state, next).await?;
         Ok(metadata)
     }
 
@@ -158,12 +158,13 @@ impl Store {
         entry
             .pending_checks
             .retain(|check| check.zone_id != zone_id);
-        self.commit(&mut state, next)
+        self.commit(state, next).await
     }
 
     async fn cleanup_checks(&self, entry: &Entry) -> Result<(), Error> {
         for check in &entry.pending_checks {
-            self.check_provider(entry, &check.zone_id)?
+            self.check_provider(entry, &check.zone_id)
+                .await?
                 .cleanup_intents(std::slice::from_ref(&check.intent))
                 .await
                 .map_err(provider_error)?;
@@ -212,7 +213,7 @@ impl Store {
         let permitted = validation::permitted(
             provider,
             &self.provider_endpoint(provider)?,
-            &self.decrypt(&entry)?,
+            &self.decrypt(&entry).await?,
         )
         .await?;
         super::select(
@@ -269,11 +270,11 @@ impl Store {
                 .ok_or(Error::ConnectionNotFound)?;
             current.pending_checks = entry.pending_checks.clone();
             current.metadata.verification = Verification::default();
-            self.commit(&mut state, next)?;
+            self.commit(state, next).await?;
         }
         let mut first_error = None;
         for check in &entry.pending_checks {
-            let provider = self.check_provider(&entry, &check.zone_id)?;
+            let provider = self.check_provider(&entry, &check.zone_id).await?;
             let present = provider
                 .present(&check.intent)
                 .await
