@@ -47,7 +47,7 @@ struct Registry {
 pub(crate) struct Store {
     path: PathBuf,
     state: Arc<Mutex<Option<Registry>>>,
-    pub(crate) bindings: Mutex<()>,
+    pub(crate) bindings: Arc<Mutex<()>>,
     checks: Mutex<()>,
     key_io: Arc<Mutex<()>>,
     cleanup_cursor: std::sync::atomic::AtomicUsize,
@@ -65,7 +65,7 @@ impl Store {
         Self {
             path,
             state: Arc::new(Mutex::new(None)),
-            bindings: Mutex::new(()),
+            bindings: Arc::new(Mutex::new(())),
             checks: Mutex::new(()),
             key_io: Arc::new(Mutex::new(())),
             cleanup_cursor: std::sync::atomic::AtomicUsize::new(0),

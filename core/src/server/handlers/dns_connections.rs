@@ -10,14 +10,22 @@ use axum::{
     response::Response,
 };
 use serde::de::DeserializeOwned;
-use std::future::Future;
+use std::{future::Future, sync::Arc};
 
 async fn owned_binding_transaction(
+    bindings: Arc<tokio::sync::Mutex<()>>,
     transaction: impl Future<Output = Response> + Send + 'static,
 ) -> Response {
+    // Waiting requests remain cancellable; only an admitted transaction detaches.
+    let binding = bindings.lock_owned().await;
     // Reconciliation may continue in a storage worker after its waiter leaves.
     // Keep the binding guard alive through the associated mutation as well.
-    tokio::spawn(transaction).await.unwrap_or_else(|failure| {
+    tokio::spawn(async move {
+        let _binding = binding;
+        transaction.await
+    })
+    .await
+    .unwrap_or_else(|failure| {
         tracing::warn!(
             cancelled = failure.is_cancelled(),
             panicked = failure.is_panic(),
@@ -54,11 +62,14 @@ pub(in crate::server) async fn providers() -> Response {
 }
 
 pub(in crate::server) async fn list(state: AppState) -> Response {
-    owned_binding_transaction(async move { list_inner(state).await }).await
+    owned_binding_transaction(
+        Arc::clone(&state.runtime.dns_connections.bindings),
+        async move { list_inner(state).await },
+    )
+    .await
 }
 
 async fn list_inner(state: AppState) -> Response {
-    let _binding = state.runtime.dns_connections.bindings.lock().await;
     if let Err(e) = state.runtime.reconcile_provider_connections().await {
         return error(e);
     }
@@ -89,11 +100,14 @@ pub(in crate::server) async fn save(
         Ok(v) => v,
         Err(e) => return error(e),
     };
-    owned_binding_transaction(async move { save_inner(id, state, request).await }).await
+    owned_binding_transaction(
+        Arc::clone(&state.runtime.dns_connections.bindings),
+        async move { save_inner(id, state, request).await },
+    )
+    .await
 }
 
 async fn save_inner(id: String, state: AppState, request: SaveRequest) -> Response {
-    let _binding = state.runtime.dns_connections.bindings.lock().await;
     if let Err(e) = state.runtime.reconcile_provider_connections().await {
         return error(e);
     }
@@ -111,11 +125,14 @@ pub(in crate::server) async fn delete(
         Ok(v) => v,
         Err(e) => return error(e),
     };
-    owned_binding_transaction(async move { delete_inner(id, state, request).await }).await
+    owned_binding_transaction(
+        Arc::clone(&state.runtime.dns_connections.bindings),
+        async move { delete_inner(id, state, request).await },
+    )
+    .await
 }
 
 async fn delete_inner(id: String, state: AppState, request: DeleteRequest) -> Response {
-    let _binding = state.runtime.dns_connections.bindings.lock().await;
     if let Err(e) = state.runtime.reconcile_provider_connections().await {
         return error(e);
     }
@@ -145,13 +162,15 @@ pub(in crate::server) async fn verify(
         .await
     {
         Ok(connection) => {
-            owned_binding_transaction(async move {
-                let _binding = state.runtime.dns_connections.bindings.lock().await;
-                if let Err(e) = state.runtime.reconcile_provider_connections().await {
-                    return error(e);
-                }
-                no_store_json(connection)
-            })
+            owned_binding_transaction(
+                Arc::clone(&state.runtime.dns_connections.bindings),
+                async move {
+                    if let Err(e) = state.runtime.reconcile_provider_connections().await {
+                        return error(e);
+                    }
+                    no_store_json(connection)
+                },
+            )
             .await
         }
         Err(e) => error(e),

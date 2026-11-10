@@ -398,6 +398,96 @@ async fn cancelled_dns_list_keeps_binding_fenced_until_reconciliation_finishes()
     assert!(runtime.dns_connections.list().await.unwrap().is_empty());
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn cancelled_queued_dns_delete_drops_transaction_without_mutation() {
+    use crate::{
+        config::Config,
+        runtime::{ProxyRuntime, RuntimeSettings, dns::encryption, state::state_dir},
+        server::{AppState, app_with_state},
+    };
+    use axum::{body::Body, http::Request};
+    use std::{
+        future::{Future, poll_fn},
+        sync::Arc,
+        task::Poll,
+    };
+    use tower::ServiceExt;
+
+    let fixture = Fixture::new().await;
+    let secret = encryption::encrypt_bytes(
+        b"synthetic-unused-dns-token",
+        &format!("dns-connection:{ID}:v1"),
+        &[7; 32],
+    )
+    .unwrap();
+    let registry = serde_json::to_vec(&serde_json::json!({
+        "version": 1,
+        "connections": [{
+            "metadata": {
+                "id": ID, "provider": "cloudflare", "ownership": "instance",
+                "name": "Queued delete fixture", "createdByUserId": STALE,
+                "revision": 1,
+                "zones": [{"id": "a".repeat(32), "name": "example.com"}],
+                "references": [],
+                "createdAt": "2026-01-01T00:00:00Z",
+                "updatedAt": "2026-01-01T00:00:00Z"
+            },
+            "secret": secret
+        }]
+    }))
+    .unwrap();
+    state_dir(&fixture.directory)
+        .unwrap()
+        .atomic_write("dns-connections.json", &registry)
+        .unwrap();
+    let runtime = ProxyRuntime::new(RuntimeSettings::new(fixture.directory.clone(), 0), None);
+    runtime.certificate_store.initialize().await.unwrap();
+    assert_eq!(runtime.dns_connections.list().await.unwrap().len(), 1);
+    let token = "synthetic-queued-dns-delete-token";
+    let config = Config::from_values(None, Some(token), None, None, None, false).unwrap();
+    let router = app_with_state(AppState::new(Arc::clone(&runtime), config.controller_token));
+    let binding = runtime.dns_connections.bindings.lock().await;
+    let owners = Arc::strong_count(&runtime);
+    let mut caller = Box::pin(
+        router.clone().oneshot(
+            Request::delete(format!("/internal/v1/dns/connections/{ID}"))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(r#"{"expectedRevision":1}"#))
+                .unwrap(),
+        ),
+    );
+    poll_fn(|cx| {
+        assert!(caller.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    drop(caller);
+    // No detached task may retain the cancelled request while admission is held.
+    // This assertion also catches a task that has not yet been scheduled.
+    assert_eq!(Arc::strong_count(&runtime), owners);
+    drop(binding);
+    assert_eq!(runtime.dns_connections.list().await.unwrap()[0].revision, 1);
+    assert_eq!(
+        state_dir(&fixture.directory)
+            .unwrap()
+            .read_file("dns-connections.json", 1024 * 1024)
+            .unwrap(),
+        registry
+    );
+    // The same delete succeeds when its caller remains present for admission.
+    let response = router
+        .oneshot(
+            Request::delete(format!("/internal/v1/dns/connections/{ID}"))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(r#"{"expectedRevision":1}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+    assert!(runtime.dns_connections.list().await.unwrap().is_empty());
+}
+
 fn with_csr(mut order: ManualDnsOrder, domains: Vec<String>) -> ManualDnsOrder {
     let key = rcgen::KeyPair::generate().unwrap();
     let csr = rcgen::CertificateParams::new(domains)
