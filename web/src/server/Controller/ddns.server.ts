@@ -49,8 +49,14 @@ export function createDdnsController(
         return result
     }
     return {
-        async status() {
-            return decode(await request('/internal/v1/ddns/status', options), ddnsSnapshotSchema)
+        async status(signal?: AbortSignal) {
+            return decode(
+                await request('/internal/v1/ddns/status', {
+                    ...options,
+                    ...(signal ? { signal } : {}),
+                }),
+                ddnsSnapshotSchema,
+            )
         },
         async preview(input) {
             const result = decode(

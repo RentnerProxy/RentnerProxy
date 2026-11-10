@@ -3,6 +3,7 @@ import { createServer, type Server, type RequestListener } from 'node:http'
 import {
     deliverWebhookNotification,
     createWebhookSystemResolver,
+    notificationRetryAfterMs,
 } from '@/server/Notifications/webhook-delivery.ts'
 import { lookup } from 'node:dns/promises'
 import { getEventListeners } from 'node:events'
@@ -11,6 +12,16 @@ import { createServer as createTcpServer } from 'node:net'
 import { PAYLOAD } from './Types/transport-test.types.ts'
 
 const servers: Server[] = []
+
+test('Retry-After accepts delta seconds and HTTP dates within the declared one-hour cap', () => {
+    const now = Date.parse('2026-11-10T08:00:00Z')
+    expect(notificationRetryAfterMs('120', now)).toBe(120_000)
+    expect(notificationRetryAfterMs('Tue, 10 Nov 2026 08:01:00 GMT', now)).toBe(60_000)
+    expect(notificationRetryAfterMs('Tue, 10 Nov 2026 07:00:00 GMT', now)).toBe(0)
+    expect(notificationRetryAfterMs('99999999', now)).toBe(3_600_000)
+    expect(notificationRetryAfterMs('private receiver text', now)).toBeUndefined()
+    expect(notificationRetryAfterMs(['1', '2'], now)).toBeUndefined()
+})
 afterEach(() => {
     for (const server of servers.splice(0)) {
         server.closeAllConnections()
@@ -33,6 +44,26 @@ async function receiver(handler: RequestListener, bindAddress = '127.0.0.1') {
 }
 
 describe('bounded webhook delivery', () => {
+    test('a deduplicating receiver accepts a repeated event ID without a duplicate effect', async () => {
+        let attempts = 0
+        const accepted = new Set<string>()
+        const destination = await receiver((request, response) => {
+            attempts++
+            const key = request.headers['idempotency-key']
+            expect(key).toBe(PAYLOAD.id)
+            expect(request.headers['x-rentnerproxy-event-id']).toBe(key)
+            if (typeof key === 'string') accepted.add(key)
+            request.resume()
+            response.writeHead(204)
+            response.end()
+        })
+        await Promise.all([
+            deliverWebhookNotification(destination, PAYLOAD),
+            deliverWebhookNotification(destination, PAYLOAD),
+        ])
+        expect(attempts).toBe(2)
+        expect(accepted.size).toBe(1)
+    })
     test('default system lookup reaches a hosts-file localhost receiver', async () => {
         const addresses = await lookup('localhost', { all: true, verbatim: true })
         expect(addresses.length).toBeGreaterThan(0)

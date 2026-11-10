@@ -1,6 +1,9 @@
 import '@tanstack/react-start/server-only'
 
-import { publishApplicationChange } from '@/server/WebSockets/applicationChanges.ts'
+import {
+    publishApplicationChange,
+    subscribeToApplicationChanges,
+} from '@/server/WebSockets/applicationChanges.ts'
 import { collectNotificationObservations } from './collector.ts'
 import { deliverAuthorizedNotificationClaim } from './notification-delivery.server.ts'
 import {
@@ -8,6 +11,7 @@ import {
     claimNextNotificationDelivery,
     claimNotificationCollection,
     commitNotificationCollection,
+    readNextNotificationDeliveryAt,
 } from './notification-repository.ts'
 import { createNotificationWorker } from './notification-worker.ts'
 
@@ -19,5 +23,7 @@ export const notificationWorker = createNotificationWorker({
     acknowledge: acknowledgeNotificationDelivery,
     deliver: deliverAuthorizedNotificationClaim,
     changed: publishApplicationChange,
+    nextDeliveryAt: readNextNotificationDeliveryAt,
+    subscribe: subscribeToApplicationChanges,
     unavailable: () => console.warn('[notifications] Delivery worker temporarily unavailable'),
 })

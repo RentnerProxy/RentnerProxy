@@ -128,6 +128,7 @@ export function createPersonalNotificationService(dependencies: PersonalNotifica
                         runtime.engine,
                         configuration.channels,
                         getAllowedNotificationCategories(fresh.permissions),
+                        configuration.enabled && !configuration.pausedAfterRestore,
                     ),
                 )
             }, true)

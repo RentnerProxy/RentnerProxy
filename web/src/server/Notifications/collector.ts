@@ -31,7 +31,7 @@ export function createNotificationCollector(dependencies: NotificationCollectorD
         async function certificates(): Promise<NotificationCollection> {
             try {
                 assertActive()
-                const raw = await dependencies.certificates()
+                const raw = await dependencies.certificates(signal)
                 assertActive()
                 const snapshot = raw.map((certificate) =>
                     certificateMetadataSchema.parse(certificate),
@@ -41,7 +41,7 @@ export function createNotificationCollector(dependencies: NotificationCollectorD
                 for (let pageIndex = 0; pageIndex < 5; pageIndex++) {
                     assertActive()
                     const page = certificateEventPageSchema.parse(
-                        await dependencies.certificateEvents(cursor, 100),
+                        await dependencies.certificateEvents(cursor, 100, signal),
                     )
                     assertActive()
                     if (page.events.length > 100 || (page.hasMore && page.nextCursor === cursor))
@@ -72,7 +72,7 @@ export function createNotificationCollector(dependencies: NotificationCollectorD
         async function ddns(): Promise<readonly NotificationObservation[]> {
             try {
                 assertActive()
-                const snapshot = await dependencies.ddns()
+                const snapshot = await dependencies.ddns(signal)
                 assertActive()
                 return ddnsObservations(snapshot, dependencies.now())
             } catch {
@@ -84,7 +84,7 @@ export function createNotificationCollector(dependencies: NotificationCollectorD
                 assertActive()
                 const before = await dependencies.proxySnapshot()
                 assertActive()
-                const runtime = await dependencies.proxyStatus()
+                const runtime = await dependencies.proxyStatus(signal)
                 assertActive()
                 const after = await dependencies.proxySnapshot()
                 assertActive()
@@ -118,7 +118,7 @@ export function createNotificationCollector(dependencies: NotificationCollectorD
 export const collectNotificationObservations = createNotificationCollector({
     certificates: getControllerCertificates,
     certificateEvents: getControllerCertificateEvents,
-    ddns: () => ddnsController.status(),
+    ddns: (signal) => ddnsController.status(signal),
     proxySnapshot: async () =>
         (
             await import('@/server/ProxyRuntime/proxy-runtime.service.ts')

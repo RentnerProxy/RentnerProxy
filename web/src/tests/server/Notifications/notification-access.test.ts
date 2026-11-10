@@ -59,6 +59,36 @@ const claim = {
 }
 
 describe('notification ownership and current access', () => {
+    test('deferred counts include only the current owner’s eligible admissions', () => {
+        const now = Date.now()
+        const state = observeNotificationSignals(
+            createNotificationState(),
+            configuration,
+            Array.from({ length: 300 }, (_, index) => ({
+                source: 'event',
+                category: 'ddns',
+                resourceId: `deferred-${index}`,
+                health: 'failing',
+                severity: 'error',
+                occurredAt: new Date(now).toISOString(),
+                evidence: 'storm',
+                failures: 1,
+            })),
+            now,
+            () => crypto.randomUUID(),
+        )
+        expect(state.deferredCount).toBe(344)
+        expect(filterNotificationStateForChannels(state, [channel], ['ddns']).deferredCount).toBe(
+            172,
+        )
+        expect(
+            filterNotificationStateForChannels(state, [channel], ['certificate_renewal'])
+                .deferredCount,
+        ).toBe(0)
+        expect(
+            filterNotificationStateForChannels(state, [channel], ['ddns'], false).deferredCount,
+        ).toBe(0)
+    })
     test('passes the currently authorized owner appearance only to email delivery', async () => {
         const mailAppearance = { themeMode: 'dark' as const, accentColor: '#8844ee' }
         const destination = { kind: 'email' as const, recipients: ['test@example.test'] }
@@ -177,6 +207,49 @@ describe('notification ownership and current access', () => {
         expect(await send(claim)).toEqual({ success: false, code: 'cancelled', retryable: false })
         expect(open).not.toHaveBeenCalled()
         expect(deliver).not.toHaveBeenCalled()
+    })
+
+    test('revocation during asynchronous decryption prevents network admission', async () => {
+        let authorized = true
+        let sent = false
+        const send = createAuthorizedNotificationDelivery({
+            authorize: async () =>
+                authorized ? { channel, allowPrivateDestinations: true } : null,
+            open: async () => {
+                authorized = false
+                return { kind: 'email', recipients: ['test@example.test'] }
+            },
+            deliver: async () => {
+                sent = true
+                return { success: true }
+            },
+        })
+        expect(await send(claim)).toEqual({ success: false, code: 'cancelled', retryable: false })
+        expect(sent).toBe(false)
+    })
+
+    test('shutdown while authorization is pending prevents decryption and network admission', async () => {
+        const controller = new AbortController()
+        const authorized = Promise.withResolvers<{
+            channel: StoredNotificationChannel
+            allowPrivateDestinations: boolean
+        }>()
+        let opened = false
+        const send = createAuthorizedNotificationDelivery({
+            authorize: () => authorized.promise,
+            open: async () => {
+                opened = true
+                return { kind: 'email', recipients: ['test@example.test'] }
+            },
+            deliver: async () => {
+                throw new Error('Unexpected send')
+            },
+        })
+        const result = send(claim, controller.signal)
+        controller.abort()
+        authorized.resolve({ channel, allowPrivateDestinations: true })
+        expect(await result).toEqual({ success: false, code: 'cancelled', retryable: true })
+        expect(opened).toBe(false)
     })
 
     test('blocks retained private destinations after administrative permission is revoked', async () => {

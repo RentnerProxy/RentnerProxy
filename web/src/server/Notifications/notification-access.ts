@@ -12,6 +12,10 @@ import type {
     StoredNotificationConfiguration,
 } from './Types/notification-internal.types.ts'
 import type { NotificationState } from './Types/notification-state.types.ts'
+import {
+    notificationAdmissionOrder,
+    pendingNotificationAdmission,
+} from './notification-admission.ts'
 
 interface NotificationOwnerAccess {
     readonly permissions: readonly PermissionKey[]
@@ -61,6 +65,7 @@ export function filterNotificationStateForChannels(
     state: NotificationState,
     channels: readonly StoredNotificationChannel[],
     allowedCategories?: readonly NotificationCategory[],
+    admissionEnabled = true,
 ): NotificationState {
     const ids = new Set(channels.map((channel) => channel.id))
     const categoryAllowed = (category: NotificationCategory) =>
@@ -69,6 +74,21 @@ export function filterNotificationStateForChannels(
         (delivery) => ids.has(delivery.channelId) && categoryAllowed(delivery.payload.category),
     )
     const incidentIds = new Set(deliveries.map((delivery) => delivery.payload.incidentId))
+    let deferredCount = 0
+    if (admissionEnabled) {
+        const now = Date.now()
+        for (const [incident, channel] of notificationAdmissionOrder(state.incidents, {
+            enabled: true,
+            pausedAfterRestore: false,
+            channels,
+        })) {
+            if (
+                categoryAllowed(incident.category) &&
+                pendingNotificationAdmission(incident, channel, now)
+            )
+                deferredCount++
+        }
+    }
     return {
         ...state,
         incidents: state.incidents
@@ -84,7 +104,10 @@ export function filterNotificationStateForChannels(
                 }),
             ),
         deliveries,
-        deferredCount: 0,
+        dispatches: state.dispatches?.filter(
+            (dispatch) => ids.has(dispatch.channelId) && categoryAllowed(dispatch.category),
+        ),
+        deferredCount,
         saturationCount: 0,
     }
 }

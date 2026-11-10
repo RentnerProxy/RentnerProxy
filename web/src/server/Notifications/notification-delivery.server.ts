@@ -17,13 +17,20 @@ export function createAuthorizedNotificationDelivery(dependencies: {
         signal?: AbortSignal,
     ): Promise<NotificationDeliveryResult> => {
         try {
+            if (signal?.aborted) return { success: false, code: 'cancelled', retryable: true }
             const authorized = await dependencies.authorize(claim)
             if (!authorized) return { success: false, code: 'cancelled', retryable: false }
+            if (signal?.aborted) return { success: false, code: 'cancelled', retryable: true }
             const destination = await dependencies.open(authorized.channel)
+            if (signal?.aborted) return { success: false, code: 'cancelled', retryable: true }
+            // Decryption may yield. This final read is the admission boundary: later revocation
+            // cannot retract an admitted transport or receiver acceptance, but prevents every new send.
+            const admission = await dependencies.authorize(claim)
+            if (!admission) return { success: false, code: 'cancelled', retryable: false }
             if (
                 destination.kind === 'webhook' &&
                 destination.allowedPrivateCidrs.length > 0 &&
-                !authorized.allowPrivateDestinations
+                !admission.allowPrivateDestinations
             )
                 return { success: false, code: 'destination_blocked', retryable: false }
             if (signal?.aborted) return { success: false, code: 'cancelled', retryable: true }
@@ -32,7 +39,7 @@ export function createAuthorizedNotificationDelivery(dependencies: {
                       destination,
                       claim.payload,
                       signal,
-                      authorized.mailAppearance,
+                      admission.mailAppearance,
                   )
                 : await dependencies.deliver(destination, claim.payload, signal)
         } catch (error) {

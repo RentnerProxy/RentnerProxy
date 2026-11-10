@@ -13,6 +13,28 @@ import { PAYLOAD } from './Types/transport-test.types.ts'
 import { runBunScript } from '@/tests/Helpers/runBunScript.ts'
 
 describe('notification delivery', () => {
+    test.each([
+        { error: { responseCode: 450 }, retryable: true },
+        { error: { responseCode: 550 }, retryable: false },
+        { error: { code: 'EAUTH' }, retryable: false },
+        { error: { responseCode: 454, code: 'EAUTH' }, retryable: true },
+        { error: { code: 'ETIMEDOUT' }, retryable: true },
+    ])(
+        'SMTP command rejection and authentication failures have explicit retry classification',
+        async ({ error, retryable }) => {
+            expect(
+                await sendNotificationEmailService(['a@example.test'], PAYLOAD, undefined, {
+                    createClient: () => ({
+                        from: 'test@example.test',
+                        close() {},
+                        sendMail: async () => {
+                            throw error
+                        },
+                    }),
+                }),
+            ).toEqual({ success: false, code: 'smtp_unavailable', retryable })
+        },
+    )
     test('rejects unavailable public image origins before opening an SMTP transport', async () => {
         const output = await runBunScript(
             `

@@ -10,7 +10,17 @@ import type {
 export interface NotificationEngineConfiguration {
     readonly enabled: boolean
     readonly pausedAfterRestore: boolean
-    readonly channels: readonly NotificationChannelPolicy[]
+    readonly channels: readonly (NotificationChannelPolicy & {
+        readonly ownerUserId?: string | undefined
+    })[]
+}
+
+export interface NotificationDispatch {
+    readonly channelId: string
+    readonly ownerUserId: string | null
+    readonly kind: NotificationChannelPolicy['kind']
+    readonly category: NotificationCategory
+    readonly at: number
 }
 
 type NotificationDeliveryStatus = 'pending' | 'inflight' | 'succeeded' | 'failed' | 'cancelled'
@@ -76,6 +86,7 @@ export interface NotificationQueuedDelivery {
     leaseToken: string | null
     leaseExpiresAt: number | null
     error: NotificationDeliveryError | null
+    dispatch?: NotificationDispatch | undefined
 }
 
 export interface NotificationState {
@@ -85,6 +96,7 @@ export interface NotificationState {
     deliveries: NotificationQueuedDelivery[]
     deferredCount: number
     saturationCount: number
+    dispatches?: NotificationDispatch[] | undefined
 }
 
 export interface NotificationClaimedDelivery {

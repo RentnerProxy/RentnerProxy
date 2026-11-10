@@ -1,6 +1,7 @@
 import { NOTIFICATION_LIMITS } from '@/config/notifications.config.ts'
 import { reserveNotificationDeliverySlot } from './incident-engine.ts'
 import { NotificationDomainError } from './notification.errors.ts'
+import { selectNotificationDelivery } from './notification-scheduling.ts'
 import type {
     NotificationClaimedDelivery,
     NotificationEngineConfiguration,
@@ -47,15 +48,21 @@ export function claimNotificationTestDelivery(
         channelId,
         channelRevision: channel.revision,
         payload,
-        status: 'inflight',
-        attempts: 1,
+        status: 'pending',
+        attempts: 0,
         createdAt: nowMs,
         updatedAt: nowMs,
         nextAttemptAt: nowMs,
-        leaseToken,
-        leaseExpiresAt: nowMs + NOTIFICATION_LIMITS.leaseMs,
+        leaseToken: null,
+        leaseExpiresAt: null,
         error: null,
     })
+    const admitted = selectNotificationDelivery(next, configuration, nowMs, id)
+    if (!admitted) throw new NotificationDomainError('configuration_unavailable')
+    admitted.status = 'inflight'
+    admitted.attempts = 1
+    admitted.leaseToken = leaseToken
+    admitted.leaseExpiresAt = nowMs + NOTIFICATION_LIMITS.leaseMs
     if (new TextEncoder().encode(JSON.stringify(next)).byteLength > NOTIFICATION_LIMITS.stateBytes)
         throw new NotificationDomainError('configuration_unavailable')
     return {
