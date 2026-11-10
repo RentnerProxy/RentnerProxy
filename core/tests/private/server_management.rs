@@ -131,6 +131,10 @@ async fn management_routes_authenticate_before_parsing_or_reading_state() {
         ("POST", "/internal/v1/dns/connections/test"),
         ("POST", "/internal/v1/dns/connections/references/validate"),
         ("GET", "/internal/v1/discovery/docker/status"),
+        (
+            "GET",
+            "/internal/v1/discovery/docker/watch?generation=invalid",
+        ),
         ("PUT", "/internal/v1/discovery/docker/config"),
         ("POST", "/internal/v1/discovery/docker/inspect"),
         ("GET", "/internal/v1/ddns/config"),
@@ -157,6 +161,7 @@ async fn management_routes_authenticate_before_parsing_or_reading_state() {
         "/internal/v1/dns/connections",
         "/internal/v1/ddns/status",
         "/internal/v1/discovery/docker/status",
+        "/internal/v1/discovery/docker/watch",
         "/internal/v1/crowdsec/status",
         "/internal/v1/proxy/access-logs",
     ] {
@@ -433,6 +438,22 @@ async fn docker_configuration_persists_and_rejects_stale_or_invalid_writes() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(initial["status"], "disabled");
     assert_eq!(initial["configuration"]["revision"], 0);
+    let (status, observation) = call(
+        &router,
+        "GET",
+        "/internal/v1/discovery/docker/watch",
+        Body::empty(),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(observation["snapshot"], initial);
+    let cursor = &observation["cursor"];
+    let watch = format!(
+        "/internal/v1/discovery/docker/watch?runtimeId={}&generation={}",
+        cursor["runtimeId"].as_str().unwrap(),
+        cursor["generation"]
+    );
     let (status, saved) = json_call(
         &router,
         "PUT",
@@ -444,6 +465,25 @@ async fn docker_configuration_persists_and_rejects_stale_or_invalid_writes() {
     assert_eq!(saved["configuration"]["revision"], 1);
     assert_eq!(saved["status"], "disabled");
     assert_eq!(saved["candidates"], json!([]));
+    let (status, changed) = call(&router, "GET", &watch, Body::empty(), true).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(changed["snapshot"], saved);
+    assert_eq!(changed["cursor"]["runtimeId"], cursor["runtimeId"]);
+    assert!(changed["cursor"]["generation"].as_u64() > cursor["generation"].as_u64());
+    assert_eq!(
+        call(
+            &router,
+            "GET",
+            "/internal/v1/discovery/docker/watch?generation=invalid",
+            Body::empty(),
+            true,
+        )
+        .await,
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({"error":"invalid_input"})
+        )
+    );
     assert_eq!(
         json_call(
             &router,
@@ -538,7 +578,10 @@ async fn management_reports_corrupt_stores_without_returning_their_contents() {
     for (file, routes) in [
         (
             "docker-discovery.json",
-            vec!["/internal/v1/discovery/docker/status"],
+            vec![
+                "/internal/v1/discovery/docker/status",
+                "/internal/v1/discovery/docker/watch",
+            ],
         ),
         ("dns-connections.json", vec!["/internal/v1/dns/connections"]),
         (

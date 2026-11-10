@@ -1,5 +1,15 @@
 import { PERMISSIONS } from './permissions.config.ts'
 
+export const DOCKER_DISCOVERY_WORKER = {
+    fallbackMs: 60_000,
+    coalesceMs: 500,
+    continuationMs: 2_000,
+    reconnectMs: 2_000,
+    minimumWatchMs: 50,
+    cursorHorizonMs: 30_000,
+    runtimeIdentities: 1_024,
+} as const
+
 export const DOCKER_DISCOVERY_QUERY_KEY = ['docker-discovery', 'overview'] as const
 export const DOCKER_DISCOVERY_LIVE_QUERY_KEYS = [DOCKER_DISCOVERY_QUERY_KEY] as const
 export const DOCKER_DISCOVERY_RECONCILE_PERMISSIONS = [

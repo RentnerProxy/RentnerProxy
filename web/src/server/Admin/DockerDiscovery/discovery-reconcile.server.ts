@@ -52,7 +52,7 @@ export async function reconcileDiscoveryInTransaction(
     transaction: AuthTransaction,
     registry: DiscoveryRegistry,
     snapshot: DockerDiscoverySnapshot | null,
-    progress: { afterKey: string | null } = { afterKey: null },
+    progress: { afterKey: string | null; attempted?: number; total?: number } = { afterKey: null },
 ) {
     if (
         !registry.enabled ||
@@ -169,6 +169,8 @@ export async function reconcileDiscoveryInTransaction(
         },
     )
     progress.afterKey = batch.afterKey
+    progress.attempted = batch.attempted
+    progress.total = plan.changes.length
     registry.results = batch.results
     for (const owner of registry.owners) {
         const row = plan.rows.find((entry) => entry.key === owner.key)

@@ -65,7 +65,7 @@ pub(crate) enum Status {
     Unavailable,
 }
 
-#[derive(Clone, Default, Serialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Snapshot {
     pub(crate) configuration: Document,
@@ -73,6 +73,27 @@ pub(crate) struct Snapshot {
     pub(crate) stale: bool,
     pub(crate) error: Option<Error>,
     pub(crate) candidates: Vec<Candidate>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct Cursor {
+    pub(crate) runtime_id: String,
+    pub(crate) generation: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Observation {
+    pub(crate) cursor: Cursor,
+    pub(crate) snapshot: Option<Snapshot>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct Watch {
+    pub(crate) runtime_id: Option<String>,
+    pub(crate) generation: Option<u64>,
 }
 impl Snapshot {
     pub(super) fn for_configuration(configuration: Document, restored: bool) -> Self {

@@ -121,3 +121,13 @@ export const dockerDiscoverySnapshotSchema = z.strictObject({
         )
         .max(256),
 })
+
+export const dockerDiscoveryCursorSchema = z.strictObject({
+    runtimeId: z.string().regex(/^[a-f0-9]{32}$/u),
+    generation: z.number().int().nonnegative().safe(),
+})
+
+export const dockerDiscoveryObservationSchema = z.strictObject({
+    cursor: dockerDiscoveryCursorSchema,
+    snapshot: dockerDiscoverySnapshotSchema.nullable(),
+})

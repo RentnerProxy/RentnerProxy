@@ -207,6 +207,13 @@ pub(crate) fn app_with_state(state: AppState) -> Router {
         ));
     let discovery = Router::new()
         .route(
+            "/internal/v1/discovery/docker/watch",
+            get({
+                let state = state.clone();
+                move |query| handlers::docker_discovery::watch(state.clone(), query)
+            }),
+        )
+        .route(
             "/internal/v1/discovery/docker/inspect",
             post({
                 let state = state.clone();

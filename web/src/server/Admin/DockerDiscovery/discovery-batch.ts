@@ -19,15 +19,18 @@ export async function runDiscoveryBatch(
     const results = new Map(previous.map((result) => [result.key, result]))
     const deadline = now() + 10_000
     let cursor = afterKey
+    let attempted = 0
     for (const change of batch) {
         if (now() >= deadline) break
         const error = await attempt(change)
+        attempted++
         cursor = change.key
         if (error) results.set(change.key, { key: change.key, error })
         else results.delete(change.key)
     }
     return {
         afterKey: cursor,
+        attempted,
         results: [...results.values()].toSorted((a, b) => a.key.localeCompare(b.key)),
     }
 }
