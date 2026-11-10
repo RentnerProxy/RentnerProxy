@@ -126,6 +126,10 @@ describe('personal notification channel editor', () => {
                             pendingCount: 0,
                             deferredCount: 0,
                             saturationCount: 0,
+                            activeCount: 0,
+                            exhaustedCount: 0,
+                            terminalCount: 1,
+                            oldestPendingAgeMs: null,
                         }}
                     />,
                 ),

@@ -1,11 +1,16 @@
 import { createHash } from 'node:crypto'
-import { NOTIFICATION_LIMITS, NOTIFICATION_SEVERITIES } from '@/config/notifications.config.ts'
+import { NOTIFICATION_LIMITS } from '@/config/notifications.config.ts'
+import { selectNotificationDelivery } from './notification-scheduling.ts'
+import {
+    deferredHostFailure,
+    notificationAdmissionOrder,
+    pendingNotificationAdmission,
+} from './notification-admission.ts'
 import type {
     NotificationDeliveryResult,
     NotificationObservation,
     NotificationPayload,
     NotificationStatus,
-    NotificationChannelPolicy,
 } from '@/lib/Notifications/Types/notifications.types.ts'
 import type {
     NotificationIncident,
@@ -14,27 +19,6 @@ import type {
     NotificationQueuedDelivery,
     NotificationState,
 } from './Types/notification-state.types.ts'
-
-function deferredHostFailure(incident: NotificationIncident, channel: NotificationChannelPolicy) {
-    return (
-        incident.category === 'host_availability' &&
-        incident.recoveredAt !== null &&
-        incident.host?.subscriptions?.some(
-            (subscription) =>
-                subscription.channelId === channel.id &&
-                subscription.channelRevision === channel.revision,
-        ) &&
-        !incident.channels.some(
-            (marker) =>
-                marker.channelId === channel.id && marker.channelRevision === channel.revision,
-        ) &&
-        channel.enabled &&
-        channel.events.includes(incident.category) &&
-        NOTIFICATION_SEVERITIES.indexOf(incident.severity) >=
-            NOTIFICATION_SEVERITIES.indexOf(channel.minimumSeverity) &&
-        incident.recoveredAt - incident.startedAt >= channel.thresholdSeconds * 1_000
-    )
-}
 
 function recoveryOwed(
     incident: NotificationIncident,
@@ -164,7 +148,7 @@ function reconcile(
             delivery.status = 'pending'
             delivery.leaseToken = null
             delivery.leaseExpiresAt = null
-            delivery.nextAttemptAt = nowMs + retryDelay(delivery.attempts)
+            delivery.nextAttemptAt = nowMs + retryDelay(delivery.attempts, delivery.id)
             delivery.updatedAt = nowMs
         }
     }
@@ -192,10 +176,17 @@ function reconcile(
     )
 }
 
-function retryDelay(attempts: number) {
-    return Math.min(
-        NOTIFICATION_LIMITS.retryMaximumMs,
-        NOTIFICATION_LIMITS.retryInitialMs * 2 ** Math.max(0, attempts - 1),
+function retryDelay(attempts: number, key: string) {
+    // Stable per-delivery jitter survives restarts and is independent of receipt timing.
+    const fraction =
+        createHash('sha256').update(`${key}:${attempts}`).digest().readUInt32BE() / 0xffff_ffff
+    return Math.ceil(
+        Math.min(
+            NOTIFICATION_LIMITS.retryMaximumMs,
+            NOTIFICATION_LIMITS.retryInitialMs *
+                2 ** Math.max(0, attempts - 1) *
+                (1 + fraction * NOTIFICATION_LIMITS.retryJitterRatio),
+        ),
     )
 }
 
@@ -216,7 +207,9 @@ function withinStateLimit(state: NotificationState) {
     // Reserve room for persisted leases, terminal errors, and counters after admission.
     return (
         new TextEncoder().encode(JSON.stringify(state)).byteLength <=
-        NOTIFICATION_LIMITS.stateBytes - NOTIFICATION_LIMITS.deliveries * 256
+        NOTIFICATION_LIMITS.stateBytes -
+            NOTIFICATION_LIMITS.deliveries * 512 -
+            NOTIFICATION_LIMITS.globalRate * 256
     )
 }
 
@@ -258,112 +251,94 @@ export function admitNotificationIncidents(
     incidentId?: string,
 ) {
     if (!configuration.enabled || configuration.pausedAfterRestore) return
-    for (const incident of state.incidents) {
-        if (incidentId && incident.id !== incidentId) continue
-        for (const channel of configuration.channels) {
-            if (!channel.enabled || !channel.events.includes(incident.category)) continue
-            let marker = incident.channels.find(
-                (item) =>
-                    item.channelId === channel.id && item.channelRevision === channel.revision,
-            )
-            const recovery =
-                incident.recoveredAt !== null && !deferredHostFailure(incident, channel)
-            if (recovery) {
-                if (
-                    !marker ||
-                    marker.failure !== 'succeeded' ||
-                    marker.recovery !== null ||
-                    !channel.recovery
-                )
-                    continue
-            } else {
-                if (
-                    marker ||
-                    !channel.events.includes(incident.category) ||
-                    NOTIFICATION_SEVERITIES.indexOf(incident.severity) <
-                        NOTIFICATION_SEVERITIES.indexOf(channel.minimumSeverity) ||
-                    (incident.recoveredAt ?? nowMs) - incident.startedAt <
-                        channel.thresholdSeconds * 1_000
-                )
-                    continue
-            }
-            if (!reserveNotificationDeliverySlot(state)) {
-                defer(state)
-                continue
-            }
-            const id = makeId()
-            const payload: NotificationPayload = {
-                schemaVersion: 1,
-                id,
-                incidentId: incident.id,
-                type: recovery ? 'recovery' : 'incident',
-                category: incident.category,
-                severity: recovery ? 'info' : incident.severity,
-                resourceId: incident.resourceId,
-                code: recovery
-                    ? 'operation_recovered'
-                    : incident.category === 'certificate_renewal'
-                      ? (incident.code ?? 'certificate_renewal_failed')
-                      : incident.category === 'ddns'
-                        ? 'ddns_update_failed'
-                        : incident.category === 'host_availability'
-                          ? 'host_unavailable'
-                          : 'proxy_apply_failed',
-                occurredAt: new Date(
-                    recovery ? incident.recoveredAt! : incident.observedAt,
-                ).toISOString(),
-                startedAt: new Date(incident.startedAt).toISOString(),
-                failures: incident.failures,
-                ...(incident.host
-                    ? {
-                          host: {
-                              domain: incident.host.domain,
-                              failureCode: incident.host.failureCode,
-                              detectedAt: incident.host.detectedAt,
-                              recoveryStartedAt: recovery ? incident.host.recoveryStartedAt : null,
-                              managementPath: incident.host.managementPath,
-                          },
-                      }
-                    : {}),
-            }
-            if (
-                new TextEncoder().encode(JSON.stringify(payload)).byteLength >
-                NOTIFICATION_LIMITS.payloadBytes
-            ) {
-                defer(state)
-                continue
-            }
-            const existingMarker = marker
-            if (marker) marker.recovery = 'pending'
-            else {
-                marker = {
-                    channelId: channel.id,
-                    channelRevision: channel.revision,
-                    failure: 'pending',
-                    recovery: null,
-                }
-                incident.channels.push(marker)
-            }
-            state.deliveries.push({
-                id,
+    for (const [incident, channel] of notificationAdmissionOrder(
+        incidentId
+            ? state.incidents.filter((candidate) => candidate.id === incidentId)
+            : state.incidents,
+        configuration,
+    )) {
+        const admission = pendingNotificationAdmission(incident, channel, nowMs)
+        if (!admission) continue
+        let marker = incident.channels.find(
+            (item) => item.channelId === channel.id && item.channelRevision === channel.revision,
+        )
+        const recovery = admission === 'recovery'
+        if (!reserveNotificationDeliverySlot(state)) {
+            defer(state)
+            continue
+        }
+        const id = makeId()
+        const payload: NotificationPayload = {
+            schemaVersion: 1,
+            id,
+            incidentId: incident.id,
+            type: recovery ? 'recovery' : 'incident',
+            category: incident.category,
+            severity: recovery ? 'info' : incident.severity,
+            resourceId: incident.resourceId,
+            code: recovery
+                ? 'operation_recovered'
+                : incident.category === 'certificate_renewal'
+                  ? (incident.code ?? 'certificate_renewal_failed')
+                  : incident.category === 'ddns'
+                    ? 'ddns_update_failed'
+                    : incident.category === 'host_availability'
+                      ? 'host_unavailable'
+                      : 'proxy_apply_failed',
+            occurredAt: new Date(
+                recovery ? incident.recoveredAt! : incident.observedAt,
+            ).toISOString(),
+            startedAt: new Date(incident.startedAt).toISOString(),
+            failures: incident.failures,
+            ...(incident.host
+                ? {
+                      host: {
+                          domain: incident.host.domain,
+                          failureCode: incident.host.failureCode,
+                          detectedAt: incident.host.detectedAt,
+                          recoveryStartedAt: recovery ? incident.host.recoveryStartedAt : null,
+                          managementPath: incident.host.managementPath,
+                      },
+                  }
+                : {}),
+        }
+        if (
+            new TextEncoder().encode(JSON.stringify(payload)).byteLength >
+            NOTIFICATION_LIMITS.payloadBytes
+        ) {
+            defer(state)
+            continue
+        }
+        const existingMarker = marker
+        if (marker) marker.recovery = 'pending'
+        else {
+            marker = {
                 channelId: channel.id,
                 channelRevision: channel.revision,
-                payload,
-                status: 'pending',
-                attempts: 0,
-                createdAt: nowMs,
-                updatedAt: nowMs,
-                nextAttemptAt: nowMs,
-                leaseToken: null,
-                leaseExpiresAt: null,
-                error: null,
-            })
-            if (!withinStateLimit(state)) {
-                state.deliveries.pop()
-                if (existingMarker) existingMarker.recovery = null
-                else incident.channels.pop()
-                defer(state)
+                failure: 'pending',
+                recovery: null,
             }
+            incident.channels.push(marker)
+        }
+        state.deliveries.push({
+            id,
+            channelId: channel.id,
+            channelRevision: channel.revision,
+            payload,
+            status: 'pending',
+            attempts: 0,
+            createdAt: nowMs,
+            updatedAt: nowMs,
+            nextAttemptAt: nowMs,
+            leaseToken: null,
+            leaseExpiresAt: null,
+            error: null,
+        })
+        if (!withinStateLimit(state)) {
+            state.deliveries.pop()
+            if (existingMarker) existingMarker.recovery = null
+            else incident.channels.pop()
+            defer(state)
         }
     }
 }
@@ -515,9 +490,7 @@ export function claimNotificationDelivery(
     admitNotificationIncidents(next, configuration, nowMs, makeId)
     if (!configuration.enabled || configuration.pausedAfterRestore)
         return { state: next, delivery: null }
-    const delivery = next.deliveries.find(
-        (item) => item.status === 'pending' && item.nextAttemptAt <= nowMs,
-    )
+    const delivery = selectNotificationDelivery(next, configuration, nowMs)
     if (!delivery) return { state: next, delivery: null }
     const leaseToken = makeId()
     delivery.status = 'inflight'
@@ -597,7 +570,7 @@ export function finishNotificationDelivery(
                     nowMs +
                     Math.min(
                         NOTIFICATION_LIMITS.retryMaximumMs,
-                        Math.max(retryDelay(delivery.attempts), retryAfter),
+                        Math.max(retryDelay(delivery.attempts, delivery.id), retryAfter),
                     )
             } else {
                 delivery.status = 'failed'
@@ -609,7 +582,10 @@ export function finishNotificationDelivery(
     return next
 }
 
-export function summarizeNotificationState(state: NotificationState): NotificationStatus {
+export function summarizeNotificationState(
+    state: NotificationState,
+    nowMs = Date.now(),
+): NotificationStatus {
     return {
         incidents: state.incidents.map(
             ({
@@ -635,5 +611,22 @@ export function summarizeNotificationState(state: NotificationState): Notificati
         deferredCount: state.deferredCount,
         saturationCount: state.saturationCount,
         pendingCount: state.deliveries.filter(isActive).length,
+        activeCount: state.deliveries.filter((delivery) => delivery.status === 'inflight').length,
+        exhaustedCount: state.deliveries.filter(
+            (delivery) =>
+                delivery.status === 'failed' && delivery.attempts >= NOTIFICATION_LIMITS.attempts,
+        ).length,
+        terminalCount: state.deliveries.filter((delivery) => !isActive(delivery)).length,
+        oldestPendingAgeMs: state.deliveries.some(isActive)
+            ? Math.max(
+                  0,
+                  nowMs -
+                      Math.min(
+                          ...state.deliveries
+                              .filter(isActive)
+                              .map((delivery) => delivery.createdAt),
+                      ),
+              )
+            : null,
     }
 }

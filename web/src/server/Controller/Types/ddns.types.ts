@@ -5,7 +5,7 @@ interface DdnsControllerAction {
     readonly expectedRevision: number
 }
 export interface DdnsController {
-    status(): Promise<DdnsSnapshot>
+    status(signal?: AbortSignal): Promise<DdnsSnapshot>
     preview(input: {
         readonly actorUserId: string
         readonly ipv4: boolean

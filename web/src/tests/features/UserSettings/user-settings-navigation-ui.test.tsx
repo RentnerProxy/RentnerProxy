@@ -59,6 +59,10 @@ const notificationStatus = spyOn(
     pendingCount: 0,
     deferredCount: 0,
     saturationCount: 0,
+    activeCount: 0,
+    exhaustedCount: 0,
+    terminalCount: 0,
+    oldestPendingAgeMs: null,
 })
 const updateNotifications = spyOn(
     notificationServer,

@@ -181,7 +181,20 @@ export async function sendNotificationEmailService(
                                   },
                         )
                     },
-                    () => finish({ success: false, code: 'smtp_unavailable', retryable: true }),
+                    (error: unknown) =>
+                        finish({
+                            success: false,
+                            code: 'smtp_unavailable',
+                            retryable: !(
+                                error !== null &&
+                                typeof error === 'object' &&
+                                (('responseCode' in error &&
+                                    typeof error.responseCode === 'number' &&
+                                    error.responseCode >= 500 &&
+                                    error.responseCode < 600) ||
+                                    ('code' in error && error.code === 'EAUTH'))
+                            ),
+                        }),
                 )
         })
     } finally {

@@ -21,6 +21,7 @@ import {
     lockNotificationConfiguration,
     lockNotificationRuntime,
     readNotificationConfiguration,
+    readNotificationRuntime,
     writeNotificationRuntime,
 } from './notification-storage.ts'
 import type {
@@ -33,6 +34,19 @@ import {
     authorizeHostAvailabilityDeliveryInTransaction,
     reconcileHostAvailabilityInTransaction,
 } from './host-availability.repository.ts'
+import { nextNotificationDeliveryAt } from './notification-scheduling.ts'
+
+export async function readNextNotificationDeliveryAt(): Promise<number | null> {
+    return getAuthDatabase().transaction(
+        async (transaction) => {
+            const configuration = await readNotificationConfiguration(transaction)
+            if (!configuration.enabled || configuration.pausedAfterRestore) return null
+            const runtime = await readNotificationRuntime(transaction)
+            return nextNotificationDeliveryAt(runtime.engine, configuration, Date.now())
+        },
+        { isolationLevel: 'repeatable read', accessMode: 'read only' },
+    )
+}
 
 export async function claimNotificationCollection(): Promise<NotificationCollectionClaim | null> {
     // Keep the disabled default read-only, including before the first channel is configured.
@@ -152,6 +166,17 @@ export async function authorizeNotificationDelivery(
         async (transaction) => {
             const configuration = await readNotificationConfiguration(transaction)
             if (!configuration.enabled || configuration.pausedAfterRestore) return null
+            const runtime = await readNotificationRuntime(transaction)
+            if (
+                !runtime.engine.deliveries.some(
+                    (delivery) =>
+                        delivery.id === claim.id &&
+                        delivery.status === 'inflight' &&
+                        delivery.leaseToken === claim.leaseToken &&
+                        (delivery.leaseExpiresAt ?? 0) > Date.now(),
+                )
+            )
+                return null
             const channel = configuration.channels.find(
                 (candidate) =>
                     candidate.id === claim.channelId &&

@@ -369,6 +369,45 @@ describe('notification source adapters', () => {
 })
 
 describe('notification collector', () => {
+    test('cancellation reaches all pending native reads and does not advance the cursor', async () => {
+        const controller = new AbortController()
+        const started = Promise.withResolvers<void>()
+        const signals: (AbortSignal | undefined)[] = []
+        let pages = 0
+        const wait = async (signal?: AbortSignal) => {
+            signals.push(signal)
+            if (signals.length === 3) started.resolve()
+            await new Promise<void>((resolve) =>
+                signal?.addEventListener('abort', () => resolve(), { once: true }),
+            )
+        }
+        const collect = createNotificationCollector(
+            dependencies({
+                certificates: async (signal) => {
+                    await wait(signal)
+                    return []
+                },
+                ddns: async (signal) => {
+                    await wait(signal)
+                    return ddns()
+                },
+                proxyStatus: async (signal) => {
+                    await wait(signal)
+                    return null
+                },
+                certificateEvents: async () => {
+                    pages++
+                    return page()
+                },
+            }),
+        )
+        const pending = collect(null, controller.signal)
+        await started.promise
+        controller.abort()
+        await expect(pending).rejects.toThrow()
+        expect(signals).toEqual([controller.signal, controller.signal, controller.signal])
+        expect(pages).toBe(0)
+    })
     test('independent sources begin while certificate reads are pending; proxy probes bracket desired snapshots', async () => {
         let release!: (value: readonly ControllerCertificateMetadata[]) => void
         const pending = new Promise<readonly ControllerCertificateMetadata[]>((resolve) => {

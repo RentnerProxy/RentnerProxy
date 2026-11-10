@@ -30,4 +30,6 @@ export interface NotificationWorkerDependencies {
     readonly acknowledge: (leaseToken: string, result: NotificationDeliveryResult) => Promise<void>
     readonly changed: () => void
     readonly unavailable: () => void
+    readonly nextDeliveryAt?: (() => Promise<number | null>) | undefined
+    readonly subscribe?: ((wake: () => void) => () => void) | undefined
 }

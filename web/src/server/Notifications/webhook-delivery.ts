@@ -63,6 +63,24 @@ export function createWebhookSystemResolver(
 
 const resolveAddresses = createWebhookSystemResolver()
 
+export function notificationRetryAfterMs(
+    value: string | string[] | undefined,
+    now = Date.now(),
+): number | undefined {
+    if (typeof value !== 'string' || value.length > 128) return undefined
+    if (
+        !/^\d{1,8}$/.test(value) &&
+        !/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/.test(
+            value,
+        )
+    )
+        return undefined
+    const delay = /^\d{1,8}$/.test(value) ? Number(value) * 1_000 : Date.parse(value) - now
+    return Number.isFinite(delay)
+        ? Math.min(NOTIFICATION_LIMITS.retryMaximumMs, Math.max(0, delay))
+        : undefined
+}
+
 function resolveBeforeAbort(
     resolver: WebhookResolver,
     hostname: string,
@@ -185,7 +203,7 @@ export async function deliverWebhookNotification(
                 },
                 (response) => {
                     const status = response.statusCode ?? 0
-                    const retryAfter = response.headers['retry-after']
+                    const retryAfter = notificationRetryAfterMs(response.headers['retry-after'])
                     response.on('error', () => {})
                     response.destroy()
                     request.destroy()
@@ -201,15 +219,8 @@ export async function deliverWebhookNotification(
                         success: false,
                         code: 'http_rejected',
                         retryable,
-                        ...(retryable &&
-                        typeof retryAfter === 'string' &&
-                        /^\d{1,8}$/.test(retryAfter)
-                            ? {
-                                  retryAfterMs: Math.min(
-                                      Number(retryAfter) * 1_000,
-                                      NOTIFICATION_LIMITS.retryMaximumMs,
-                                  ),
-                              }
+                        ...(retryable && retryAfter !== undefined
+                            ? { retryAfterMs: retryAfter }
                             : {}),
                     })
                 },

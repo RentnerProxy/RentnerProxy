@@ -109,6 +109,10 @@ export interface NotificationStatus {
     readonly pendingCount: number
     readonly deferredCount: number
     readonly saturationCount: number
+    readonly activeCount: number
+    readonly exhaustedCount: number
+    readonly terminalCount: number
+    readonly oldestPendingAgeMs: number | null
 }
 
 export interface NotificationObservation {

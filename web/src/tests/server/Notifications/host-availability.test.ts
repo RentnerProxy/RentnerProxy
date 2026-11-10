@@ -248,17 +248,18 @@ describe('host availability transitions use the durable notification outbox', ()
             9_001,
         )
         expect(retried.deliveries).toHaveLength(1)
-        const retry = claimNotificationDelivery(restart(retried), configuration, 39_001, randomUUID)
+        const due = retried.deliveries[0]!.nextAttemptAt
+        const retry = claimNotificationDelivery(restart(retried), configuration, due, randomUUID)
         expect(retry.delivery?.id).toBe(first.delivery?.id)
         retried = finishNotificationDelivery(
             retry.state,
             configuration,
             retry.delivery!.leaseToken,
             { success: true },
-            39_002,
+            due + 1,
         )
         expect(
-            claimNotificationDelivery(restart(retried), configuration, 39_003, randomUUID).delivery
+            claimNotificationDelivery(restart(retried), configuration, due + 2, randomUUID).delivery
                 ?.payload.type,
         ).toBe('recovery')
     })

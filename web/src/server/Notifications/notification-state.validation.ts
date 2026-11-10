@@ -23,6 +23,13 @@ const error = z.enum([
     'payload_limit',
     'configuration_unavailable',
 ])
+const dispatch = z.strictObject({
+    channelId: identifier,
+    ownerUserId: identifier.nullable(),
+    kind: z.enum(['email', 'webhook']),
+    category: z.enum(NOTIFICATION_CATEGORIES),
+    at: time,
+})
 const payload = z.strictObject({
     schemaVersion: z.literal(1),
     id: identifier,
@@ -51,6 +58,7 @@ const payload = z.strictObject({
 export const notificationStateSchema: z.ZodType<NotificationState> = z
     .strictObject({
         version: z.literal(1),
+        dispatches: z.array(dispatch).max(NOTIFICATION_LIMITS.globalRate).optional(),
         proxyApplyPending: z
             .strictObject({
                 desiredRevision: z.string().min(1).max(128),
@@ -120,6 +128,7 @@ export const notificationStateSchema: z.ZodType<NotificationState> = z
                     leaseToken: identifier.nullable(),
                     leaseExpiresAt: time.nullable(),
                     error: error.nullable(),
+                    dispatch: dispatch.optional(),
                 }),
             )
             .max(NOTIFICATION_LIMITS.deliveries),
@@ -161,6 +170,14 @@ export const notificationStateSchema: z.ZodType<NotificationState> = z
         const deliveryIds = new Set<string>()
         const leases = new Set<string>()
         for (const delivery of state.deliveries) {
+            if (
+                delivery.dispatch &&
+                (delivery.dispatch.channelId !== delivery.channelId ||
+                    delivery.dispatch.category !== delivery.payload.category ||
+                    delivery.dispatch.at < delivery.createdAt ||
+                    delivery.dispatch.at > delivery.updatedAt)
+            )
+                context.addIssue({ code: 'custom', message: 'Invalid delivery admission' })
             if (
                 delivery.payload.type !== 'test' &&
                 (delivery.payload.category === 'host_availability') !==

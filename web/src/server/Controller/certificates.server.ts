@@ -42,10 +42,13 @@ function certificatePath(certificateId: string): `/internal/v1/certificates/${st
     return `/internal/v1/certificates/${id.data.toLowerCase()}`
 }
 
-export async function getControllerCertificates(): Promise<ControllerCertificateMetadata[]> {
+export async function getControllerCertificates(
+    signal?: AbortSignal,
+): Promise<ControllerCertificateMetadata[]> {
     const payload = await controllerRequest('/internal/v1/certificates', {
         privileged: true,
         timeoutMs: 2_000,
+        ...(signal ? { signal } : {}),
         responseLimit: RESPONSE_LIMIT,
         acceptErrorResponse: true,
     })
@@ -60,6 +63,7 @@ export async function getControllerCertificates(): Promise<ControllerCertificate
 export async function getControllerCertificateEvents(
     after?: string | null,
     limit = 100,
+    signal?: AbortSignal,
 ): Promise<CertificateEventPage> {
     if (!Number.isInteger(limit) || limit < 1 || limit > CERTIFICATE_EVENT_MAX_PAGE_SIZE) {
         throw new CertificateDomainError('invalid_input')
@@ -78,6 +82,7 @@ export async function getControllerCertificateEvents(
     const payload = await controllerRequest(path, {
         privileged: true,
         timeoutMs: 5_000,
+        ...(signal ? { signal } : {}),
         responseLimit: CERTIFICATE_EVENTS_RESPONSE_LIMIT,
         acceptErrorResponse: true,
     })

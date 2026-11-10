@@ -48,7 +48,12 @@ export function createNotificationAdminService(dependencies: NotificationAdminDe
                 const runtime = await dependencies.readRuntime(transaction)
                 const channels = configuration.channels.filter((channel) => !channel.ownerUserId)
                 return summarizeNotificationState(
-                    filterNotificationStateForChannels(runtime.engine, channels),
+                    filterNotificationStateForChannels(
+                        runtime.engine,
+                        channels,
+                        undefined,
+                        configuration.enabled && !configuration.pausedAfterRestore,
+                    ),
                 )
             }, true)
         },

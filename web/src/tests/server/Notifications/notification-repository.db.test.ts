@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { createServer } from 'node:http'
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test'
 import { eq, inArray, sql } from 'drizzle-orm'
 import { NOTIFICATION_SETTINGS_KEY, NOTIFICATION_STATE_KEY } from '@/config/notifications.config.ts'
@@ -14,6 +15,8 @@ import {
     claimNextNotificationDelivery,
     claimNotificationCollection,
     commitNotificationCollection,
+    authorizeNotificationDelivery,
+    readNextNotificationDeliveryAt,
 } from '@/server/Notifications/notification-repository.ts'
 import {
     lockNotificationConfiguration,
@@ -28,6 +31,10 @@ import type {
     StoredNotificationConfiguration,
 } from '@/server/Notifications/Types/notification-internal.types.ts'
 import type { NotificationCollectedBatch } from '@/server/Notifications/Types/notification-worker.types.ts'
+import { createNotificationWorker } from '@/server/Notifications/notification-worker.ts'
+import { createAuthorizedNotificationDelivery } from '@/server/Notifications/notification-delivery.server.ts'
+import { deliverWebhookNotification } from '@/server/Notifications/webhook-delivery.ts'
+import { sendNotificationEmailService } from '@/server/Mail/mail.service.ts'
 
 const enabled = process.env.RENTNERPROXY_DATABASE_INTEGRATION === '1' && getDatabaseUrl() !== null
 const integrationTest = enabled ? test : test.skip
@@ -160,6 +167,221 @@ afterEach(async () => {
 })
 
 describe('notification repository PostgreSQL durability and concurrency', () => {
+    integrationTest(
+        'real healthy webhooks drain behind stalled SMTP, and stop persists every cancellation before returning',
+        async () => {
+            const base = configuration()
+            const config = {
+                ...base,
+                channels: Array.from({ length: 8 }, (_, index) => ({
+                    ...base.channels[0]!,
+                    id: randomUUID(),
+                    kind: index % 2 === 0 ? ('email' as const) : ('webhook' as const),
+                    events: [index % 4 < 2 ? ('ddns' as const) : ('proxy_configuration' as const)],
+                })),
+            }
+            await getAuthDatabase().transaction(async (transaction) => {
+                await lockNotificationConfiguration(transaction)
+                await writeNotificationConfiguration(transaction, config)
+                const runtime = await lockNotificationRuntime(transaction)
+                runtime.engine = observeNotificationSignals(
+                    runtime.engine,
+                    config,
+                    Array.from({ length: 8 }, (_, index) => ({
+                        ...batch(`mixed-${index}`).observations[0]!,
+                        category: index % 2 === 0 ? 'ddns' : 'proxy_configuration',
+                    })),
+                    Date.now(),
+                    randomUUID,
+                )
+                await writeNotificationRuntime(transaction, runtime)
+            })
+            const received = new Set<string>()
+            const allReceived = Promise.withResolvers<void>()
+            let smtpOpened = 0
+            let smtpClosed = 0
+            let unavailable = false
+            const server = createServer((request, response) => {
+                const key = request.headers['idempotency-key']
+                if (typeof key === 'string') received.add(key)
+                if (received.size === 16) allReceived.resolve()
+                request.resume()
+                response.writeHead(204)
+                response.end()
+            })
+            await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+            const address = server.address()
+            if (!address || typeof address === 'string') throw new Error('Invalid receiver fixture')
+            const deliver = createAuthorizedNotificationDelivery({
+                authorize: authorizeNotificationDelivery,
+                open: async (channel) =>
+                    channel.kind === 'email'
+                        ? { kind: 'email', recipients: ['fixture@example.test'] }
+                        : {
+                              kind: 'webhook',
+                              url: `http://127.0.0.1:${address.port}/`,
+                              authorizationToken: null,
+                              allowedPrivateCidrs: ['127.0.0.1/32'],
+                          },
+                deliver: async (destination, payload, signal) =>
+                    destination.kind === 'webhook'
+                        ? deliverWebhookNotification(destination, payload, signal)
+                        : sendNotificationEmailService(destination.recipients, payload, signal, {
+                              createClient: () => {
+                                  smtpOpened++
+                                  return {
+                                      from: 'fixture@example.test',
+                                      close() {
+                                          smtpClosed++
+                                      },
+                                      sendMail: () => new Promise(() => {}),
+                                  }
+                              },
+                          }),
+            })
+            const worker = createNotificationWorker({
+                claimCollection: async () => null,
+                collect: async () => ({ observations: [], certificateCursor: null }),
+                commitCollection: async () => false,
+                claimDelivery: claimNextNotificationDelivery,
+                nextDeliveryAt: readNextNotificationDeliveryAt,
+                acknowledge: acknowledgeNotificationDelivery,
+                deliver,
+                changed() {},
+                unavailable() {
+                    unavailable = true
+                },
+            })
+            const started = performance.now()
+            let deadline: ReturnType<typeof setTimeout> | undefined
+            try {
+                worker.start()
+                await Promise.race([
+                    allReceived.promise,
+                    new Promise<never>((_resolve, reject) => {
+                        deadline = setTimeout(
+                            () => reject(new Error('Healthy destinations starved')),
+                            4000,
+                        )
+                    }),
+                ])
+                expect(performance.now() - started).toBeLessThan(4000)
+                expect(smtpOpened).toBeGreaterThan(0)
+                expect(smtpOpened).toBeLessThanOrEqual(4)
+                // Let received responses finish before testing cancellation of the stalled SMTP lane.
+                const waitForAcknowledgements = async (): Promise<void> => {
+                    const runtime = await readRuntime()
+                    if (
+                        runtime.engine.deliveries.filter((item) => item.status === 'succeeded')
+                            .length === 16
+                    )
+                        return
+                    if (performance.now() - started > 4000)
+                        throw new Error('Acknowledgements did not drain')
+                    await new Promise((resolve) => setTimeout(resolve, 20))
+                    return waitForAcknowledgements()
+                }
+                await waitForAcknowledgements()
+            } finally {
+                if (deadline) clearTimeout(deadline)
+                await worker.stop()
+                server.closeAllConnections()
+                server.close()
+            }
+            const runtime = await readRuntime()
+            expect(received.size).toBe(16)
+            expect(unavailable).toBe(false)
+            expect(smtpClosed).toBe(smtpOpened)
+            expect(
+                runtime.engine.deliveries.filter((item) => item.status === 'inflight'),
+            ).toHaveLength(0)
+            expect(
+                runtime.engine.deliveries.filter((item) => item.status === 'succeeded'),
+            ).toHaveLength(16)
+            expect(
+                runtime.engine.deliveries
+                    .filter((item) => item.error === 'cancelled')
+                    .every((item) => item.status === 'pending'),
+            ).toBe(true)
+        },
+        8000,
+    )
+
+    integrationTest(
+        'concurrent processes enforce the shared budgets and acknowledge independent claims without lost writes',
+        async () => {
+            const base = configuration()
+            const config = {
+                ...base,
+                channels: Array.from({ length: 16 }, (_, index) => ({
+                    ...base.channels[0]!,
+                    id: randomUUID(),
+                    kind: index % 2 === 0 ? ('email' as const) : ('webhook' as const),
+                    events: [index % 4 < 2 ? ('ddns' as const) : ('proxy_configuration' as const)],
+                })),
+            }
+            await getAuthDatabase().transaction(async (transaction) => {
+                await lockNotificationConfiguration(transaction)
+                await writeNotificationConfiguration(transaction, config)
+                const runtime = await lockNotificationRuntime(transaction)
+                runtime.engine = observeNotificationSignals(
+                    runtime.engine,
+                    config,
+                    Array.from({ length: 8 }, (_, index) => ({
+                        ...batch(`storm-${index}`).observations[0]!,
+                        category: index % 2 === 0 ? 'ddns' : 'proxy_configuration',
+                    })),
+                    Date.now(),
+                    randomUUID,
+                )
+                await writeNotificationRuntime(transaction, runtime)
+            })
+            const claims = (
+                await Promise.all(Array.from({ length: 32 }, () => claimNextNotificationDelivery()))
+            ).filter((claim) => claim !== null)
+            expect(claims).toHaveLength(8)
+            expect(new Set(claims.map((claim) => claim.id)).size).toBe(8)
+            expect(claims.filter((claim) => claim.channel.kind === 'email')).toHaveLength(4)
+            const version = await runtimeVersion()
+            expect(await readNextNotificationDeliveryAt()).toBeGreaterThan(Date.now())
+            expect(await runtimeVersion()).toBe(version)
+            await Promise.all(
+                claims.map((claim) =>
+                    acknowledgeNotificationDelivery(claim.leaseToken, { success: true }),
+                ),
+            )
+            const persisted = await readRuntime()
+            expect(
+                persisted.engine.deliveries.filter((delivery) => delivery.status === 'succeeded'),
+            ).toHaveLength(8)
+            expect(
+                persisted.engine.deliveries.filter((delivery) => delivery.status === 'inflight'),
+            ).toHaveLength(0)
+        },
+    )
+
+    integrationTest(
+        'dispatch authorization checks the live lease and a restore pause still records admitted acceptance',
+        async () => {
+            await seedFailure()
+            const claim = (await claimNextNotificationDelivery())!
+            expect(await authorizeNotificationDelivery(claim)).not.toBeNull()
+            expect(
+                await authorizeNotificationDelivery({ ...claim, leaseToken: randomUUID() }),
+            ).toBeNull()
+            await changeConfiguration((current) => ({
+                ...current,
+                revision: current.revision + 1,
+                enabled: false,
+                pausedAfterRestore: true,
+            }))
+            expect(await authorizeNotificationDelivery(claim)).toBeNull()
+            await acknowledgeNotificationDelivery(claim.leaseToken, { success: true })
+            expect((await readRuntime()).engine.deliveries[0]?.status).toBe('succeeded')
+            expect(await claimNextNotificationDelivery()).toBeNull()
+        },
+    )
+
     integrationTest(
         'empty polls and unknown acknowledgements preserve the stored row and collector lease',
         async () => {

@@ -38,6 +38,10 @@ test('notification delivery table filters translated states and sorts by timesta
         pendingCount: 0,
         deferredCount: 0,
         saturationCount: 0,
+        activeCount: 0,
+        exhaustedCount: 0,
+        terminalCount: 2,
+        oldestPendingAgeMs: null,
     }
     const hook = await mountHook(() => useDeliveryTableLogic({ status, channels: [] }))
     try {

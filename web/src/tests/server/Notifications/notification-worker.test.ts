@@ -1,4 +1,5 @@
-import { describe, expect, test } from 'bun:test'
+// oxlint-disable no-await-in-loop -- Flush promise turns between deterministic timer advances.
+import { describe, expect, jest, test } from 'bun:test'
 import { createNotificationWorker } from '@/server/Notifications/notification-worker.ts'
 import { NOTIFICATION_LIMITS } from '@/config/notifications.config.ts'
 import type { NotificationWorkerDependencies } from '@/server/Notifications/Types/notification-worker.types.ts'
@@ -162,8 +163,9 @@ describe('notification worker lifecycle and isolation', () => {
         await worker.stop()
         await running
         await worker.runOnce()
-        expect(claims).toBe(1)
-        expect(acknowledgements).toBe(1)
+        expect(claims).toBeGreaterThan(0)
+        expect(claims).toBeLessThanOrEqual(NOTIFICATION_LIMITS.concurrency)
+        expect(acknowledgements).toBe(claims)
     })
 
     test('acknowledges a durable claim returned after shutdown without starting its transport', async () => {
@@ -306,4 +308,187 @@ describe('notification worker lifecycle and isolation', () => {
         await worker.stop()
         expect(warnings).toBe(2)
     })
+})
+
+async function settle() {
+    for (let index = 0; index < 80; index++) await Promise.resolve()
+}
+
+test('scheduled delivery refills free slots while other transports and collection remain stalled', async () => {
+    jest.useFakeTimers({ now: 1000 })
+    const pending = new Set<
+        (
+            result: { success: false; code: 'cancelled'; retryable: false } | { success: true },
+        ) => void
+    >()
+    let sends = 0
+    let claims = 0
+    let collecting = 0
+    let active = 0
+    let maximum = 0
+    let acknowledged = 0
+    const worker = createNotificationWorker(
+        dependencies({
+            claimCollection: async () => ({
+                token: 'token',
+                configurationRevision: 1,
+                certificateCursor: null,
+            }),
+            collect: async (_cursor, signal) => {
+                collecting++
+                await new Promise<void>((resolve) =>
+                    signal.addEventListener('abort', () => resolve(), { once: true }),
+                )
+                return { observations: [], certificateCursor: null }
+            },
+            claimDelivery: async () => {
+                claims++
+                return claim
+            },
+            deliver: async (_claim, signal) => {
+                sends++
+                active++
+                maximum = Math.max(maximum, active)
+                const result = await new Promise<
+                    { success: false; code: 'cancelled'; retryable: false } | { success: true }
+                >((resolve) => {
+                    pending.add(resolve)
+                    signal.addEventListener(
+                        'abort',
+                        () => resolve({ success: false, code: 'cancelled', retryable: false }),
+                        { once: true },
+                    )
+                })
+                active--
+                return result
+            },
+            acknowledge: async () => {
+                acknowledged++
+            },
+        }),
+    )
+    try {
+        worker.start()
+        await settle()
+        expect(sends).toBe(8)
+        expect(collecting).toBe(1)
+        pending.values().next().value!({ success: true })
+        await settle()
+        jest.advanceTimersByTime(50)
+        await settle()
+        expect(sends).toBe(9)
+        expect(maximum).toBe(8)
+        await worker.stop()
+        expect(acknowledged).toBe(claims)
+        expect(active).toBe(0)
+    } finally {
+        await worker.stop()
+        jest.useRealTimers()
+    }
+})
+
+test('due timers, coalesced hints and periodic replay recover work independently of Valkey', async () => {
+    jest.useFakeTimers({ now: 1000 })
+    let wake: (() => void) | undefined
+    let pending = false
+    let claims = 0
+    let sends = 0
+    let unsubscribed = false
+    let due: number | null = 2000
+    const worker = createNotificationWorker(
+        dependencies({
+            subscribe: (listener) => {
+                wake = listener
+                return () => {
+                    unsubscribed = true
+                }
+            },
+            nextDeliveryAt: async () => due,
+            claimDelivery: async () => {
+                claims++
+                if (!pending) return null
+                pending = false
+                return claim
+            },
+            deliver: async () => {
+                sends++
+                return { success: true }
+            },
+        }),
+    )
+    try {
+        worker.start()
+        await settle()
+        pending = true
+        jest.advanceTimersByTime(999)
+        await settle()
+        expect(sends).toBe(0)
+        due = null
+        jest.advanceTimersByTime(1)
+        await settle()
+        expect(sends).toBe(1)
+        jest.advanceTimersByTime(50)
+        await settle()
+        const beforeHints = claims
+        pending = true
+        for (let index = 0; index < 1000; index++) wake!()
+        jest.advanceTimersByTime(49)
+        await settle()
+        expect(claims).toBe(beforeHints)
+        jest.advanceTimersByTime(1)
+        await settle()
+        expect(sends).toBe(2)
+        jest.advanceTimersByTime(50)
+        await settle()
+        // A durable commit with a lost hint still recovers on the authoritative PostgreSQL poll.
+        pending = true
+        jest.advanceTimersByTime(15_000)
+        await settle()
+        expect(sends).toBe(3)
+        await worker.stop()
+        expect(unsubscribed).toBe(true)
+        const afterStop = claims
+        wake!()
+        jest.advanceTimersByTime(60_000)
+        await settle()
+        expect(claims).toBe(afterStop)
+    } finally {
+        await worker.stop()
+        jest.useRealTimers()
+    }
+})
+
+test('stop records a receiver acceptance that races cancellation and drains acknowledgement before returning', async () => {
+    const sending = Promise.withResolvers<void>()
+    const accepted = Promise.withResolvers<{ success: true }>()
+    const acknowledge = Promise.withResolvers<void>()
+    let claims = 0
+    let recorded = false
+    const worker = createNotificationWorker(
+        dependencies({
+            claimDelivery: async () => (++claims === 1 ? claim : null),
+            deliver: async () => {
+                sending.resolve()
+                return accepted.promise
+            },
+            acknowledge: async (_token, result) => {
+                expect(result).toEqual({ success: true })
+                await acknowledge.promise
+                recorded = true
+            },
+        }),
+    )
+    const running = worker.runOnce()
+    await sending.promise
+    let drained = false
+    const stop = worker.stop().then(() => {
+        drained = true
+    })
+    accepted.resolve({ success: true })
+    await settle()
+    expect(drained).toBe(false)
+    acknowledge.resolve()
+    await stop
+    await running
+    expect(recorded).toBe(true)
 })

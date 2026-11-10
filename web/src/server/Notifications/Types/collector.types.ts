@@ -10,13 +10,16 @@ export interface NotificationCollection {
 }
 
 export interface NotificationCollectorDependencies {
-    readonly certificates: () => Promise<readonly ControllerCertificateMetadata[]>
+    readonly certificates: (
+        signal?: AbortSignal,
+    ) => Promise<readonly ControllerCertificateMetadata[]>
     readonly certificateEvents: (
         after: string | null,
         limit: number,
+        signal?: AbortSignal,
     ) => Promise<CertificateEventPage>
-    readonly ddns: () => Promise<DdnsSnapshot>
+    readonly ddns: (signal?: AbortSignal) => Promise<DdnsSnapshot>
     readonly proxySnapshot: () => Promise<{ readonly revision: string }>
-    readonly proxyStatus: () => Promise<ProxyRuntimeStatus | null>
+    readonly proxyStatus: (signal?: AbortSignal) => Promise<ProxyRuntimeStatus | null>
     readonly now: () => number
 }

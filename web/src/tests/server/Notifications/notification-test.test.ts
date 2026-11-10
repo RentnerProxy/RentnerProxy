@@ -124,21 +124,42 @@ describe('explicit notification probes', () => {
 
     test('does not evict active deliveries when the outbox is saturated', () => {
         const state = createNotificationState()
+        const template = claimNotificationTestDelivery(
+            state,
+            configuration,
+            channelId,
+            1_000,
+            makeId,
+        ).state.deliveries[0]!
+        // Seed a legacy saturated store without bypassing current admission limits through the API.
         for (let index = 0; index < NOTIFICATION_LIMITS.deliveries; index++) {
-            const probe = claimNotificationTestDelivery(
-                state,
-                configuration,
-                channelId,
-                1_000,
-                makeId,
-            )
-            state.deliveries = probe.state.deliveries
+            const id = makeId()
+            state.deliveries.push({
+                ...template,
+                id,
+                payload: { ...template.payload, id },
+                leaseToken: makeId(),
+            })
         }
         expect(() =>
             claimNotificationTestDelivery(state, configuration, channelId, 1_001, makeId),
         ).toThrow()
         expect(state.deliveries).toHaveLength(NOTIFICATION_LIMITS.deliveries)
         expect(notificationStateSchema.safeParse(state).success).toBe(true)
+    })
+
+    test('manual probes obey the same per-channel admission budget as background sends', () => {
+        const first = claimNotificationTestDelivery(
+            createNotificationState(),
+            configuration,
+            channelId,
+            1000,
+            makeId,
+        )
+        expect(() =>
+            claimNotificationTestDelivery(first.state, configuration, channelId, 1001, makeId),
+        ).toThrow()
+        expect(first.state.deliveries).toHaveLength(1)
     })
 
     test('revoking a category cancels queued alerts and prevents a retry or recovery', () => {

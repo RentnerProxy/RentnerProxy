@@ -251,7 +251,7 @@ describe('durable notification incidents and outbox', () => {
         const reclaimed = claimNotificationDelivery(
             state,
             configuration,
-            1_000 + NOTIFICATION_LIMITS.leaseMs + NOTIFICATION_LIMITS.retryInitialMs,
+            state.deliveries[0]!.nextAttemptAt,
             makeId,
         )
         expect(reclaimed.delivery?.id).toBe(another.delivery?.id)
@@ -636,7 +636,7 @@ describe('durable notification incidents and outbox', () => {
         const retried = claimNotificationDelivery(
             state,
             configuration,
-            1_001 + NOTIFICATION_LIMITS.retryInitialMs,
+            state.deliveries[0]!.nextAttemptAt,
             makeId,
         )
         expect(retried.delivery?.id).toBe(claimed.delivery!.id)
