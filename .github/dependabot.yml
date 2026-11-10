@@ -5,7 +5,7 @@ updates:
       directory: '/'
       schedule:
           interval: 'cron'
-          cronjob: '0 3 * * 1'
+          cronjob: '0 3 * * *'
           timezone: 'Europe/Berlin'
       cooldown:
           default-days: 1
@@ -26,7 +26,7 @@ updates:
       directory: '/core'
       schedule:
           interval: 'cron'
-          cronjob: '0 3 * * 1'
+          cronjob: '0 3 * * *'
           timezone: 'Europe/Berlin'
       cooldown:
           default-days: 1
@@ -48,7 +48,7 @@ updates:
           - '/core/caddy-modules/responsecache'
       schedule:
           interval: 'cron'
-          cronjob: '0 3 * * 1'
+          cronjob: '0 3 * * *'
           timezone: 'Europe/Berlin'
       cooldown:
           default-days: 1
@@ -72,7 +72,7 @@ updates:
           - '/docker/web'
       schedule:
           interval: 'cron'
-          cronjob: '0 3 * * 1'
+          cronjob: '0 3 * * *'
           timezone: 'Europe/Berlin'
       cooldown:
           default-days: 1
@@ -89,7 +89,7 @@ updates:
       directory: '/'
       schedule:
           interval: 'cron'
-          cronjob: '0 3 * * 1'
+          cronjob: '0 3 * * *'
           timezone: 'Europe/Berlin'
       cooldown:
           default-days: 1
@@ -105,7 +105,7 @@ updates:
       directory: '/'
       schedule:
           interval: 'cron'
-          cronjob: '0 3 * * 1'
+          cronjob: '0 3 * * *'
           timezone: 'Europe/Berlin'
       cooldown:
           default-days: 1
