@@ -37,7 +37,7 @@ import {
 import { nextNotificationDeliveryAt } from './notification-scheduling.ts'
 import { workerObservability } from '@/server/Foundation/worker-observability.ts'
 
-/** Read one repeatable queue snapshot through the notification SQL partition; disabled/restored queues retain unavailable metrics. */
+/** Read scheduling and pending counts in one read-only notification-partition snapshot; disabled/restored queues retain unavailable evidence. */
 export async function readNextNotificationDeliveryAt(): Promise<number | null> {
     const sample = await getBackgroundDatabase('notifications').transaction(
         async (transaction) => {

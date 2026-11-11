@@ -156,6 +156,7 @@ async function archive(revision: string, destination: string, paths: string[] = 
     await rm(path)
 }
 
+/** Own a uniquely named disposable appliance and its private fixture state, DNS, transport observers, and cleanup handles for bounded reliability scenarios. */
 export async function createHarness(options: ReliabilityOptions, checks: ReliabilityCheck[]) {
     const runId = randomBytes(6).toString('hex')
     if (!process.env.RENTNERPROXY_SMOKE_RUN) process.env.RENTNERPROXY_SMOKE_RUN = 'local-' + runId
@@ -335,6 +336,7 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
             )
         }, 'desired revision did not become active')
     }
+    /** Refresh the owned appliance IPv4 address while preserving registered boundary SANs; validate aliases before changing any DNS record. */
     async function refreshDns(aliases: readonly string[] = []) {
         const address = await docker([
             'inspect',
@@ -474,6 +476,7 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
         fixtureTlsStarted = true
         return fixtureTransport.tlsPort
     }
+    /** Export only allowlisted stages/categories and bounded transport evidence, preserving cancellation while incomplete probes remain explicitly partial. */
     async function captureTrafficDiagnostic(
         stage: string,
         category: string,
@@ -501,6 +504,7 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
                 'timeout',
                 'telemetry',
                 'unexpected',
+                'cancelled',
             ].includes(category)
                 ? category
                 : 'unexpected',
@@ -648,6 +652,7 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
         }
         await writeFile(composeFile, smokeCompose(Bun.YAML.stringify(config)), { mode: 0o600 })
     }
+    /** Restore the owned current-source appliance into a fresh volume, reestablish private fixture ownership, and verify exact durable state and desired revision. */
     async function backupRestore() {
         assert.equal(options.source, 'current')
         const before = await fixture('durability-read')
@@ -698,15 +703,6 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
         ])
         await docker(['cp', statePath, container + ':/tmp/rentnerproxy-reliability-fixture.json'])
         const fixtureStatePath = '/tmp/rentnerproxy-reliability-fixture.json'
-        const copiedOwner = await docker([
-            'exec',
-            container,
-            'stat',
-            '--format=%u:%g:%a',
-            fixtureStatePath,
-        ])
-        assert.match(copiedOwner, /^\d+:\d+:[0-7]{3,4}$/u)
-        console.log('Restored private fixture state owner/mode: ' + copiedOwner)
         // The maintenance fixture runs as root; match its original private file ownership.
         await docker(['exec', container, 'chown', '0:0', fixtureStatePath])
         await docker([
@@ -720,6 +716,7 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
             await docker(['exec', container, 'stat', '--format=%u:%g:%a', fixtureStatePath]),
             '0:0:600',
         )
+        console.log('Restored fixture state verified private (owner 0:0, mode 600)')
         await ready()
         const after = await fixture('durability-read')
         assert.deepEqual(after.durableCounts, before.durableCounts)
@@ -1079,6 +1076,7 @@ console.log(JSON.stringify({...processResources,cgroupMemoryCurrentBytes:memory,
         setAuthMode(value: 'allow' | 'deny' | 'unavailable') {
             return fixtureControl({ authMode: value })
         },
+        /** Read bounded upstream receipt evidence through the private fixture control endpoint; return unknown data for caller schema validation. */
         async backgroundReceipts() {
             return JSON.parse(
                 await docker(

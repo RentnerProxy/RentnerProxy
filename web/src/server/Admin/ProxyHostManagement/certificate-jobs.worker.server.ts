@@ -74,6 +74,7 @@ async function saveJobCertificateMetadata(
     })
 }
 
+/** Validate and decrypt only under the current job claim, persist issuing intent, then check cancellation before controller dispatch. */
 async function issueJobCertificate(
     job: CertificateJobRow,
     controller: typeof certificateJobController,
@@ -103,6 +104,7 @@ async function issueJobCertificate(
     return dispatch ? controller.issue(dispatch.certificateId, dispatch.request, signal) : null
 }
 
+/** Preserve existing operation identity and retry intent while passing cancellation through controller reads, issuance, and renewal. */
 async function loadOrIssueJobCertificate(
     job: CertificateJobRow,
     controller: typeof certificateJobController,
@@ -134,6 +136,7 @@ async function loadOrIssueJobCertificate(
     return metadata
 }
 
+/** Fence context before controller work, release unfinished leases durably, and count success only after binding/runtime confirmation. */
 async function processCertificateJob(
     job: CertificateJobRow,
     controller = certificateJobController,
@@ -201,6 +204,7 @@ async function processCertificateJob(
     }
 }
 
+/** Settle all four claim attempts and their late lease cleanup before propagating failure; aggregate real outcomes without inventing empty-batch success. */
 export async function runCertificateJobsOnce(
     controller = certificateJobController,
     runtime = certificateJobRuntime,
@@ -240,6 +244,7 @@ let stopped = true
 let controller = new AbortController()
 let unavailable = false
 
+/** Start one nonoverlapping batch chain with fresh cancellation, five-second post-settlement spacing and rate-limited outage logging. */
 export function startCertificateJobWorker(): void {
     if (!stopped || running) return
     stopped = false
@@ -276,6 +281,7 @@ export function startCertificateJobWorker(): void {
     tick()
 }
 
+/** Latch stop, abort controller I/O and cancel the retry timer before awaiting the bounded current batch drain. */
 export async function stopCertificateJobWorker(): Promise<void> {
     stopped = true
     controller.abort()

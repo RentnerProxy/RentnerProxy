@@ -15,6 +15,7 @@ const INITIAL_RETRY_DELAY_MS = 1_000
 const MAX_RETRY_DELAY_MS = 60_000
 const DRIFT_CHECK_INTERVAL_MS = 60_000
 
+/** Own one serialized apply loop and drift flight with shared cancellation and bounded drain; rejected revisions stay degraded until actual recovery. */
 export function createRuntimeReconciler<T>(
     dependencies: RuntimeReconcileDependencies<T>,
     options: RuntimeReconcileOptions,
@@ -63,6 +64,7 @@ export function createRuntimeReconciler<T>(
         }
     }
 
+    /** Apply revisions serially with cancellation; only stable successful work clears rejection evidence and resolves applied waiters. */
     async function runWorker(): Promise<void> {
         let retryDelay = INITIAL_RETRY_DELAY_MS
         // oxlint-disable-next-line no-unmodified-loop-condition -- stop() changes this lifecycle flag.
@@ -170,6 +172,7 @@ export function createRuntimeReconciler<T>(
         return publicFlight
     }
 
+    /** Admit the initial reconciliation once and register one unrefed drift timer; stopped reconcilers cannot restart. */
     function start(): void {
         if (started || stopped || dependencies.enabled === false) return
         started = true
@@ -180,6 +183,7 @@ export function createRuntimeReconciler<T>(
         }
     }
 
+    /** Share a single drift observation so repeated triggers cannot create untracked work during drain. */
     function checkDrift(): Promise<void> {
         const drift = dependencies.drift
         if (!drift || stopped || dependencies.enabled === false) return Promise.resolve()
@@ -190,6 +194,7 @@ export function createRuntimeReconciler<T>(
         return driftFlight
     }
 
+    /** Observe drift with the owned cancellation signal and enqueue only while active; failures remain diagnostic and do not apply stale work. */
     async function observeDrift(
         drift: NonNullable<RuntimeReconcileDependencies<T>['drift']>,
     ): Promise<void> {
@@ -208,6 +213,7 @@ export function createRuntimeReconciler<T>(
         }
     }
 
+    /** Abort controller work, release pending waiters, and drain both apply and drift ownership under the shared shutdown bound. */
     async function stop(): Promise<void> {
         stopped = true
         controller.abort()

@@ -1,6 +1,7 @@
 import { fixtureTransport } from './fixture-transport.config.ts'
 import type { FixturePorts } from './Types/fixture-transport.types.ts'
 
+/** Own controlled upstream/auth/TLS listeners and a bounded background receipt buffer; explicit overflow preserves missing-evidence semantics. */
 export function startFixtureServers(ports: FixturePorts) {
     let upstreamFailed = false
     let authMode: 'allow' | 'deny' | 'unavailable' = 'allow'
@@ -12,11 +13,13 @@ export function startFixtureServers(ports: FixturePorts) {
         finishedAt: number | null
     }[] = []
     let receiptsOverflowed = false
+    /** Create a named upstream whose controlled HEAD workload records real start/finish times independently from normal proxy GET traffic. */
     const backend = (name: string, port: number) =>
         Bun.serve({
             hostname: '0.0.0.0',
             port,
             idleTimeout: fixtureTransport.idleTimeout,
+            /** Delay only recognized background HEADs, cap receipts at 10000, and release timers/listeners on abort before recording completion. */
             async fetch(request) {
                 if (upstreamFailed) return new Response(null, { status: 503 })
                 const background = /^bg-(\d{1,3})-(healthy|slow|timeout|failure)-/u.exec(
@@ -72,6 +75,7 @@ export function startFixtureServers(ports: FixturePorts) {
     const control = Bun.serve({
         hostname: '127.0.0.1',
         port: ports.controlPort,
+        /** Expose receipt reads and single-field fault controls only on the fixture loopback listener; reject malformed or combined mutations. */
         async fetch(request) {
             if (
                 request.method === 'GET' &&

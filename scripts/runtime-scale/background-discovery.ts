@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { createSeededRandom } from '../runtime-reliability/control.ts'
 
-/** Serve the bounded seeded Docker inventory with optional delayed event arming and detached-only mutations; caller owns shutdown. */
+/** Serve eight seeded containers and 256 events with controlled reconnects, delayed arming and detached-only mutation; caller owns shutdown. */
 export function startBackgroundDockerEngine(
     seed: number,
     options: { port?: number; initiallyPaused?: boolean; mutateDetachedInventory?: boolean } = {},
@@ -58,6 +58,7 @@ export function startBackgroundDockerEngine(
     const server = Bun.serve({
         hostname: '127.0.0.1',
         port: options.port ?? 0,
+        /** Expose only read-only fixture Docker routes and close the first three event streams to force bounded reconnect evidence. */
         fetch(request) {
             const path = new URL(request.url).pathname
             if (request.method !== 'GET') return new Response(null, { status: 403 })
@@ -113,6 +114,7 @@ export function startBackgroundDockerEngine(
     }
 }
 
+/** Require unused discovery configuration, verify bounded real connector reconnects, and restore configuration before stopping the fixture engine. */
 export async function runBackgroundDiscovery(seed: number) {
     const { dockerDiscoveryController } =
         await import('../../web/src/server/Controller/docker-discovery.server.ts')

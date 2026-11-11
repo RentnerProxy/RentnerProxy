@@ -18,6 +18,7 @@ class WorkerStoppedInstanceError extends Error {
     }
 }
 
+/** Keep writers fenced for queued/running restores and post-validation failures until the matching restore permits admission. */
 const shouldWait = (status: Awaited<ReturnType<typeof readRestoreMaintenanceStatus>>) =>
     status?.operation === 'restore' &&
     (status.state === 'queued' ||
@@ -25,6 +26,7 @@ const shouldWait = (status: Awaited<ReturnType<typeof readRestoreMaintenanceStat
         ((status.state === 'interrupted' || status.state === 'failed') &&
             !['queued', 'preparing', 'validating'].includes(status.phase)))
 
+/** Own deduplicated worker registration, bounded retry/drain, and irreversible maintenance/shutdown admission fences. */
 export function createWorkerLifecycleSupervisor() {
     let maintenanceStopped = false
     let maintenanceDrain: Promise<void> | null = null
@@ -34,6 +36,7 @@ export function createWorkerLifecycleSupervisor() {
         shutdownRequested = true
     })
 
+    /** Share startup by stable worker ID, wait for restore readiness and reject admission once maintenance or shutdown latches. */
     function startWorkerLifecycle(
         load: (signal: AbortSignal) => Promise<WorkerLifecycle>,
         id?: BackgroundWorkerId,
@@ -53,6 +56,7 @@ export function createWorkerLifecycleSupervisor() {
         return starting
     }
 
+    /** Fence new starts before collecting listener drain promises; share their resulting success or failure with every maintenance caller. */
     async function stopWorkersForRestoreMaintenance(): Promise<void> {
         if (maintenanceDrain) return maintenanceDrain
         maintenanceStopped = true
@@ -62,6 +66,7 @@ export function createWorkerLifecycleSupervisor() {
         return maintenanceDrain
     }
 
+    /** Load with cancellation, clean failed instances before bounded retries, and prevent late startup or reuse of a stopped singleton. */
     async function initializeWorkerLifecycle(
         load: (signal: AbortSignal) => Promise<WorkerLifecycle>,
         id?: BackgroundWorkerId,
@@ -73,6 +78,7 @@ export function createWorkerLifecycleSupervisor() {
         const state = (value: BackgroundWorkerState) => {
             if (id) workerObservability.state(id, value)
         }
+        /** Make retry/restore waits interruptible and remove the abort listener after either timer or cancellation settles. */
         const delay = (milliseconds: number) =>
             new Promise<void>((resolve) => {
                 if (controller.signal.aborted) return resolve()
@@ -87,6 +93,7 @@ export function createWorkerLifecycleSupervisor() {
 
         let stoppedWorker: WorkerLifecycle | undefined
         let workerStop: Promise<void> | undefined
+        /** Stop each loaded instance at most once and share its actual stop promise across startup and shutdown races. */
         const stopLoaded = () => {
             if (!worker) return Promise.resolve()
             if (stoppedWorker !== worker) {
@@ -96,11 +103,13 @@ export function createWorkerLifecycleSupervisor() {
             }
             return workerStop!
         }
+        /** Bound restore-status observation without treating its timeout as evidence that the underlying operation completed. */
         const readStatus = async () => {
             const reading = readRestoreMaintenanceStatus()
             await drainWorker(reading, options.startupTimeoutMs)
             return reading
         }
+        /** Bound worker loading while retaining its completion promise for late-instance cleanup. */
         const drainLoaded = async (loading: Promise<WorkerLifecycle>) => {
             await drainWorker(loading, options.startupTimeoutMs)
             return loading
@@ -167,6 +176,7 @@ export function createWorkerLifecycleSupervisor() {
                 }
             }
         })()
+        /** Abort initialization first, drain both existing and late-loaded workers, and record success only after every admitted task settles. */
         const stop = (pending: Array<Promise<void>>) => {
             controller.abort()
             if (!stopping) state(maintenanceStopped ? 'maintenance_paused' : 'stopping')

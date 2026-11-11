@@ -9,7 +9,7 @@ import {
 } from '../../web/src/tests/server/Notifications/Types/tls-test.types.ts'
 import type { NotificationMailClient } from '../../web/src/server/Mail/Types/notification-mail.types.ts'
 
-/** Own configurable loopback SMTP/webhook receivers, track active transport overlap, and distinguish attempts from accepted identities. */
+/** Own configurable loopback TLS-SMTP/webhook receivers, deduplicate payload identities and track active overlap; callers close clients and servers. */
 export async function startBackgroundNotificationReceivers(
     options: { smtpPort?: number; webhookPort?: number; delayMs?: number } = {},
 ) {
@@ -128,6 +128,7 @@ export async function startBackgroundNotificationReceivers(
             activeWebhooks,
             smtpConnections: sockets.size,
         }),
+        /** Create an isolated TLS client that trusts only the fixture CA and uses bounded transport timeouts; the caller must close it. */
         createMailClient(): NotificationMailClient {
             const transport = createTransport({
                 host: '127.0.0.1',
@@ -148,6 +149,7 @@ export async function startBackgroundNotificationReceivers(
                 close: () => transport.close(),
             }
         },
+        /** Stop webhook admission, destroy active SMTP sockets, and await SMTP listener closure. */
         async close() {
             webhook.stop(true)
             for (const socket of sockets) socket.destroy()

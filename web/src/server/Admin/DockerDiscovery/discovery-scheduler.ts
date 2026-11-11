@@ -74,6 +74,7 @@ export function createDiscoveryWorker(
             timer.unref?.()
             return trigger()
         },
+        /** Cancel subscriptions, queued triggers, and controller I/O before waiting for the actual reconciliation flight to drain. */
         async stop() {
             stopped = true
             dirty = false

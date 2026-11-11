@@ -25,6 +25,7 @@ export async function backgroundRecoveryBaseline(
     const sleep = dependencies.sleep ?? Bun.sleep
     const deadline = now() + timeoutMs
     let startedAt: string | undefined
+    /** Reject duplicate or replaced appliance owners and return an identity only when every required process is live. */
     const generation = (snapshot: ComponentRecoverySnapshot) => {
         assert.equal(snapshot.running, true, 'Baseline must retain the running appliance')
         startedAt ??= snapshot.startedAt
@@ -53,11 +54,12 @@ export async function backgroundRecoveryBaseline(
     throw dependencies.timeoutError('stable background recovery baseline')
 }
 
+/** Export at most four static source frames and a fixed owner role; never expose arbitrary error messages, paths, or payloads. */
 export function backgroundFailureDiagnostic(error: unknown) {
     if (!(error instanceof Error)) return { frames: [] as string[] }
     const frames = [
         ...(error.stack ?? '').matchAll(
-            /[\\/](background-run|background|component-recovery)\.ts:(\d{1,7}):(\d{1,7})\b/gu,
+            /[\\/](background-run|background|background-extended|background-recovery|component-recovery)\.ts:(\d{1,7}):(\d{1,7})\b/gu,
         ),
     ].map((match) => match[1] + '.ts:' + match[2] + ':' + match[3])
     const role =
@@ -74,6 +76,38 @@ export function backgroundFailureDiagnostic(error: unknown) {
               )
             : undefined
     return { frames: [...new Set(frames)].slice(0, 4), ...(role ? { role } : {}) }
+}
+
+/** A replay comparison is meaningful only after nonempty, one-to-one durable audit effects. */
+export function assertCertificateReplayEvidence(evidence: {
+    cursor: string | null | undefined
+    receiptIds: readonly string[]
+    auditIds: readonly string[]
+    auditEventIds: readonly string[]
+}) {
+    assert.ok(
+        evidence.cursor && evidence.receiptIds.length > 0,
+        'Actual controller events are required to establish replay evidence',
+    )
+    assert.ok(
+        evidence.auditIds.length > 0,
+        'Nonempty actual certificate audit effects are required to establish replay evidence',
+    )
+    assert.equal(
+        evidence.auditIds.length,
+        evidence.auditEventIds.length,
+        'Every observed audit row must carry its event identity',
+    )
+    assert.equal(
+        new Set(evidence.auditEventIds).size,
+        evidence.auditEventIds.length,
+        'Every certificate event has at most one audit effect',
+    )
+    assert.deepEqual(
+        [...evidence.auditEventIds].toSorted(),
+        [...evidence.receiptIds].toSorted(),
+        'Every actual certificate receipt must have exactly one durable audit effect',
+    )
 }
 
 export const backgroundSlo = {
@@ -99,6 +133,7 @@ export const backgroundSlo = {
     discovery: { events: 256, inventory: 8, reconnects: 3, recoveryMs: 45000 },
 } as const
 
+/** Accept unique flag/value pairs for fixed workload profiles and cap the cadence window at five minutes; extended recovery stays explicit. */
 export function parseBackgroundOptions(args: string[]): BackgroundOptions {
     const flags = new Map<string, string>()
     for (let index = 0; index < args.length; index += 2) {
@@ -160,6 +195,7 @@ export function parseBackgroundOptions(args: string[]): BackgroundOptions {
     }
 }
 
+/** Derive stable policy identities, latency profiles, and due offsets from the seed without depending on global randomness or wall time. */
 export function backgroundPolicies(options: BackgroundOptions): BackgroundPolicy[] {
     const random = createSeededRandom(options.seed)
     return Array.from({ length: options.policies }, (_, index) => {
@@ -180,6 +216,7 @@ export function backgroundPolicies(options: BackgroundOptions): BackgroundPolicy
     })
 }
 
+/** Compute nearest-rank tails without mutating input; reject invalid samples and represent missing evidence with null percentiles. */
 export function backgroundDistribution(values: readonly number[]) {
     if (values.some((value) => !Number.isFinite(value) || value < 0))
         throw new Error('Invalid background measurement')
@@ -194,6 +231,7 @@ export function backgroundDistribution(values: readonly number[]) {
     }
 }
 
+/** Require monotonic continuous samples within one process generation for trends; recovery samples cannot repair missing continuous evidence. */
 export function backgroundResourceEvidence(samples: BackgroundResourceSample[]) {
     const numeric = [
         'elapsedSeconds',
@@ -270,6 +308,7 @@ export function backgroundResourceEvidence(samples: BackgroundResourceSample[]) 
     }
 }
 
+/** Compare durable once-only outcomes and network receipts with the seeded workload; missing start evidence cannot establish scheduler admission. */
 export function backgroundMonitoringReport(
     options: BackgroundOptions,
     snapshot: BackgroundSnapshot,

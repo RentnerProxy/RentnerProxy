@@ -13,6 +13,7 @@ export async function lockMonitoring(transaction: AuthTransaction): Promise<void
     )
 }
 
+/** Bounds SQL/lock time and preserves settings-before-monitoring lock order when settings are needed. */
 export async function prepareWorkerTransaction(
     transaction: AuthTransaction,
     runtimeSettings = true,

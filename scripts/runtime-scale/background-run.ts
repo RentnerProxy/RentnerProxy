@@ -18,7 +18,7 @@ import {
 } from './background.ts'
 import { runContentionWindow } from './background-contention-run.ts'
 import {
-    backgroundPauseGuard,
+    backgroundPauseDetachedScript,
     backgroundPauseMarker,
     checkBackgroundCancellation,
     withBackgroundPause,
@@ -34,6 +34,7 @@ import type {
 import type { ReliabilityContext } from '../runtime-reliability/Types/harness.types.ts'
 import type { TrafficDiagnostic } from '../runtime-reliability/Types/fixture-transport.types.ts'
 
+/** Canonicalize appliance and process identities for stable resource-sample comparison; absent snapshots remain unavailable. */
 function generationOf(
     value: Awaited<ReturnType<ReturnType<typeof recoveryDependencies>['snapshot']>>,
 ) {
@@ -47,6 +48,7 @@ function generationOf(
         : undefined
 }
 
+/** Stage the explicit fixture sources, bundle against external production packages, and install only into the owned appliance. */
 async function installFixture(context: ReliabilityContext) {
     const source = join(context.temp, 'fixture-source')
     for (const relative of [
@@ -118,6 +120,7 @@ async function installFixture(context: ReliabilityContext) {
     ])
 }
 
+/** Pause the single identified Bun owner behind a detached emergency-resume guard and require completed resume before returning. */
 async function withPausedWeb<T>(
     context: ReliabilityContext,
     operation: () => Promise<T>,
@@ -131,8 +134,7 @@ async function withPausedWeb<T>(
     assert.ok(web?.length === 1)
     const target = web[0]!
     const guardPath = backgroundPauseMarker(context.runId)
-    const identity = `async()=>{try{const stat=await Bun.file('/proc/${target.pid}/stat').text();return stat.slice(stat.lastIndexOf(')')+2).trim().split(/\\s+/)[19]===${JSON.stringify(target.startTicks)}}catch{return false}}`
-    const exec = (script: string, detached = false) =>
+    const exec = (script: string, detached = false, args: readonly string[] = []) =>
         context.docker([
             'exec',
             ...(detached ? ['--detach'] : []),
@@ -141,18 +143,20 @@ async function withPausedWeb<T>(
             '--no-env-file',
             '-e',
             script,
+            ...args,
         ])
     const state = () =>
-        exec(
-            `try{process.stdout.write(await Bun.file(${JSON.stringify(guardPath)}).text())}catch{}`,
-        )
+        exec('try{process.stdout.write(await Bun.file(process.argv[1]).text())}catch{}', false, [
+            guardPath,
+        ])
     return withBackgroundPause(
         signal,
         async () => {
-            await exec(
-                `await (${backgroundPauseGuard.toString()})({identity:${identity},signal:s=>process.kill(${target.pid},s),write:s=>Bun.write(${JSON.stringify(guardPath)},s),requested:()=>Bun.file(${JSON.stringify(guardPath + '.resume')}).exists(),now:()=>performance.now(),sleep:()=>Bun.sleep(100)}).catch(()=>process.exit(1))`,
-                true,
-            )
+            await exec(backgroundPauseDetachedScript, true, [
+                String(target.pid),
+                target.startTicks,
+                guardPath,
+            ])
             await context.waitFor(
                 async () => {
                     checkBackgroundCancellation(signal)
@@ -172,7 +176,7 @@ async function withPausedWeb<T>(
             return operation()
         },
         async () => {
-            await exec(`await Bun.write(${JSON.stringify(guardPath + '.resume')},'resume')`)
+            await exec("await Bun.write(process.argv[1]+'.resume','resume')", false, [guardPath])
             await context.waitFor(
                 async () => (await state()) === 'resumed',
                 'web resume guard completed',
@@ -187,6 +191,7 @@ async function withPausedWeb<T>(
     )
 }
 
+/** Run the bounded seeded appliance scenario with cancellation checks, generation-bound evidence, staged recovery, and harness cleanup. */
 export async function runBackgroundScenarios(options: BackgroundOptions) {
     const scenarioStarted = performance.now()
     const harness = await createHarness(
@@ -226,7 +231,10 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
     let discovery: unknown
     let extendedRecovery: unknown = {
         status: 'insufficient',
-        reason: 'Explicit --extended-recovery true required for certificate interruption, active-work restore and audit replay',
+        selected: options.extendedRecovery === true,
+        reason: options.extendedRecovery
+            ? 'Selected extended recovery has not completed'
+            : 'Explicit --extended-recovery true required for certificate interruption, active-work restore and audit replay',
     }
     let failure: string | undefined
     const cleanupFailures: 'contention-stop-failed'[] = []
@@ -237,6 +245,7 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
           })
         | undefined
     let stage = 'setup'
+    /** Check cancellation before advancing the diagnostic stage used to locate a failed scenario. */
     const enter = (next: string) => {
         checkBackgroundCancellation(abort.signal)
         stage = next
@@ -248,6 +257,7 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
     let origin = 0
     let elapsedMs = 0
     let receiptsOverflowed = false
+    /** Accept resource evidence only when before/after ownership matches, tagging warmup and recovered samples separately from continuous work. */
     const sample = async (kind: BackgroundResourceSample['kind']) => {
         const before = await recoveryDependencies(context).snapshot()
         assert.ok(before?.running)
@@ -492,6 +502,7 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
                 options,
                 (operation) => withPausedWeb(context, operation, abort.signal, domain),
                 () => checkBackgroundCancellation(abort.signal),
+                (step) => enter('extended-recovery:' + step),
             )
         }
         checkBackgroundCancellation(abort.signal)

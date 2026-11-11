@@ -9,6 +9,7 @@ import (
 	"testing"
 )
 
+// fixture builds an independent valid metadata baseline for the selected binary.
 func fixture(profile string) *debug.BuildInfo {
 	info := &debug.BuildInfo{GoVersion: "go1.27.3"}
 	if profile == "caddy" {
@@ -36,6 +37,7 @@ func fixture(profile string) *debug.BuildInfo {
 	return info
 }
 
+// TestPolicies rejects cross-profile compilers and missing or ambiguous metadata.
 func TestPolicies(t *testing.T) {
 	for _, profile := range []string{"caddy", "crowdsec"} {
 		t.Run(profile, func(t *testing.T) {

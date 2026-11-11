@@ -100,6 +100,7 @@ const controllerSnapshot = z.object({
     workers: z.array(controllerWorker).length(controllerWorkerIds.length),
 })
 
+/** Accept exactly one schema-validated entry per fixed worker ID; malformed snapshots and throwing accessors yield unavailable evidence. */
 function boundedSnapshot<T>(
     input: unknown,
     ids: readonly string[],
@@ -122,10 +123,12 @@ function boundedSnapshot<T>(
     }
 }
 
+/** Return an allowlisted Bun snapshot with fixed cardinality, or null when its evidence is malformed or incomplete. */
 export function readBunWorkerReport(input: unknown) {
     return boundedSnapshot(input, backgroundWorkerIds, bunSnapshot)
 }
 
+/** Return an allowlisted controller snapshot with fixed cardinality, or null when its evidence is malformed or incomplete. */
 export function readControllerWorkerReport(input: unknown) {
     return boundedSnapshot(input, controllerWorkerIds, controllerSnapshot)
 }
