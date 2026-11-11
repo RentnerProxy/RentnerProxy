@@ -11,7 +11,12 @@ import type { NotificationMailClient } from '../../web/src/server/Mail/Types/not
 
 /** Own configurable loopback TLS-SMTP/webhook receivers, deduplicate payload identities and track active overlap; callers close clients and servers. */
 export async function startBackgroundNotificationReceivers(
-    options: { smtpPort?: number; webhookPort?: number; delayMs?: number } = {},
+    options: {
+        smtpPort?: number
+        webhookPort?: number
+        delayMs?: number
+        holdDeliveries?: boolean
+    } = {},
 ) {
     const accepted = new Set<string>()
     const receiverAttempts = new Map<string, number>()
@@ -19,6 +24,15 @@ export async function startBackgroundNotificationReceivers(
     const slowPayloadIds = new Set<string>()
     const kinds = { email: new Set<string>(), webhook: new Set<string>() }
     let activeWebhooks = 0
+    let webhookStarted!: () => void
+    let smtpReady!: () => void
+    let releaseDeliveries!: () => void
+    const webhookReady = new Promise<void>((resolve) => (webhookStarted = resolve))
+    const smtpDeliveryReady = new Promise<void>((resolve) => (smtpReady = resolve))
+    const deliveryGate = new Promise<void>((resolve) => {
+        releaseDeliveries = resolve
+        if (!options.holdDeliveries) resolve()
+    })
     /** Normalize stable payload identity while keeping per-transport unique acceptance separate from repeated receiver attempts. */
     const record = (id: string, kind: keyof typeof kinds) => {
         const stable = receiverIdentity.get(id) ?? id
@@ -37,7 +51,9 @@ export async function startBackgroundNotificationReceivers(
                 input && typeof input === 'object' && 'id' in input && typeof input.id === 'string',
             )
             activeWebhooks++
+            webhookStarted()
             try {
+                await deliveryGate
                 await Bun.sleep(options.delayMs ?? (slowPayloadIds.has(input.id) ? 500 : 15))
                 record(input.id, 'webhook')
                 return new Response(null, { status: 204 })
@@ -78,12 +94,15 @@ export async function startBackgroundNotificationReceivers(
                         slowPayloadIds.has(receiverIdentity.get(messageId) ?? messageId)
                             ? 500
                             : 30)
-                    setTimeout(() => {
+                    smtpReady()
+                    void (async () => {
+                        await deliveryGate
+                        await Bun.sleep(delay)
                         if (!socket.destroyed) {
                             if (messageId) record(messageId, 'email')
                             socket.write('250 accepted\r\n')
                         }
-                    }, delay)
+                    })()
                     continue
                 }
                 if (/^EHLO|^HELO/iu.test(line)) socket.write('250-fixture\r\n250 AUTH PLAIN\r\n')
@@ -107,11 +126,22 @@ export async function startBackgroundNotificationReceivers(
             }
         })
     })
-    await new Promise<void>((resolve, reject) => {
-        smtp.once('error', reject)
-        smtp.listen(options.smtpPort ?? 0, '127.0.0.1', resolve)
-    })
-    const address = smtp.address()
+    let address: ReturnType<typeof smtp.address>
+    try {
+        await new Promise<void>((resolve, reject) => {
+            const onError = (error: Error) => reject(error)
+            smtp.once('error', onError)
+            smtp.listen(options.smtpPort ?? 0, '127.0.0.1', () => {
+                resolve()
+            })
+        })
+        address = smtp.address()
+        assert.ok(address && typeof address === 'object')
+    } catch (error) {
+        webhook.stop(true)
+        if (smtp.listening) await new Promise<void>((resolve) => smtp.close(() => resolve()))
+        throw error
+    }
     assert.ok(address && typeof address === 'object')
     return {
         webhook,
@@ -120,6 +150,9 @@ export async function startBackgroundNotificationReceivers(
         receiverAttempts,
         receiverIdentity,
         slowPayloadIds,
+        webhookReady,
+        smtpDeliveryReady,
+        releaseDeliveries,
         stats: () => ({
             accepted: accepted.size,
             emailAccepted: kinds.email.size,

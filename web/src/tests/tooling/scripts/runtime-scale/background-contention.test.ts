@@ -10,6 +10,7 @@ import { parseBackgroundOptions } from '../../../../../../scripts/runtime-scale/
 import { startBackgroundDockerEngine } from '../../../../../../scripts/runtime-scale/background-discovery.ts'
 import { startBackgroundNotificationReceivers } from '../../../../../../scripts/runtime-scale/background-receivers.ts'
 import { createTransport } from 'nodemailer'
+import { createServer as createNetServer } from 'node:net'
 import { TLS_TEST_CA } from '../../../server/Notifications/Types/tls-test.types.ts'
 import { readBunWorkerReport } from '../../../../lib/RuntimeDiagnostics/backgroundWorkerReport.ts'
 import { createWorkerObservability } from '../../../../server/Foundation/worker-observability.ts'
@@ -123,14 +124,16 @@ test('existing support RPC discovery selects only exact built metadata and refus
 })
 
 test('mixed evidence requires genuine overlapping progress and keeps unavailable web singleton values unknown', () => {
+    const previous = sample()
+    previous.critical = { attempts: 1, successes: 1 }
     const report = buildContentionReport(
-        [sample()],
+        [previous, sample()],
         { attempts: 1, successes: 1, discoveryRevision: 2 },
         0,
     )
     expect(report).toMatchObject({
         status: 'met',
-        simultaneousSamples: 1,
+        simultaneousSamples: 2,
         capacity: 'insufficient',
         resourceEvidence: { complete: true, boundsMet: true },
     })
@@ -206,6 +209,29 @@ test('idle timers, stale registry writes, data-plane errors, admission overflow 
     ).toBe(false)
 })
 
+test('native progress must advance between samples taken during mixed overlap', () => {
+    const base = { attempts: 1, successes: 1, discoveryRevision: 2 }
+    const before = sample()
+    before.critical = { attempts: 2, successes: 2 }
+    const after = sample()
+    after.critical = { attempts: 3, successes: 3 }
+    expect(buildContentionReport([before, after], base, 0).status).toBe('met')
+    const idle = sample()
+    idle.leasedPolicies = 0
+    idle.critical = { attempts: 3, successes: 3 }
+    const afterGap = sample()
+    afterGap.critical = { attempts: 3, successes: 3 }
+    expect(buildContentionReport([before, idle, afterGap], base, 0).status).toBe('unmet')
+    after.critical = { attempts: 2, successes: 2 }
+    expect(buildContentionReport([before, after], base, 0).status).toBe('unmet')
+})
+
+test('registry revision without emitted discovery events is not positive discovery evidence', () => {
+    const noEvents = sample()
+    noEvents.receiver.discovery.emitted = 0
+    expect(buildContentionReport([noEvents], { attempts: 1, successes: 1, discoveryRevision: 2 }, 0).status).toBe('unmet')
+})
+
 test('controlled Docker events wait for the overlap barrier and change only detached candidate metadata', async () => {
     const engine = startBackgroundDockerEngine(400, {
         initiallyPaused: true,
@@ -271,7 +297,7 @@ test('cancelling one paused Docker stream preserves the other stream for the arm
 })
 
 test('actual private TLS SMTP AUTH and webhook receivers retain slow in-flight work and allowlisted receipt counts', async () => {
-    const receiver = await startBackgroundNotificationReceivers({ delayMs: 300 })
+    const receiver = await startBackgroundNotificationReceivers({ delayMs: 0, holdDeliveries: true })
     const transport = createTransport({
         host: '127.0.0.1',
         port: receiver.smtpPort,
@@ -290,13 +316,14 @@ test('actual private TLS SMTP AUTH and webhook receivers retain slow in-flight w
             method: 'POST',
             body: JSON.stringify({ id: 'contention-webhook' }),
         })
-        await Bun.sleep(80)
+        await Promise.all([receiver.webhookReady, receiver.smtpDeliveryReady])
         expect(receiver.stats()).toMatchObject({
             emailAccepted: 0,
             webhookAccepted: 0,
             activeWebhooks: 1,
         })
         expect(receiver.stats().smtpConnections).toBeGreaterThan(0)
+        receiver.releaseDeliveries()
         await mail
         expect((await webhook).status).toBe(204)
         expect(receiver.stats()).toMatchObject({
@@ -307,6 +334,29 @@ test('actual private TLS SMTP AUTH and webhook receivers retain slow in-flight w
     } finally {
         transport.close()
         await receiver.close()
+    }
+})
+
+test('SMTP startup failure closes the already-started webhook listener', async () => {
+    const webhookPortProbe = createNetServer()
+    await new Promise<void>((resolve) => webhookPortProbe.listen(0, '127.0.0.1', resolve))
+    const webhookPort = (webhookPortProbe.address() as { port: number }).port
+    await new Promise<void>((resolve) => webhookPortProbe.close(() => resolve()))
+    const smtpPortProbe = createNetServer()
+    await new Promise<void>((resolve) => smtpPortProbe.listen(0, '127.0.0.1', resolve))
+    const smtpPort = (smtpPortProbe.address() as { port: number }).port
+    try {
+        await expect(
+            startBackgroundNotificationReceivers({ webhookPort, smtpPort }),
+        ).rejects.toThrow()
+        const reclaimed = createNetServer()
+        await new Promise<void>((resolve, reject) => {
+            reclaimed.once('error', reject)
+            reclaimed.listen(webhookPort, '127.0.0.1', resolve)
+        })
+        await new Promise<void>((resolve) => reclaimed.close(() => resolve()))
+    } finally {
+        await new Promise<void>((resolve) => smtpPortProbe.close(() => resolve()))
     }
 })
 

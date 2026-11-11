@@ -127,7 +127,23 @@ export async function exerciseExtendedBackgroundRecovery(
         (await context.fixture('background-quiesce', extra)).background,
     )
     checkCancellation()
-    await Bun.sleep(3500)
+    let stableObservationCount = -1
+    let stableReads = 0
+    await context.waitFor(
+        async () => {
+            checkCancellation()
+            const current = backgroundSnapshotSchema.parse(
+                (await context.fixture('background-read', extra)).background,
+            )
+            const drained = current.policies.every((policy) => !policy.enabled && !policy.leased)
+            if (drained && current.observations.length === stableObservationCount) stableReads++
+            else stableReads = 0
+            stableObservationCount = current.observations.length
+            return drained && stableReads >= 3
+        },
+        'Cancelled monitoring attempts release their leases and stop appending observations',
+        15000,
+    )
     checkCancellation()
     onStage('monitoring-final-fence')
     const stable = backgroundSnapshotSchema.parse(

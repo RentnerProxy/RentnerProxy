@@ -79,6 +79,11 @@ export async function runIsolationRole(
     let failures = 0,
         stopping: Promise<void> | null = null,
         started = false
+    let poolSaturation: { active: number; peak: number; completed: number } = {
+        active: 0,
+        peak: 0,
+        completed: 0,
+    }
     const lag: number[] = []
     const cpu = process.cpuUsage()
     let due = performance.now() + 25
@@ -259,7 +264,21 @@ export async function runIsolationRole(
                 return new Response(null, { status: 204 })
             }
             if (path === '/pool' && request.method === 'POST') {
-                return readIsolationPoolSaturation(() => db.execute('select pg_sleep(1)'), stopping !== null)
+                poolSaturation = { active: 0, peak: 0, completed: 0 }
+                const result = await readIsolationPoolSaturation(async () => {
+                    poolSaturation.active++
+                    poolSaturation.peak = Math.max(poolSaturation.peak, poolSaturation.active)
+                    try {
+                        await db.execute('select pg_sleep(5)')
+                    } finally {
+                        poolSaturation.active--
+                        poolSaturation.completed++
+                    }
+                }, stopping !== null)
+                return result
+            }
+            if (path === '/pool-status' && request.method === 'GET') {
+                return Response.json(poolSaturation)
             }
             if (path === '/stop' && request.method === 'POST') {
                 try {

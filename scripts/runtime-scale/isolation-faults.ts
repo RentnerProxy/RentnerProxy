@@ -163,7 +163,27 @@ export async function runIsolationFaults(context: FaultContext) {
         const foreground = await spawn('foreground'),
             background = await spawn('background')
         const saturation = request(background, '/pool', 'POST')
-        const latency = await ssr(foreground, 100)
+        await waitFor(async () => {
+            const status = await request(background, '/pool-status')
+            assert.equal(status.status, 200)
+            const value = (await status.json()) as { active: number; peak: number }
+            return (
+                value.active === isolationContract.workerConnections &&
+                value.peak === isolationContract.workerConnections
+            )
+        }, 5000)
+        let measuring = true
+        const latencyPromise = ssr(foreground, 100).finally(() => (measuring = false))
+        let saturationHeldThroughSsr = true
+        while (measuring) {
+            const status = await request(background, '/pool-status')
+            assert.equal(status.status, 200)
+            const value = (await status.json()) as { active: number }
+            saturationHeldThroughSsr &&= value.active === isolationContract.workerConnections
+            await Bun.sleep(25)
+        }
+        const latency = await latencyPromise
+        assert.ok(saturationHeldThroughSsr, 'All worker SQL remained active for the complete SSR series')
         await assertIsolationPoolSaturation(await saturation)
         assert.ok(latency.p99 !== null && latency.p99 <= isolationContract.thresholds.ssrP99Ms)
         let denied = false
@@ -188,6 +208,7 @@ export async function runIsolationFaults(context: FaultContext) {
             foregroundP99Ms: latency.p99,
             deniedStartup: denied,
             workerConnectionLimit: 8,
+            saturationHeldThroughSsr,
             foregroundConnectionLimit: 16,
             postgresGlobalLimit: 100,
         }

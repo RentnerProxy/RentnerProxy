@@ -118,24 +118,26 @@ export function buildContentionReport(
         })
     const management = backgroundDistribution(samples.map((item) => item.managementMs))
     const proxy = backgroundDistribution(samples.map((item) => item.proxyMs))
-    const critical = samples.find(
-        (item) =>
-            item.critical.attempts > baseline.attempts &&
-            item.critical.successes > baseline.successes,
-    )
+    const isMixedOverlap = (item: ContentionSample) =>
+        item.leasedPolicies > 0 &&
+        item.state.notification.inflight > 0 &&
+        item.receiver.notifications.activeWebhooks + item.receiver.notifications.smtpConnections > 0
+    const overlap = samples.filter(isMixedOverlap)
+    const critical = samples.slice(1).find((item, index) => {
+        const previous = samples[index]!
+        return (
+            isMixedOverlap(previous) &&
+            isMixedOverlap(item) &&
+            item.critical.attempts > previous.critical.attempts &&
+            item.critical.successes > previous.critical.successes
+        )
+    })
     const discovery = samples.find(
         (item) =>
             item.state.discovery.revision > baseline.discoveryRevision &&
             item.state.discovery.error === null &&
-            item.state.discovery.detached === 8,
-    )
-    const overlap = samples.filter(
-        (item) =>
-            item.leasedPolicies > 0 &&
-            item.state.notification.inflight > 0 &&
-            item.receiver.notifications.activeWebhooks +
-                item.receiver.notifications.smtpConnections >
-                0,
+            item.state.discovery.detached === 8 &&
+            item.receiver.discovery.emitted > 0,
     )
     const maximum = (read: (sample: ContentionSample) => number) =>
         samples.length ? Math.max(...samples.map(read)) : null
