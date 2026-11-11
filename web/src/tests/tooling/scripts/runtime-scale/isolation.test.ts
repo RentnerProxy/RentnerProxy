@@ -205,6 +205,18 @@ describe('bounded process isolation evaluation', () => {
         expect(assessIsolation(values, false).results[0]?.decision).toBe('insufficient')
     })
 
+    test('zero or partial matched counts cannot turn missing work into a topology decision', () => {
+        for (const count of [0, 1, 99]) {
+            const values = repeats()
+            values[0]!.observations = count
+            values[0]!.healthyObservations = count
+            values[0]!.network.accepted = count
+            const result = assessIsolation(values, false)
+            expect(result.recommendation).toBe('insufficient-evidence')
+            expect(result.results[0]?.decision).toBe('insufficient')
+        }
+    })
+
     test('keeps the simpler baseline when it already meets SLO, regardless of a faster candidate', () => {
         const result = assessIsolation(repeats(100, 10), true)
         expect(result.recommendation).toBe('keep-in-process')

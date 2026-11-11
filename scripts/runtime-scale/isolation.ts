@@ -128,6 +128,7 @@ export function assessIsolation(
                 (item) =>
                     item.ssr.p99 === null ||
                     item.ssr.count < contract.thresholds.minimumSamples ||
+                    item.observations !== item.load ||
                     item.healthyObservations !== item.observations ||
                     item.network.invalid > 0 ||
                     item.network.accepted !== item.observations ||
