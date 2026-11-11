@@ -17,6 +17,7 @@ export async function monitoringB2PolicyTransaction<T>(
 }
 
 const diagnostics = new Set([
+    'role-identity-invalid',
     '42P01',
     '42501',
     '40P01',
@@ -35,6 +36,21 @@ const diagnostics = new Set([
     'EPERM',
     'ENOENT',
 ])
+
+/** Only generated disposable roles and 256-bit hexadecimal fixture credentials may reach psql. */
+export function validateMonitoringB2Role(
+    action: 'create' | 'drop',
+    role: string,
+    password?: string,
+) {
+    if (
+        !/^monitor_b2_role_[a-f0-9]{32}$/u.test(role) ||
+        (action === 'create' && !/^[a-f0-9]{64}$/u.test(password ?? ''))
+    )
+        throw Object.assign(new Error('B2 disposable role identity invalid'), {
+            code: 'role-identity-invalid',
+        })
+}
 
 /** Bun can wrap PostgreSQL SQLSTATE in errno/cause. Only fixed codes leave the private fixture. */
 export function monitoringB2FixtureDiagnostic(error: unknown) {

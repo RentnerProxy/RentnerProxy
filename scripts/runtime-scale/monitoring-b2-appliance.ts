@@ -17,6 +17,7 @@ import {
 import {
     monitoringB2PolicyTransaction,
     monitoringB2FixtureDiagnostic,
+    validateMonitoringB2Role,
 } from './monitoring-b2-fixture-storage.ts'
 import { monitoringB2ControlKey, monitoringB2WebKey } from './monitoring-b2-capabilities.ts'
 import { randomBytes } from 'node:crypto'
@@ -147,11 +148,7 @@ async function bootstrap(runId: string) {
 
 /** Manage only generated disposable SQL roles through the local postgres owner, exposing fixed SQLSTATE only. */
 async function workerRole(action: 'create' | 'drop', role: string, password?: string) {
-    if (
-        !/^monitor_b2_role_[a-f0-9]{32}$/u.test(role) ||
-        (action === 'create' && !/^synthetic-b2-fixture-[a-f0-9]{32}$/u.test(password ?? ''))
-    )
-        throw new Error('B2 synthetic role identity invalid')
+    validateMonitoringB2Role(action, role, password)
     const statement =
         action === 'create'
             ? `CREATE ROLE ${role} LOGIN PASSWORD '${password}' CONNECTION LIMIT 2 NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;`
