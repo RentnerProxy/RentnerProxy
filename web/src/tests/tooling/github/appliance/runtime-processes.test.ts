@@ -6,7 +6,96 @@ import {
     readRuntimeProcesses,
     runtimeFdCountsProbe,
     runtimeProcessesProbe,
+    runtimeCensusErrorDiagnostic,
+    runtimeCensusFailureDiagnostic,
 } from '../../../../../../scripts/smoke/appliance-processes.ts'
+
+function diagnosticLine(value: unknown) {
+    return 'RUNTIME_CENSUS_DIAGNOSTIC=' + JSON.stringify(value) + '\n'
+}
+
+test('census diagnostics retain fixed syscall/code evidence and reject arbitrary stderr or metadata', () => {
+    const privateValue = 'private-cmdline-token-must-never-escape'
+    const error = Object.assign(new Error(privateValue), {
+        code: 'EIO',
+        errno: -5,
+        syscall: 'read',
+        path: '/private/123/cmdline',
+        cause: { code: 'ESRCH', message: privateValue },
+    })
+    const expected = {
+        stage: 'cmdline',
+        code: 'EIO',
+        causeCode: 'ESRCH',
+        syscall: 'read',
+        errno: -5,
+    }
+    expect(runtimeCensusErrorDiagnostic(error)).toEqual(expected)
+    expect(runtimeCensusErrorDiagnostic(new Error(privateValue))).toEqual({
+        stage: 'unknown',
+        code: 'unknown',
+        causeCode: 'unknown',
+        syscall: 'unknown',
+        errno: null,
+    })
+    expect(JSON.stringify(runtimeCensusErrorDiagnostic(error))).not.toContain('private')
+    expect(runtimeCensusFailureDiagnostic(privateValue + '\n' + diagnosticLine(expected))).toEqual(
+        expected,
+    )
+    for (const invalid of [
+        { ...expected, message: privateValue },
+        { ...expected, path: privateValue },
+        { ...expected, stage: privateValue },
+        { ...expected, code: privateValue },
+        { ...expected, causeCode: privateValue },
+        { ...expected, syscall: privateValue },
+        { ...expected, errno: 1.5 },
+        { ...expected, errno: 2147483648 },
+    ])
+        expect(runtimeCensusFailureDiagnostic(diagnosticLine(invalid))).toBeNull()
+    expect(runtimeCensusFailureDiagnostic(privateValue)).toBeNull()
+    expect(runtimeCensusFailureDiagnostic(privateValue, true)).toEqual({
+        stage: 'command',
+        code: 'timeout',
+        causeCode: 'unknown',
+        syscall: 'unknown',
+        errno: null,
+    })
+})
+
+test('serialized census fails closed with sanitized evidence for malformed identities and persistent filesystem errors', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'runtime-census-private-'))
+    try {
+        await mkdir(join(directory, '10'))
+        await Promise.all([
+            writeFile(join(directory, '10/status'), 'Uid:\t10002\t10002\t10002\t10002\n'),
+            writeFile(join(directory, '10/cmdline'), '/usr/bin/bun\0private-argument\0'),
+            writeFile(join(directory, '10/stat'), '10 (bun) S'),
+        ])
+        const probe = async () => {
+            const child = Bun.spawn(
+                [process.execPath, '--no-env-file', '-e', runtimeProcessesProbe(directory)],
+                { stdout: 'pipe', stderr: 'pipe' },
+            )
+            const [exit, output, errors] = await Promise.all([
+                child.exited,
+                new Response(child.stdout).text(),
+                new Response(child.stderr).text(),
+            ])
+            expect(exit).toBe(1)
+            expect(output).toBe('')
+            expect(errors).not.toContain('private')
+            return runtimeCensusFailureDiagnostic(errors)
+        }
+        expect((await probe())?.stage).toBe('identity-incomplete')
+        await rm(join(directory, '10/cmdline'))
+        await mkdir(join(directory, '10/cmdline'))
+        await expect(readRuntimeProcesses(directory)).rejects.toThrow()
+        expect((await probe())?.stage).toBe('cmdline')
+    } finally {
+        await rm(directory, { recursive: true, force: true })
+    }
+})
 
 test('runtime census uses start ticks, exact executable names, and every web UID process', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'runtime-processes-'))
