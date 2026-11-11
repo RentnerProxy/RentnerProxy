@@ -6,11 +6,13 @@ import {
     ManagedBackupError,
 } from '../../../../../../scripts/backup/managed-jobs.ts'
 import type { ManagedBackupDependencies } from '../../../../../../scripts/backup/Types/managed-jobs.types.ts'
+import { advanceRestoreAdmission } from '../../../../server/Backups/restore-admission.ts'
 import { BACKUP_AUDIT_POLICY } from '../../../../config/backups.config.ts'
 import { managedBackupFixtureSettled } from '../../../../../../.github/scripts/ci/fixtures/managed-backup-probe.ts'
 import { reconcileBackupControl } from '../../../../../../docker/production/backups/agent.ts'
 import type { ManagedBackupState } from '../../../../lib/Backups/Types/backups.types.ts'
 import {
+    managedRestoreResultSchema,
     managedBackupConfigurationUpdateSchema,
     managedBackupStartSchema,
 } from '../../../../lib/Backups/validation.ts'
@@ -1234,4 +1236,224 @@ test('failed acknowledgement persistence cannot release the retained producer pr
     f.dependencies.write = write
     await engine.acknowledgeAudit({ storeId: before.storeId, sequence: 1 })
     expect((await engine.status()).auditEvents).toEqual([])
+})
+
+describe('bounded restore safety journal', () => {
+    test.each(['delete', 'restore'] as const)(
+        'a failed destructive restore survives 110 later failed %s requests and durable reload',
+        async (kind) => {
+            const f = fixture()
+            f.dependencies.execute = async (job) => ({
+                id: job.id,
+                metadataSha256: digest,
+                bytes: 100,
+            })
+            const engine = await createManagedBackupEngine(f.dependencies)
+            const job = await engine.start(f.request())
+            await engine.tick()
+            f.dependencies.restore = async (_job, _operation, progress) => {
+                await progress('database', 30)
+                throw new Error('private destructive failure')
+            }
+            const unsafe = await engine.requestMaintenance(
+                job.id,
+                { ...f.request(), metadataSha256: digest, actorName: 'Kevin' },
+                'restore',
+            )
+            await engine.tick()
+            f.dependencies.remove = async () => {
+                throw new Error('private failed delete')
+            }
+            if (kind === 'restore') f.dependencies.verify = async () => false
+            const order = [unsafe.id]
+            for (let index = 0; index < 110; index++) {
+                order.push(
+                    (
+                        await engine.requestMaintenance(
+                            job.id,
+                            {
+                                ...f.request(),
+                                metadataSha256: digest,
+                                ...(kind === 'restore' ? { actorName: 'Kevin' } : {}),
+                            },
+                            kind,
+                        )
+                    ).id,
+                )
+                await engine.tick()
+            }
+            await createManagedBackupEngine(f.dependencies)
+            const durable = f.read()
+            const history = durable.maintenanceRequests!
+            expect(history).toHaveLength(100)
+            expect(history[0]).toMatchObject({ id: unsafe.id, state: 'failed', phase: 'database' })
+            expect(history.map((receipt) => receipt.id)).toEqual(
+                order.filter((id) => history.some((receipt) => receipt.id === id)),
+            )
+            const terminal = history
+                .filter(
+                    (receipt) =>
+                        receipt.operation === 'restore' &&
+                        !['queued', 'running'].includes(receipt.state),
+                )
+                .map(({ id, operation, state, phase }) =>
+                    managedRestoreResultSchema.parse({ id, operation, state, phase }),
+                )
+            expect([
+                ...advanceRestoreAdmission(new Set(), {
+                    maintenance: durable.maintenance ?? null,
+                    restoreResults: terminal,
+                }),
+            ]).toEqual([unsafe.id])
+            expect([
+                ...advanceRestoreAdmission(new Set([unsafe.id]), {
+                    maintenance: null,
+                    restoreResults: [],
+                }),
+            ]).toEqual([unsafe.id])
+        },
+    )
+
+    test('the latest complete recovery barrier and later unsafe receipts keep append order across compaction', async () => {
+        const f = fixture()
+        f.dependencies.execute = async (job) => ({ id: job.id, metadataSha256: digest, bytes: 100 })
+        const engine = await createManagedBackupEngine(f.dependencies)
+        const job = await engine.start(f.request())
+        await engine.tick()
+        const requestRestore = () =>
+            engine.requestMaintenance(
+                job.id,
+                { ...f.request(), metadataSha256: digest, actorName: 'Kevin' },
+                'restore',
+            )
+        f.dependencies.restore = async (_job, _operation, progress) => {
+            await progress('database', 30)
+            throw new Error('unsafe')
+        }
+        const old = await requestRestore()
+        await engine.tick()
+        f.dependencies.restore = async () => {}
+        const recovery = await requestRestore()
+        await engine.tick()
+        f.dependencies.restore = async (_job, _operation, progress) => {
+            await progress('controller', 60)
+            throw new Error('new unsafe')
+        }
+        const latest = await requestRestore()
+        await engine.tick()
+        f.dependencies.remove = async () => {
+            throw new Error('delete failed')
+        }
+        for (let index = 0; index < 110; index++) {
+            f.setNow(110 - index)
+            await engine.requestMaintenance(
+                job.id,
+                { ...f.request(), metadataSha256: digest },
+                'delete',
+            )
+            await engine.tick()
+        }
+        await createManagedBackupEngine(f.dependencies)
+        const history = f.read().maintenanceRequests!
+        expect(history).toHaveLength(100)
+        expect(history.slice(0, 2).map((receipt) => receipt.id)).toEqual([recovery.id, latest.id])
+        expect(history.some((receipt) => receipt.id === old.id)).toBe(false)
+        const terminal = history
+            .filter((receipt) => receipt.operation === 'restore')
+            .map(({ id, operation, state, phase }) =>
+                managedRestoreResultSchema.parse({ id, operation, state, phase }),
+            )
+        expect([
+            ...advanceRestoreAdmission(new Set(), {
+                maintenance: null,
+                restoreResults: terminal,
+            }),
+        ]).toEqual([latest.id])
+        // An older process with an already-missing receipt cannot infer its position across the retained barrier.
+        expect([
+            ...advanceRestoreAdmission(new Set([old.id]), {
+                maintenance: null,
+                restoreResults: terminal,
+            }),
+        ]).toEqual([old.id, latest.id])
+    })
+
+    test.each([false, true])(
+        'a full protected journal rejects admission without state writes or execution, recovery barrier: %s',
+        async (barrier) => {
+            const f = fixture()
+            f.dependencies.execute = async (job) => ({
+                id: job.id,
+                metadataSha256: digest,
+                bytes: 100,
+            })
+            const initial = await createManagedBackupEngine(f.dependencies)
+            const job = await initial.start(f.request())
+            await initial.tick()
+            f.dependencies.restore = async (_job, _operation, progress) => {
+                await progress('database', 30)
+                throw new Error('unsafe')
+            }
+            await initial.requestMaintenance(
+                job.id,
+                { ...f.request(), metadataSha256: digest, actorName: 'Kevin' },
+                'restore',
+            )
+            await initial.tick()
+            const source = structuredClone(f.read())
+            const unsafe = source.maintenance!
+            source.maintenanceRequests = Array.from({ length: 100 }, (_, index) => ({
+                ...unsafe,
+                id: f.id(),
+                requestId: f.id(),
+                ...(barrier && index === 0
+                    ? {
+                          state: 'succeeded' as const,
+                          phase: 'complete' as const,
+                          progressPercent: 100,
+                          error: null,
+                      }
+                    : {}),
+            }))
+            source.maintenance = source.maintenanceRequests.at(-1)!
+            let writes = 0,
+                identities = 0,
+                effects = 0
+            const bounded = await createManagedBackupEngine({
+                ...f.dependencies,
+                read: async () => structuredClone(source),
+                write: async () => {
+                    writes++
+                },
+                id: () => {
+                    identities++
+                    return f.id()
+                },
+                verify: async () => {
+                    effects++
+                    return true
+                },
+                remove: async () => {
+                    effects++
+                },
+                restore: async () => {
+                    effects++
+                },
+            })
+            const before = await bounded.status()
+            await expect(
+                bounded.requestMaintenance(
+                    job.id,
+                    { ...f.request(), metadataSha256: digest, actorName: 'Kevin' },
+                    'restore',
+                ),
+            ).rejects.toMatchObject({ code: 'capacity' })
+            expect(await bounded.status()).toEqual(before)
+            expect({ writes, identities, effects }).toEqual({
+                writes: 0,
+                identities: 0,
+                effects: 0,
+            })
+        },
+    )
 })

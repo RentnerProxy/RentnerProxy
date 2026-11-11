@@ -8,6 +8,7 @@ import type {
     NotificationWorkerDependencies,
 } from './Types/notification-worker.types.ts'
 
+/** Own collection and delivery for one worker lifetime; stop fences admission and retains drain ownership through late claims and durable acknowledgements. */
 export function createNotificationWorker(dependencies: NotificationWorkerDependencies) {
     let collectionTimer: ReturnType<typeof setTimeout> | null = null
     let deliveryTimer: ReturnType<typeof setTimeout> | null = null

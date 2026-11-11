@@ -39,6 +39,7 @@ export function advanceRestoreAdmission(
         )
             waiting.delete(restoreId)
     }
+    /** Retain unresolved restore IDs without eviction; exceeding the bounded journal capacity fails admission closed. */
     const retain = (restoreId: string) => {
         // Missing receipts remain unresolved; the bounded publication cannot prove older history safe.
         if (!waiting.has(restoreId) && waiting.size === 100)

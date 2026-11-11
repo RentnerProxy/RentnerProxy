@@ -185,7 +185,8 @@ export function buildContentionReport(
     })
     const webEvidenceComplete =
         processMemoryComplete &&
-        webResources.length > 0 &&
+        samples.length > 0 &&
+        samples.every((item) => item.web?.resources != null && item.web.bun != null) &&
         eventLoops.some(
             (value) => value.count > 0 && value.sampledAt !== null && value.maximumMs !== null,
         )

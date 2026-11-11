@@ -79,8 +79,9 @@ export async function readSubscriptionSnapshot(
                     query: subscription.query,
                 })
             })
-            .then((result) => {
-                if (signal.aborted) void result.body?.cancel().catch(() => undefined)
+            .then(async (result) => {
+                // Late bodies still own the admitted resource until cancellation actually settles.
+                if (signal.aborted) await result.body?.cancel().catch(() => undefined)
                 return result
             })
         trackWork?.(responsePromise)

@@ -1,6 +1,100 @@
 import { expect, test } from 'bun:test'
 import { runBunScript } from '@/tests/Helpers/runBunScript.ts'
 
+test.each(['in-flight', 'late claims'] as const)(
+    'cancelled certificate cleanup retains SQL admission, claim fences and all sibling drains: %s',
+    async (phase) => {
+        const output = await runBunScript(`
+            import assert from 'node:assert/strict'
+            import { mock } from 'bun:test'
+            import { admitDatabaseTransaction, withBackgroundDatabaseContext } from './db/background-admission.ts'
+            import { BACKGROUND_DATABASE_POLICY } from './config/background-resources.config.ts'
+            process.env.DATABASE_URL = 'postgresql://unit:unit@127.0.0.1:1/rentnerproxy_unit'
+            mock.module('@tanstack/react-start/server-only', () => ({}))
+            const slots = BACKGROUND_DATABASE_POLICY.classes.critical.running
+            assert.equal(slots, 2)
+            const entered = Promise.withResolvers(), claimReply = Promise.withResolvers(), released = Promise.withResolvers(), cleanup = Promise.withResolvers()
+            const budgetReady = Promise.withResolvers(), freeBudget = Promise.withResolvers()
+            const jobs = Array.from({ length: 4 }, (_, index) => ({ id: 'job-' + index, certificateId: 'certificate-' + index, leaseToken: 'original-token-' + index }))
+            const leases = new Map(jobs.map(job => [job.id, job.leaseToken]))
+            const releaseSql = [], releaseCalls = [], signals = []
+            let claims = 0, reads = 0, validations = 0, holding = 0, stopped = false
+            mock.module('./server/Admin/ProxyHostManagement/certificate-jobs.lease.server.ts', () => ({
+                claimCertificateJob: async () => {
+                    const job = jobs[claims++] ?? null
+                    if (claims === 4 && '${phase}' === 'late claims') entered.resolve()
+                    if ('${phase}' === 'late claims') await claimReply.promise
+                    return job
+                },
+                withCertificateJobClaim: (job, callback) => admitDatabaseTransaction(async () => {
+                    validations++; return callback({}, job)
+                }),
+                releaseCertificateJob: (job, changes) => {
+                    releaseCalls.push(job.id)
+                    assert.equal(jobs.find(original => original.id === job.id), job)
+                    assert.equal(job.leaseToken, 'original-token-' + jobs.indexOf(job))
+                    assert.deepEqual(changes, {})
+                    return admitDatabaseTransaction(async () => {
+                        releaseSql.push(job.id)
+                        if (releaseSql.length === Math.min(4, slots)) released.resolve()
+                        await cleanup.promise
+                        if (leases.get(job.id) === job.leaseToken) leases.delete(job.id)
+                    })
+                },
+            }))
+            mock.module('./server/Admin/ProxyHostManagement/certificate-jobs.storage.server.ts', () => ({
+                CertificateJobDomainError: class extends Error {}, certificateJobDigest: () => '', validateCertificateJobContext: async () => true,
+            }))
+            const unexpected = async () => { throw new Error('Cancelled work must not issue, bind or persist metadata') }
+            mock.module('./server/Admin/CertificateManagement/certificate-metadata.persistence.ts', () => ({ persistControllerCertificatesMetadataInTransaction: unexpected }))
+            mock.module('./server/Admin/ProxyHostManagement/certificate-jobs.binding.server.ts', () => ({
+                certificateJobRuntime: {}, bindIssuedJobCertificate: unexpected, confirmJobRuntime: unexpected,
+            }))
+            mock.module('./server/Controller/certificates.server.ts', () => ({
+                issueControllerCertificate: unexpected, renewControllerCertificate: unexpected,
+                getControllerCertificate: async (_id, signal) => {
+                    reads++; signals.push(signal)
+                    if (reads === 4) entered.resolve()
+                    return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }))
+                },
+            }))
+            const { startCertificateJobWorker, stopCertificateJobWorker } = await import('./server/Admin/ProxyHostManagement/certificate-jobs.worker.server.ts')
+            startCertificateJobWorker()
+            await entered.promise
+            const held = Array.from({ length: slots }, () => withBackgroundDatabaseContext(() => admitDatabaseTransaction(async () => {
+                if (++holding === slots) budgetReady.resolve()
+                await freeBudget.promise
+            })))
+            await budgetReady.promise
+            const stopping = stopCertificateJobWorker().then(() => { stopped = true })
+            claimReply.resolve()
+            await Bun.sleep(0)
+            assert.equal(releaseSql.length, 0) // Detachment must not bypass the real shared gate.
+            assert.equal(stopped, false)
+            assert.equal(releaseCalls.length, 4)
+            leases.set(jobs[0].id, 'newer-owner-token')
+            freeBudget.resolve()
+            await released.promise
+            await Bun.sleep(0)
+            assert.equal(stopped, false) // SQL entry alone is not durable release completion.
+            cleanup.resolve()
+            await Promise.all([stopping, ...held])
+            await stopCertificateJobWorker()
+            assert.deepEqual([...leases], [[jobs[0].id, 'newer-owner-token']])
+            assert.equal(claims, 4)
+            assert.equal(validations, '${phase}' === 'in-flight' ? 4 : 0)
+            assert.equal(reads, '${phase}' === 'in-flight' ? 4 : 0)
+            assert.equal(signals.every(signal => signal.aborted), true)
+            console.log(JSON.stringify({ stopped, released: releaseSql.length, claims, validations, reads }))
+        `, { cwd: new URL('../../../..', import.meta.url) })
+        expect(JSON.parse(output.trim().split('\n').at(-1)!)).toEqual({
+            stopped: true, released: 4, claims: 4,
+            validations: phase === 'in-flight' ? 4 : 0,
+            reads: phase === 'in-flight' ? 4 : 0,
+        })
+    },
+)
+
 test.each([
     { reason: 'busy', cleanupFails: false },
     { reason: 'deadline', cleanupFails: false },

@@ -3,6 +3,7 @@ import {
     buildContentionReport,
     contentionContract,
     contentionStateSchema,
+    contentionWebSchema,
 } from '../../../../../../scripts/runtime-scale/background-contention.ts'
 import type { ContentionSample } from '../../../../../../scripts/runtime-scale/background-contention.ts'
 import { parseBackgroundOptions } from '../../../../../../scripts/runtime-scale/background.ts'
@@ -339,3 +340,22 @@ test('contention memory evidence requires every real serving owner and never sub
         'private secret',
     )
 })
+
+
+test.each(['missing-web', 'missing-resource', 'invalid-resource', 'missing-workers', 'invalid-workers'] as const)(
+    'one valid web sample cannot hide another sample with %s evidence', (fault) => {
+        const invalid = sample()
+        if (fault === 'missing-web') delete invalid.web
+        else {
+            const raw = structuredClone(invalid.web!)
+            if (fault === 'missing-resource') raw.resources = null
+            if (fault === 'invalid-resource') raw.resources!.database.monitoring.running = 3
+            if (fault === 'missing-workers') raw.bun = null
+            if (fault === 'invalid-workers') raw.bun!.workers.pop()
+            invalid.web = contentionWebSchema.parse(raw)
+        }
+        const report = buildContentionReport([sample(), invalid], { attempts: 1, successes: 1, discoveryRevision: 2 }, 0)
+        expect(report).toMatchObject({ status: 'insufficient', resourceEvidence: { complete: false } })
+        expect(report.samples).toHaveLength(2)
+    },
+)

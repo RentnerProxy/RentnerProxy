@@ -11,6 +11,82 @@ import {
 } from '../../../../../scripts/runtime-scale/monitoring.ts'
 import { domainDiagnosticsResultSchema } from '@/lib/RuntimeDiagnostics/domainDiagnostics.ts'
 import { assertNativeMonitoringFixture } from '../../../../../scripts/runtime-scale/monitoring-native.ts'
+import { runBunScript } from '@/tests/Helpers/runBunScript.ts'
+
+test.each(['success', 'delete failure'] as const)(
+    'a failed stop checkpoint retains actual writers before all owned cleanup stages: %s',
+    async (mode) => {
+        const output = await runBunScript(
+            `
+            import assert from 'node:assert/strict'
+            import { mock } from 'bun:test'
+            process.env.RENTNERPROXY_DATABASE_INTEGRATION = '1'
+            process.env.DATABASE_URL = 'postgresql://fixture@127.0.0.1/rentnerproxy_upstream_test'
+            mock.module('@tanstack/react-start/server-only', () => ({}))
+            const { WorkerDrainTimeoutError } = await import('./server/Foundation/Types/worker-lifecycle.types.ts')
+            const entered = Promise.withResolvers(), finish = Promise.withResolvers()
+            const events = [], failure = new Error('private fixture deletion failure')
+            let writing = false, completed = false
+            const query = () => {
+                const result = Promise.resolve([])
+                let chain
+                chain = new Proxy({}, { get: (_, key) => key === 'then' ? result.then.bind(result) : () => chain })
+                return chain
+            }
+            const db = {
+                select: query, insert: query, update: query,
+                execute: async () => [{ due: 0, active: 0, lock_waiters: 0, lock_wait_ms: 0 }],
+                transaction: async operation => operation(db),
+                delete: () => {
+                    assert.equal(writing, false)
+                    events.push('delete')
+                    if ('${mode}' === 'delete failure') throw failure
+                    return query()
+                },
+            }
+            mock.module('./db/index.ts', () => ({ db, closeDatabaseForRestoreMaintenance: async () => { events.push('database-close') } }))
+            mock.module('./server/HostMonitoring/host-monitoring.repository.ts', () => ({
+                claimDueHostMonitoringPolicies: async () => [], readHostMonitoringClaimContexts: async () => [],
+                completeHostMonitoringClaims: async () => [], releaseHostMonitoringClaim: async () => true,
+                pruneHostMonitoringHistory: async () => {},
+            }))
+            mock.module('./server/ProxyRuntime/proxy-runtime-data.ts', () => ({ readProxyRuntimeSnapshot: async () => ({}) }))
+            mock.module('../../scripts/runtime-scale/monitoring-native.ts', () => ({ createNativeMonitoringFixture: async () => ({
+                forwardHost: '127.0.0.1', forwardPort: 9, apply: async () => {}, traffic: async () => {},
+                inspect: async () => { throw new Error('Unexpected native inspect') }, stop: async () => { events.push('native-stop') },
+            }) }))
+            const actualDrain = finish.promise.then(() => { writing = false; events.push('writers-settled') })
+            mock.module('./server/HostMonitoring/host-monitoring.worker.ts', () => ({ createHostMonitoringWorker: () => ({
+                start() { writing = true; process.emit('SIGTERM') },
+                stop() { events.push('stop'); entered.resolve(); return Promise.reject(new WorkerDrainTimeoutError(actualDrain)) },
+            }) }))
+            const { runMonitoringCapacity } = await import('../../scripts/runtime-scale/monitoring.ts')
+            const pending = runMonitoringCapacity({ hosts: 100, periods: 2, profile: 'mixed', runtime: 'native' })
+                .then(value => ({ value }), error => ({ error })).then(result => { completed = true; return result })
+            await entered.promise
+            await Bun.sleep(0)
+            assert.equal(completed, false)
+            assert.deepEqual(events, ['stop'])
+            finish.resolve()
+            const result = await pending
+            assert.deepEqual(events, ['stop', 'writers-settled', 'delete', 'native-stop', 'database-close'])
+            if ('${mode}' === 'delete failure') assert.equal(result.error, failure)
+            else {
+                assert.equal(result.value.passed, false)
+                assert.ok(result.value.failures.includes('Monitoring worker stop failed'))
+                assert.ok(result.value.failures.includes('Monitoring capacity interrupted by SIGTERM'))
+            }
+            console.log(JSON.stringify({ completed, events, clean: '${mode}' === 'success' }))
+        `,
+            { cwd: new URL('../../..', import.meta.url) },
+        )
+        expect(JSON.parse(output.trim().split('\n').at(-1)!)).toMatchObject({
+            completed: true,
+            clean: mode === 'success',
+            events: ['stop', 'writers-settled', 'delete', 'native-stop', 'database-close'],
+        })
+    },
+)
 
 describe('bounded opt-in monitoring capacity', () => {
     test('prints only fixed branded guard diagnostics and hides arbitrary runtime errors', () => {
