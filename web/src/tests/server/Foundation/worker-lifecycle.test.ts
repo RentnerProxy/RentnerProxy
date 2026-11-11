@@ -441,20 +441,31 @@ describe('worker lifecycle', () => {
     })
 
     test('does not report a permanently stopped singleton as restarted after a startup failure', async () => {
+        workerObservability.reset()
+        const startupFailure = new Error('initialization failed')
         let starts = 0
+        let stops = 0
         const worker = {
             start: () => {
                 starts++
-                throw new Error('initialization failed')
+                throw startupFailure
             },
-            stop: async () => undefined,
+            stop: async () => { stops++ },
         }
-        await expect(
-            startWorkerLifecycle(async () => worker, undefined, {
+        const failure = await startWorkerLifecycle(async () => worker, 'npm_import_cleanup', {
                 retryDelayMs: 1,
-            }),
-        ).rejects.toThrow('worker_instance_stopped')
+            }).then(() => undefined, (error: unknown) => error)
+        expect(failure).toBeInstanceOf(Error)
+        if (!(failure instanceof Error)) throw new Error('Expected stopped-instance failure')
+        expect(failure.message).toBe('worker_instance_stopped')
+        expect(failure.cause).toBe(startupFailure)
         expect(starts).toBe(1)
+        expect(stops).toBe(1)
+        const observed = workerObservability.snapshot().workers.find(value => value.id === 'npm_import_cleanup')!
+        expect(observed.state).toBe('failed')
+        expect(observed.counters.retry).toBe(1)
+        expect(observed.counters.exhausted).toBe(1)
+        expect(JSON.stringify(observed)).not.toContain(startupFailure.message)
     })
 
     test('retries a transient import once and deduplicates its stable identity', async () => {

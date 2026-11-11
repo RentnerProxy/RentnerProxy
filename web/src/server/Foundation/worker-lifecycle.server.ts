@@ -13,8 +13,8 @@ import { readRestoreMaintenanceObservation } from '@/server/Backups/restore-main
 import { advanceRestoreAdmission } from '@/server/Backups/restore-admission.ts'
 
 class WorkerStoppedInstanceError extends Error {
-    constructor() {
-        super('worker_instance_stopped')
+    constructor(cause: unknown) {
+        super('worker_instance_stopped', { cause })
     }
 }
 
@@ -124,6 +124,7 @@ export function createWorkerLifecycleSupervisor() {
             })
 
         let stoppedWorker: WorkerLifecycle | undefined
+        let stoppedWorkerCause: unknown
         let workerStop: Promise<void> | undefined
         /** Share each stop request; an interrupted start also needs an idempotent cleanup after its actual settlement. */
         const stopLoaded = () => {
@@ -165,7 +166,7 @@ export function createWorkerLifecycleSupervisor() {
                 try {
                     if (!worker) {
                         const pendingLoad = load(controller.signal).then((loaded) => {
-                            if (loaded === stoppedWorker) throw new WorkerStoppedInstanceError()
+                            if (loaded === stoppedWorker) throw new WorkerStoppedInstanceError(stoppedWorkerCause)
                             worker = loaded
                             startExecution = undefined
                             return loaded
@@ -249,6 +250,7 @@ export function createWorkerLifecycleSupervisor() {
                     // Retry transient restore reads with the same never-started instance.
                     // A failed start or terminal attempt still owns mandatory cleanup.
                     if (worker && (startAttempted || terminal)) {
+                        if (startAttempted) stoppedWorkerCause = error
                         await drainWorker(stopLoaded(), options.drainTimeoutMs)
                         worker = undefined
                         startAttempted = false
