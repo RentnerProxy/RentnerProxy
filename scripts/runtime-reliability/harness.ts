@@ -32,7 +32,7 @@ import type { FixtureControl, TrafficDiagnostic } from './Types/fixture-transpor
 
 export class ReliabilityError extends Error {
     constructor(
-        readonly category: 'command' | 'timeout' | 'assertion' | 'telemetry',
+        readonly category: 'command' | 'timeout' | 'assertion' | 'telemetry' | 'cancelled',
         label: string,
     ) {
         super(label)

@@ -197,7 +197,14 @@ export function buildScaleReport(input: {
         ? z
               .strictObject({
                   stage: z.enum(stages),
-                  category: z.enum(['assertion', 'timeout', 'command', 'telemetry', 'unexpected']),
+                  category: z.enum([
+                      'assertion',
+                      'timeout',
+                      'command',
+                      'telemetry',
+                      'unexpected',
+                      'cancelled',
+                  ]),
               })
               .parse({ stage: input.failure.stage, category: input.failure.category })
         : undefined
