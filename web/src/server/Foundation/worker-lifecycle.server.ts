@@ -59,6 +59,7 @@ export function createWorkerLifecycleSupervisor() {
         shutdownRequested = true
     })
 
+    /** Delay writer startup until restore state permits it and share shutdown/maintenance drain ownership across initialization races. */
     function startWorkerLifecycle(
         load: (signal: AbortSignal) => Promise<WorkerLifecycle>,
         id?: BackgroundWorkerId,
@@ -78,6 +79,7 @@ export function createWorkerLifecycleSupervisor() {
         return starting
     }
 
+    /** Fence future starts before collecting listener drain promises; propagate any failure to stop an existing writer. */
     async function stopWorkersForRestoreMaintenance(): Promise<void> {
         if (maintenanceDrain) return maintenanceDrain
         maintenanceStopped = true
@@ -192,6 +194,7 @@ export function createWorkerLifecycleSupervisor() {
                 }
             }
         })()
+        /** Latch stop intent before initialization completes and share one drain promise while retaining truthful terminal diagnostics. */
         const stop = (pending: Array<Promise<void>>) => {
             controller.abort()
             if (!stopping) state(maintenanceStopped ? 'maintenance_paused' : 'stopping')

@@ -76,6 +76,7 @@ pub(crate) struct Registry {
     entries: Mutex<[Entry; 5]>,
 }
 
+/// Clamp wall-clock timestamps to the JSON-safe range and treat pre-epoch clock values as zero.
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -83,6 +84,7 @@ fn now() -> u64 {
         .as_millis()
         .min(MAX as u128) as u64
 }
+/// Saturate at the JSON-safe bound and explicitly mark that exact accounting was lost.
 fn increment(value: &mut u64, overflowed: &mut bool) {
     if *value == MAX {
         *overflowed = true;
@@ -92,6 +94,7 @@ fn increment(value: &mut u64, overflowed: &mut bool) {
 }
 
 impl Registry {
+    /// Create the fixed controller worker catalog with unavailable progress evidence and one process-local epoch.
     pub(super) fn new() -> Arc<Self> {
         Arc::new(Self {
             #[cfg(test)]
@@ -118,6 +121,7 @@ impl Registry {
             })),
         })
     }
+    /// Serialize one fixed worker mutation, recovering poisoned metric state without propagating a diagnostic panic.
     fn update(&self, worker: Worker, action: impl FnOnce(&mut Entry)) {
         let mut entries = self
             .entries
@@ -125,6 +129,7 @@ impl Registry {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         action(&mut entries[worker as usize]);
     }
+    /// Clone metric evidence under the lock without refreshing worker execution or success timestamps.
     pub(crate) fn snapshot(&self) -> Snapshot {
         #[cfg(test)]
         self.observations
@@ -140,6 +145,7 @@ impl Registry {
             workers,
         }
     }
+    /// Own resident liveness with a drop guard while preserving an existing shutdown state.
     pub(super) fn start(self: &Arc<Self>, worker: Worker) -> Resident {
         self.update(worker, |entry| {
             entry.resident_alive = true;
@@ -156,6 +162,7 @@ impl Registry {
             worker,
         }
     }
+    /// Own one in-flight pass and capture the failure count so nested failures survive its later completion.
     pub(super) fn begin(self: &Arc<Self>, worker: Worker) -> Pass {
         let mut failures_at_start = 0;
         self.update(worker, |entry| {
@@ -177,6 +184,7 @@ impl Registry {
             failures_at_start,
         }
     }
+    /// Latch stopping until both the resident and all in-flight passes have exited.
     pub(super) fn stop_worker(&self, worker: Worker) {
         self.update(worker, |entry| {
             entry.state = if !entry.resident_alive && entry.running_count == 0 {
@@ -186,6 +194,7 @@ impl Registry {
             };
         });
     }
+    /// Fence every fixed controller worker into stopping or stopped without requiring a diagnostic reader.
     pub(super) fn stopping(&self) {
         for worker in [
             Worker::Recovery,
@@ -204,6 +213,7 @@ pub(super) struct Resident {
     worker: Worker,
 }
 impl Drop for Resident {
+    /// Treat unexpected resident exit as failure; shutdown completes only after outstanding passes finish.
     fn drop(&mut self) {
         self.registry.update(self.worker, |entry| {
             entry.resident_alive = false;
@@ -237,9 +247,11 @@ pub(super) struct Pass {
     failures_at_start: u64,
 }
 impl Pass {
+    /// Consume the pass and record exactly one explicit outcome; Drop must not count it again.
     pub(super) fn finish(mut self, outcome: Outcome) {
         self.complete(outcome);
     }
+    /// Record elapsed duration and outcome while preserving nested failures and terminal shutdown/resident-failure states.
     fn complete(&mut self, outcome: Outcome) {
         self.finished = true;
         let bucket = [10, 100, 1000, 10000, 60000]
@@ -284,6 +296,7 @@ impl Pass {
     }
 }
 impl Drop for Pass {
+    /// Account unfinished passes as failures, except normal shutdown cancellation; panic unwinding remains a failure.
     fn drop(&mut self) {
         if !self.finished {
             let stopping = {

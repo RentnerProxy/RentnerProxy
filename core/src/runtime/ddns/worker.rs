@@ -23,6 +23,7 @@ impl ProxyRuntime {
         self.start_ddns_scheduler_inner(Some(gate)).await;
     }
 
+    /// Start one resident scheduler; busy admission stays idle, stop cancels, and actual dependency errors drive bounded backoff.
     async fn start_ddns_scheduler_inner(
         self: &Arc<Self>,
         #[cfg(test)] gate: Option<Arc<tokio::sync::RwLock<()>>>,

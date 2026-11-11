@@ -36,6 +36,7 @@ enum ManualOutcome {
 }
 
 impl ProxyRuntime {
+    /// Prepare a manual order within the DNS deadline and record the persisted result rather than treating task admission as success.
     pub(super) async fn issue_manual_dns_inner(
         self: &Arc<Self>,
         id: String,
@@ -87,6 +88,7 @@ impl ProxyRuntime {
         Ok(metadata)
     }
 
+    /// Expire and claim recoverable orders under the ACME budget, returning false for failed recovery reads or claims.
     pub(crate) async fn recover_manual_dns(self: &Arc<Self>) -> bool {
         let pass = self.background.begin(Worker::Orders);
         if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
@@ -130,6 +132,7 @@ impl ProxyRuntime {
         !failed
     }
 
+    /// Resume the saved operation within the DNS deadline and classify the durable completion through its operation identity.
     async fn resume_manual_dns_inner(
         self: &Arc<Self>,
         id: String,
@@ -150,6 +153,7 @@ impl ProxyRuntime {
         );
     }
 
+    /// Keep user-action pauses idle; count success only after activation, and fence failure/recovery writes by the saved operation ID.
     async fn finish_manual_dns_result(
         self: &Arc<Self>,
         id: &str,

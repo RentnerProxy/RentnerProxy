@@ -6,6 +6,7 @@ import { createRuntimeReconciler } from '@/server/Foundation/runtime-reconciler.
 
 const CONTROLLER_APPLY_TIMEOUT_MS = 20_000
 
+/** Serialize bounded controller applies and require the returned active revision to match the requested snapshot. */
 export function createProxyReconciler(
     dependencies: ReconcileDependencies,
     timeoutMs = 25_000,

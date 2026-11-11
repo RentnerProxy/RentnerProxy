@@ -15,6 +15,7 @@ const INITIAL_RETRY_DELAY_MS = 1_000
 const MAX_RETRY_DELAY_MS = 60_000
 const DRIFT_CHECK_INTERVAL_MS = 60_000
 
+/** Serialize revision application with coalesced requests and bounded retries; rejected revisions stay degraded until actual recovery. */
 export function createRuntimeReconciler<T>(
     dependencies: RuntimeReconcileDependencies<T>,
     options: RuntimeReconcileOptions,
@@ -63,6 +64,7 @@ export function createRuntimeReconciler<T>(
         }
     }
 
+    /** Retain nonretryable rejection evidence across idle checks; only a stable successful apply resolves waiters as applied. */
     async function runWorker(): Promise<void> {
         let retryDelay = INITIAL_RETRY_DELAY_MS
         // oxlint-disable-next-line no-unmodified-loop-condition -- stop() changes this lifecycle flag.

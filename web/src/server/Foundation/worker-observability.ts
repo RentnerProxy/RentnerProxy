@@ -29,11 +29,13 @@ const protectedStates = new Set<BackgroundWorkerState>([
 ])
 const { maximumInteger, durationBoundsMs } = backgroundWorkerMetricsConfig
 
+/** Reject invalid or negative evidence and clamp finite integers to the safe counter limit. */
 function boundedNumber(value: unknown): number | null {
     if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null
     return Math.min(maximumInteger, Math.floor(value))
 }
 
+/** Allocate fresh state for the fixed worker catalog; missing progress and queue evidence remain null. */
 function makeWorkers() {
     return backgroundWorkerIds.map((id): WorkerSnapshot => ({
         id,
@@ -72,6 +74,7 @@ function makeWorkers() {
     }))
 }
 
+/** Saturate counters at the safe integer bound and mark loss of exact accounting on the owning worker. */
 function add(worker: WorkerSnapshot, value: number, increment = 1) {
     if (increment > maximumInteger - value) {
         worker.overflowed = true
@@ -80,6 +83,7 @@ function add(worker: WorkerSnapshot, value: number, increment = 1) {
     return value + increment
 }
 
+/** Create process-local bounded metrics with lane-specific degradation and generation-fenced, single-use completion callbacks. */
 export function createWorkerObservability(
     options: WorkerObservabilityOptions = {},
 ): WorkerObservability {
@@ -95,6 +99,7 @@ export function createWorkerObservability(
         overflowed: false,
     }
     const find = (id: unknown) => workers.find((worker) => worker.id === id)
+    /** Apply valid state changes once and contain logger failures so diagnostics cannot interrupt worker execution. */
     const transition = (worker: WorkerSnapshot, state: BackgroundWorkerState) => {
         if (!backgroundWorkerStates.includes(state) || worker.state === state) return
         const previousState = worker.state
@@ -108,6 +113,7 @@ export function createWorkerObservability(
     }
 
     return {
+        /** Bucket valid event-loop delays with saturating counts; sampling does not imply worker progress. */
         eventLoopDelay(milliseconds) {
             const delay = boundedNumber(milliseconds)
             if (delay === null) return
@@ -126,15 +132,18 @@ export function createWorkerObservability(
                 (eventLoopLag.buckets[bucket] ?? 0) + 1,
             )
         },
+        /** Increment only fixed worker/event identities; unsupported labels cannot expand metric cardinality. */
         count(id, event) {
             const worker = find(id)
             if (worker && countEvents.has(event))
                 worker.counters[event] = add(worker, worker.counters[event])
         },
+        /** Transition only a known worker through the validated state catalog. */
         state(id, state) {
             const worker = find(id)
             if (worker) transition(worker, state)
         },
+        /** Start one lane operation; its idempotent completion cannot mutate a reset generation or reverse protected lifecycle states. */
         begin(id, lane = 'execution') {
             const worker = find(id)
             if (!worker || !backgroundWorkerMetricsConfig.lanes.includes(lane)) return () => {}
@@ -173,6 +182,7 @@ export function createWorkerObservability(
                 else transition(worker, worker.running > 0 ? 'running' : 'idle')
             }
         },
+        /** Update only supplied numeric queue fields, preserving absent values and converting invalid evidence to null. */
         sample(id, sample) {
             const worker = find(id)
             if (!worker || !sample || typeof sample !== 'object') return
@@ -181,6 +191,7 @@ export function createWorkerObservability(
                 if (Object.hasOwn(sample, key)) worker[key] = boundedNumber(sample[key])
             }
         },
+        /** Return detached nested metric structures without advancing execution timestamps or success counters. */
         snapshot() {
             return {
                 epoch: { ...epoch },
@@ -199,6 +210,7 @@ export function createWorkerObservability(
                 ),
             }
         },
+        /** Start a fresh bounded epoch and invalidate outstanding completion callbacks from the previous generation. */
         reset() {
             generation = {}
             epoch = { startedAt: now(), sequence: Math.min(maximumInteger, epoch.sequence + 1) }
@@ -217,6 +229,7 @@ export function createWorkerObservability(
 const loggedAt = new Map<BackgroundWorkerId, number>()
 
 export const workerObservability = createWorkerObservability({
+    /** Rate-limit relevant state transitions per fixed worker identity without logging normal startup/running churn. */
     log(event) {
         if (event.state === 'running' || event.state === 'starting') return
         if (event.state === 'idle' && !['degraded', 'retrying'].includes(event.previousState))

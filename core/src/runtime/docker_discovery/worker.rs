@@ -11,6 +11,7 @@ use std::{
 use tokio::time::{Instant, sleep, sleep_until};
 
 impl Discovery {
+    /// Start at most one resident observer and refuse new task admission after shutdown has begun.
     pub(crate) async fn start(self: &Arc<Self>) {
         let mut task = self.task.lock().await;
         if task.is_some() || self.stopping.load(Ordering::SeqCst) {
@@ -23,6 +24,7 @@ impl Discovery {
             discovery.run().await;
         }));
     }
+    /// Latch shutdown, mark the observer stopping, and wake both observation and change listeners.
     pub(crate) fn stop_accepting(&self) {
         self.stopping.store(true, Ordering::SeqCst);
         self.background.stop_worker(Worker::Docker);
@@ -57,6 +59,7 @@ impl Discovery {
             }
         }
     }
+    /// Serialize observation passes, distinguish disabled idle from errors, and cancel on configuration wake without inventing failures.
     async fn run(&self) {
         let mut failures = 0_u32;
         while !self.stopping.load(Ordering::SeqCst) {
@@ -98,6 +101,7 @@ impl Discovery {
             tokio::select! { _ = self.wake.notified() => { failures = 0; }, _ = sleep(delay) => {} }
         }
     }
+    /// Subscribe before inventory, coalesce event scans to at most twice per second, and retain any publication failure within the subscription.
     async fn observe(&self, document: &Document) -> Result<Outcome, Error> {
         let docker = Docker::new(
             document

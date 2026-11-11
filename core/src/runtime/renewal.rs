@@ -9,6 +9,7 @@ use tokio::time::interval;
 
 const MAX_ACME_STARTS_PER_TICK: usize = 4;
 
+/// Distinguish admitted work from idle/busy admission; only actual certificate errors degrade the scan.
 fn certificate_work_outcome<T>(
     result: Result<Option<T>, certificates::CertificateError>,
 ) -> Outcome {
@@ -20,6 +21,7 @@ fn certificate_work_outcome<T>(
 }
 
 impl ProxyRuntime {
+    /// Start one resident minute scheduler, skip missed ticks, and retain failures from bounded recovery and renewal scans.
     pub(crate) async fn start_renewal_scheduler(
         self: &Arc<Self>,
         challenges: crate::server::challenges::ChallengeStore,
@@ -82,6 +84,7 @@ impl ProxyRuntime {
         }));
     }
 
+    /// Rotate due certificates fairly and attempt at most four starts per tick; busy admission stays idle and real failures win.
     async fn renew_due_certificates(
         self: &Arc<Self>,
         challenges: crate::server::challenges::ChallengeStore,
@@ -162,6 +165,7 @@ impl ProxyRuntime {
                 .is_some_and(|deadline| deadline <= now)
     }
 
+    /// Rotate the pending candidate cursor within the activation budget, preserving any failure and reporting shutdown cancellation.
     async fn retry_certificate_candidates(self: &Arc<Self>) -> Outcome {
         if self.stopping.load(Ordering::SeqCst) {
             return Outcome::Cancelled;
