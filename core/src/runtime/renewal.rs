@@ -9,6 +9,16 @@ use tokio::time::interval;
 
 const MAX_ACME_STARTS_PER_TICK: usize = 4;
 
+fn certificate_work_outcome<T>(
+    result: Result<Option<T>, certificates::CertificateError>,
+) -> Outcome {
+    match result {
+        Ok(Some(_)) => Outcome::Success,
+        Ok(None) | Err(certificates::CertificateError::OperationInProgress) => Outcome::Idle,
+        Err(_) => Outcome::Failure,
+    }
+}
+
 impl ProxyRuntime {
     pub(crate) async fn start_renewal_scheduler(
         self: &Arc<Self>,
@@ -27,6 +37,9 @@ impl ProxyRuntime {
             timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 timer.tick().await;
+                if runtime.stopping.load(Ordering::SeqCst) {
+                    break;
+                }
                 let pass = runtime.background.begin(Worker::Renewal);
                 let candidates = runtime.retry_certificate_candidates().await;
                 let expiry = runtime.certificate_store.expire_manual_dns_orders().await;
@@ -48,22 +61,22 @@ impl ProxyRuntime {
                 let renewal = runtime
                     .renew_due_certificates(challenges.clone(), cursor)
                     .await;
-                pass.finish(
-                    if expiry.is_err()
-                        || !manual
-                        || !cleanup
-                        || matches!(candidates, Outcome::Failure)
-                        || matches!(renewal, Outcome::Failure)
-                    {
-                        Outcome::Failure
-                    } else if matches!(candidates, Outcome::Success)
-                        || matches!(renewal, Outcome::Success)
-                    {
-                        Outcome::Success
-                    } else {
-                        Outcome::Idle
-                    },
-                );
+                pass.finish(if runtime.stopping.load(Ordering::SeqCst) {
+                    Outcome::Cancelled
+                } else if expiry.is_err()
+                    || !manual
+                    || !cleanup
+                    || matches!(candidates, Outcome::Failure)
+                    || matches!(renewal, Outcome::Failure)
+                {
+                    Outcome::Failure
+                } else if matches!(candidates, Outcome::Success)
+                    || matches!(renewal, Outcome::Success)
+                {
+                    Outcome::Success
+                } else {
+                    Outcome::Idle
+                });
                 cursor = cursor.wrapping_add(1);
             }
         }));
@@ -74,6 +87,9 @@ impl ProxyRuntime {
         challenges: crate::server::challenges::ChallengeStore,
         cursor: usize,
     ) -> Outcome {
+        if self.stopping.load(Ordering::SeqCst) {
+            return Outcome::Cancelled;
+        }
         let Ok(mut certificates) = self.certificate_store.list().await else {
             return Outcome::Failure;
         };
@@ -83,6 +99,7 @@ impl ProxyRuntime {
         let offset = cursor % certificates.len();
         certificates.rotate_left(offset);
         let mut starts = 0;
+        let mut admitted = 0;
         let mut failed = false;
         for certificate in certificates {
             if self.stopping.load(Ordering::SeqCst) || starts >= MAX_ACME_STARTS_PER_TICK {
@@ -107,11 +124,17 @@ impl ProxyRuntime {
                 self.start_scheduled_acme_renewal(certificate.id, challenges.clone())
                     .await
             };
-            failed |= result.is_err();
+            match certificate_work_outcome(result.map(Some)) {
+                Outcome::Success => admitted += 1,
+                Outcome::Failure => failed = true,
+                _ => {}
+            }
         }
-        if failed {
+        if self.stopping.load(Ordering::SeqCst) {
+            Outcome::Cancelled
+        } else if failed {
             Outcome::Failure
-        } else if starts == 0 {
+        } else if admitted == 0 {
             Outcome::Idle
         } else {
             Outcome::Success
@@ -140,6 +163,9 @@ impl ProxyRuntime {
     }
 
     async fn retry_certificate_candidates(self: &Arc<Self>) -> Outcome {
+        if self.stopping.load(Ordering::SeqCst) {
+            return Outcome::Cancelled;
+        }
         let Ok(mut ids) = self.certificate_store.pending_candidate_ids().await else {
             return Outcome::Failure;
         };
@@ -153,13 +179,19 @@ impl ProxyRuntime {
             if self.stopping.load(Ordering::SeqCst) {
                 break;
             }
-            match self.retry_certificate_candidate(&id, true).await {
-                Ok(Some(_)) if !matches!(outcome, Outcome::Failure) => outcome = Outcome::Success,
-                Err(_) => outcome = Outcome::Failure,
+            match certificate_work_outcome(self.retry_certificate_candidate(&id, true).await) {
+                Outcome::Success if !matches!(outcome, Outcome::Failure) => {
+                    outcome = Outcome::Success
+                }
+                Outcome::Failure => outcome = Outcome::Failure,
                 _ => {}
             }
         }
-        outcome
+        if self.stopping.load(Ordering::SeqCst) {
+            Outcome::Cancelled
+        } else {
+            outcome
+        }
     }
 
     pub(super) fn renewal_is_due(certificate: &CertificateMetadata) -> bool {
