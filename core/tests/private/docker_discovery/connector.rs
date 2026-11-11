@@ -109,6 +109,36 @@ async fn fixture() -> (String, Arc<Fixture>, tokio::task::JoinHandle<()>) {
     (endpoint, fixture, task)
 }
 
+#[tokio::test]
+async fn observation_error_records_one_attempt_and_failure_including_error_publication() {
+    let root = directory();
+    let (endpoint, fixture, server) = fixture().await;
+    fixture.fail.store(true, Ordering::SeqCst);
+    let discovery = Discovery::new(root.clone());
+    discovery.save(save(Some(endpoint), true, 0)).await.unwrap();
+    discovery.wake.notified().await;
+    discovery.start().await;
+    let metrics = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let value = serde_json::to_value(discovery.background.snapshot()).unwrap();
+            let worker = &value["workers"][3];
+            if worker["runningCount"] == 0 && worker["failures"].as_u64().unwrap() > 0 {
+                break worker.clone();
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(metrics["attempts"], 1);
+    assert_eq!(metrics["failures"], 1);
+    assert_eq!(metrics["successes"], 0);
+    discovery.stop().await;
+    server.abort();
+    let _ = server.await;
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn native_unix_socket_uses_only_filtered_reads_and_preserves_socket_permissions() {
