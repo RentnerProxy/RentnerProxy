@@ -233,7 +233,8 @@ export async function runBackgroundDiscovery(seed: number) {
             'The final event requires an unchanged candidate baseline',
         )
         const change = engine.armFinalEvent()
-        while (performance.now() - started < 45000) {
+        const finalEventDeadline = Math.max(started + 45000, performance.now() + 15000)
+        while (performance.now() < finalEventDeadline) {
             final = await dockerDiscoveryController.status()
             if (
                 engine.stats().streams !== change.streams ||
