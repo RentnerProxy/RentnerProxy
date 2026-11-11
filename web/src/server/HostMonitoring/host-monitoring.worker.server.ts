@@ -1,5 +1,6 @@
 import '@tanstack/react-start/server-only'
 import { HOST_MONITORING_LIMITS } from '@/config/host-monitoring.config.ts'
+import { withBackgroundDatabaseContext } from '@/db/background-admission.ts'
 import { observeWorkerOperation } from '@/server/Foundation/worker-operation.ts'
 import { workerObservability } from '@/server/Foundation/worker-observability.ts'
 import { inspectControllerDomain } from '@/server/Controller/domain-diagnostics.server.ts'
@@ -46,6 +47,10 @@ const complete = createHostMonitoringBatcher<HostMonitoringCompletion, boolean>(
     },
 })
 
+/** Finish only an owned claim's fenced release after cancellation, retaining shared background SQL admission. */
+const release = (claim: HostMonitoringClaim) =>
+    withBackgroundDatabaseContext(() => releaseHostMonitoringClaim(claim), null)
+
 export const hostMonitoringWorker = createHostMonitoringWorker({
     claim: (limit) =>
         observeWorkerOperation(
@@ -80,7 +85,7 @@ export const hostMonitoringWorker = createHostMonitoringWorker({
                     workerObservability.count('host_monitoring', 'admissionRejected')
                 return stored
             },
-            release: releaseHostMonitoringClaim,
+            release,
         })
         return observeWorkerOperation(
             'host_monitoring',
@@ -90,7 +95,7 @@ export const hostMonitoringWorker = createHostMonitoringWorker({
         )
     },
     releaseCancelled: async (claim) => {
-        await releaseHostMonitoringClaim(claim)
+        await release(claim)
     },
     /** Observe retention independently from probe execution, then refresh queue evidence after successful pruning. */
     prune: async () => {

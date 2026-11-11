@@ -11,11 +11,40 @@ import { markDiscoveryReconciliation } from '@/server/WebSockets/committedChange
 import { readDiscoveryRegistry, writeDiscoveryRegistry } from './discovery-storage.server.ts'
 import { reconcileDiscoveryInTransaction } from './discovery-reconcile.server.ts'
 import { appendAuditEventInTransactionService } from '@/server/Audit/audit.service.ts'
-import { createDiscoveryObserver, DiscoverySuperseded } from './discovery-observer.ts'
+import {
+    createDiscoveryObserver,
+    DiscoveryFinalizationError,
+    DiscoverySuperseded,
+} from './discovery-observer.ts'
 import { DockerDiscoveryError } from './docker-discovery.errors.ts'
 import { observeWorkerOperation } from '@/server/Foundation/worker-operation.ts'
 import { withBackgroundDatabaseContext } from '@/db/background-admission.ts'
+import { ResourceAdmissionError } from '@/server/Foundation/resource-admission.ts'
+import { DOCKER_DISCOVERY_WORKER } from '@/config/docker-discovery.config.ts'
 import type { DockerDiscoverySnapshot } from '@/lib/DockerDiscovery/Types/docker-discovery.types.ts'
+
+/** Retry only unadmitted receipts; every attempt keeps the shared SQL gate and revision fence. */
+async function finishAppliedReceipt(commit: () => Promise<void>): Promise<void> {
+    await withBackgroundDatabaseContext(async () => {
+        // At most seven seconds of admission/backoff plus a five-second SQL transaction.
+        for (let attempt = 1; ; attempt++) {
+            try {
+                // oxlint-disable-next-line no-await-in-loop -- Receipt attempts are serial and never hold a permit during backoff.
+                await commit()
+                return
+            } catch (error) {
+                if (
+                    !(error instanceof ResourceAdmissionError) ||
+                    error.reason === 'cancelled' ||
+                    attempt === 5
+                )
+                    throw new DiscoveryFinalizationError(error)
+                // oxlint-disable-next-line no-await-in-loop -- Bounded retry remains owned by the worker drain after collection stops.
+                await Bun.sleep(DOCKER_DISCOVERY_WORKER.coalesceMs)
+            }
+        }
+    }, null)
+}
 
 async function recordDiscoveryFailure(): Promise<void> {
     await getAuthDatabase().transaction(async (transaction) => {
@@ -64,7 +93,7 @@ export function createDockerDiscoveryWorker() {
         signal: AbortSignal,
         assertCurrent: () => void,
         resetBudget: boolean,
-    ): Promise<{ enabled: boolean; again: boolean }> {
+    ): Promise<{ enabled: boolean; again: boolean; receiptSettled: boolean }> {
         const result = await getAuthDatabase().transaction(async (transaction) => {
             markDiscoveryReconciliation(transaction)
             await transaction.execute(sql`set local lock_timeout = '5s'`)
@@ -95,35 +124,44 @@ export function createDockerDiscoveryWorker() {
             (resetBudget || remaining === null ? result.total : remaining) - result.attempted,
         )
         if (!result.enabled || !result.pending || signal.aborted)
-            return { enabled: result.enabled, again: result.enabled && remaining > 0 }
+            return {
+                enabled: result.enabled,
+                again: result.enabled && remaining > 0,
+                receiptSettled: !result.enabled || !result.pending,
+            }
         const runtimeStatus = await reconcileProxyConfigurationService()
         if (runtimeStatus === 'applied') {
             // Finish an admitted apply under the same SQL budget after stop cancels collection.
-            await withBackgroundDatabaseContext(
-                () =>
-                    getAuthDatabase().transaction(async (transaction) => {
-                        markDiscoveryReconciliation(transaction)
-                        await lockProxyRuntimeSettings(transaction)
-                        const registry = await readDiscoveryRegistry(transaction)
-                        if (registry.revision !== result.revision) return
-                        registry.runtimeStatus = 'applied'
-                        registry.revision += 1
-                        await writeDiscoveryRegistry(transaction, registry)
-                        await appendAuditEventInTransactionService(transaction, {
-                            actorUserId: registry.actorUserId,
-                            actorKind: 'user',
-                            action: 'apply',
-                            resource: 'proxy-runtime',
-                            targetId: null,
-                            result: 'success',
-                            metadata: { runtimeStatus: 'applied' },
-                        })
-                    }),
-                null,
+            await finishAppliedReceipt(() =>
+                getAuthDatabase().transaction(async (transaction) => {
+                    markDiscoveryReconciliation(transaction)
+                    await transaction.execute(
+                        sql`select set_config('lock_timeout', '5s', true), set_config('statement_timeout', '5s', true), set_config('transaction_timeout', '5s', true)`,
+                    )
+                    await lockProxyRuntimeSettings(transaction)
+                    const registry = await readDiscoveryRegistry(transaction)
+                    if (registry.revision !== result.revision) return
+                    registry.runtimeStatus = 'applied'
+                    registry.revision += 1
+                    await writeDiscoveryRegistry(transaction, registry)
+                    await appendAuditEventInTransactionService(transaction, {
+                        actorUserId: registry.actorUserId,
+                        actorKind: 'user',
+                        action: 'apply',
+                        resource: 'proxy-runtime',
+                        targetId: null,
+                        result: 'success',
+                        metadata: { runtimeStatus: 'applied' },
+                    })
+                }),
             )
         }
         publishApplicationChange()
-        return { enabled: result.enabled, again: remaining > 0 || runtimeStatus !== 'applied' }
+        return {
+            enabled: result.enabled,
+            again: remaining > 0 || runtimeStatus !== 'applied',
+            receiptSettled: runtimeStatus === 'applied',
+        }
     }
 
     return createDiscoveryObserver({

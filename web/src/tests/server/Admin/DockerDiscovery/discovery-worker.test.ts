@@ -37,6 +37,7 @@ test('controller observation has independent failure recovery and treats empty w
         mock.module('./server/Audit/audit.service.ts', () => ({ appendAuditEventInTransactionService: async () => {} }))
         mock.module('./server/Admin/DockerDiscovery/discovery-observer.ts', () => ({
             DiscoverySuperseded: class extends Error {},
+            DiscoveryFinalizationError: class extends Error {},
             createDiscoveryObserver: value => { dependencies = value; return {} },
         }))
         const { workerObservability } = await import('./server/Foundation/worker-observability.ts')
