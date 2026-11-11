@@ -217,6 +217,16 @@ describe('bounded process isolation evaluation', () => {
         }
     })
 
+    test('duplicate or invalid observation accounting cannot produce a topology recommendation', () => {
+        for (const duplicates of [1, -1, NaN]) {
+            const values = repeats()
+            values[0]!.duplicates = duplicates
+            const result = assessIsolation(values, false)
+            expect(result.recommendation).toBe('insufficient-evidence')
+            expect(result.results[0]?.decision).toBe('insufficient')
+        }
+    })
+
     test('keeps the simpler baseline when it already meets SLO, regardless of a faster candidate', () => {
         const result = assessIsolation(repeats(100, 10), true)
         expect(result.recommendation).toBe('keep-in-process')

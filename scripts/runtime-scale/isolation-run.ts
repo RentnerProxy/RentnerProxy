@@ -1,7 +1,7 @@
 // oxlint-disable no-await-in-loop -- Matched repetitions, owned child cleanup and maintenance checkpoints are ordered.
 import { SQL } from 'bun'
 import { createHash } from 'node:crypto'
-import { chmod, chown, mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
+import { chmod, chown, mkdtemp, open, readdir, readFile, rm } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { isolationContract as contract } from './isolation.config.ts'
 import {
@@ -38,6 +38,11 @@ async function bounded<T>(operation: Promise<T>, milliseconds: number): Promise<
         clearTimeout(timer)
     }
 }
+export class IsolationCommandError extends Error {
+    constructor(readonly exitCode: number) {
+        super('Isolation fixture command failed')
+    }
+}
 /** Run an owned tool with bounded output completion; failures kill and reap the child and bound inherited-pipe cleanup before rethrowing. */
 export async function command(args: string[], timeoutMs = 30_000): Promise<string> {
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
@@ -53,7 +58,7 @@ export async function command(args: string[], timeoutMs = 30_000): Promise<strin
     const completions = [child.exited, read(child.stdout), read(child.stderr)] as const
     try {
         const [code, out] = await bounded(Promise.all(completions), timeoutMs)
-        if (code !== 0) throw new Error('Isolation fixture command failed')
+        if (code !== 0) throw new IsolationCommandError(code)
         return out.trim()
     } catch (error) {
         if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
@@ -67,6 +72,119 @@ export async function command(args: string[], timeoutMs = 30_000): Promise<strin
         }
         throw error
     }
+}
+
+/** Reap the directly owned postmaster and require pg_ctl's explicit stopped result; unknown state retains the data directory. */
+export async function stopIsolationPostgres(
+    directory: string,
+    postgres: Pick<Bun.Subprocess, 'exitCode' | 'signalCode' | 'kill' | 'exited'> | undefined,
+    run = command,
+) {
+    const errors: unknown[] = []
+    if (postgres && postgres.exitCode === null && postgres.signalCode === null) {
+        try {
+            // PostgreSQL's immediate shutdown signal, sent only to our owned handle.
+            // Never let an unexpected PID file choose a process to stop.
+            postgres.kill('SIGQUIT')
+        } catch (error) {
+            errors.push(error)
+        }
+    }
+    if (postgres) {
+        try {
+            await bounded(postgres.exited, 5_000)
+        } catch (error) {
+            errors.push(error)
+            try {
+                postgres.kill('SIGKILL')
+            } catch (killError) {
+                errors.push(killError)
+            } finally {
+                await postgres.exited
+            }
+        }
+        if (postgres.signalCode !== null)
+            errors.push(
+                new Error(
+                    'Isolation PostgreSQL terminated by signal; cluster shutdown is unconfirmed',
+                ),
+            )
+    }
+    try {
+        await run(['gosu', 'postgres', 'pg_ctl', '-D', directory + '/pg', 'status'])
+        errors.push(new Error('Isolation PostgreSQL is still running'))
+    } catch (error) {
+        if (!(error instanceof IsolationCommandError && error.exitCode === 3)) errors.push(error)
+    }
+    if (errors.length)
+        throw new AggregateError(errors, 'Isolation PostgreSQL shutdown was not confirmed')
+}
+
+/** Accept readiness only from this live postmaster's own identity file, never another listener on the same port. */
+export async function waitForIsolationPostgres(
+    directory: string,
+    postgres: Pick<Bun.Subprocess, 'pid' | 'exitCode' | 'signalCode'>,
+    launchedAt: number,
+    port = 55439,
+) {
+    const deadline = performance.now() + 10_000
+    while (performance.now() < deadline) {
+        if (postgres.exitCode !== null || postgres.signalCode !== null)
+            throw new Error('Isolation PostgreSQL exited before readiness')
+        const text = await readFile(directory + '/pg/postmaster.pid', 'utf8').catch(
+            (error: unknown) => {
+                if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return ''
+                throw error
+            },
+        )
+        const lines = text.trimEnd().split('\n')
+        if (lines.length >= 4) {
+            if (
+                Number(lines[0]) !== postgres.pid ||
+                lines[1] !== directory + '/pg' ||
+                Number(lines[2]) < Math.floor(launchedAt / 1_000) ||
+                Number(lines[2]) > Math.floor(Date.now() / 1_000) ||
+                !Number.isSafeInteger(Number(lines[2])) ||
+                Number(lines[3]) !== port
+            )
+                throw new Error('Isolation PostgreSQL identity mismatch')
+            if (lines[7]?.trim() === 'ready') {
+                if (postgres.exitCode !== null || postgres.signalCode !== null)
+                    throw new Error('Isolation PostgreSQL exited before readiness')
+                return
+            }
+        }
+        await Bun.sleep(25)
+    }
+    throw new Error('Isolation PostgreSQL readiness deadline')
+}
+
+/** Attempt every cleanup stage; failed cleanup retains owned fixture data and preserves the original failure. */
+export async function finishIsolationFixture(
+    stages: (() => Promise<unknown>)[],
+    remove: () => Promise<unknown>,
+    primary: { error: unknown } | undefined,
+) {
+    const errors: unknown[] = []
+    for (const stage of stages) {
+        try {
+            await stage()
+        } catch (error) {
+            errors.push(error)
+        }
+    }
+    if (!errors.length) {
+        try {
+            await remove()
+        } catch (error) {
+            errors.push(error)
+        }
+    }
+    if (errors.length)
+        throw new AggregateError(
+            primary ? [primary.error, ...errors] : errors,
+            'Isolation fixture cleanup failed; disposable state retained',
+        )
 }
 
 /** Decode streaming UTF-8 and emit complete lines; discard an entire overlong line above 4096 characters until its newline. */
@@ -527,7 +645,9 @@ export async function runIsolationEvaluation(options: IsolationOptions) {
     await chown(directory, postgresUid, postgresGid)
     await chmod(directory, 0o700)
     let database: SQL | undefined
-    let postgresStarted = false
+    let postgresStartAttempted = false
+    let postgres: Bun.Subprocess<'ignore', number, number> | undefined
+    let primary: { error: unknown } | undefined
     const networkStats = { probes: 0, accepted: 0, invalid: 0, snapshots: 0 }
     const network = Bun.serve({
         hostname: '127.0.0.1',
@@ -570,20 +690,33 @@ export async function runIsolationEvaluation(options: IsolationOptions) {
             '--auth=trust',
             '--no-instructions',
         ])
-        await command([
-            'gosu',
-            'postgres',
-            'pg_ctl',
-            '-D',
-            directory + '/pg',
-            '-l',
-            directory + '/postgres.log',
-            '-o',
-            '-h 127.0.0.1 -p 55439 -c max_connections=100 -c shared_buffers=64MB',
-            '-w',
-            'start',
-        ])
-        postgresStarted = true
+        const log = await open(directory + '/postgres.log', 'a')
+        const postgresLaunchedAt = Date.now()
+        try {
+            // Own the postmaster directly: a timed-out readiness tool cannot orphan a daemonized server.
+            postgresStartAttempted = true
+            postgres = Bun.spawn(
+                [
+                    'gosu',
+                    'postgres',
+                    'postgres',
+                    '-D',
+                    directory + '/pg',
+                    '-h',
+                    '127.0.0.1',
+                    '-p',
+                    '55439',
+                    '-c',
+                    'max_connections=100',
+                    '-c',
+                    'shared_buffers=64MB',
+                ],
+                { stdin: 'ignore', stdout: log.fd, stderr: log.fd },
+            )
+        } finally {
+            await log.close()
+        }
+        await waitForIsolationPostgres(directory, postgres, postgresLaunchedAt)
         database = await prepareDatabase(
             'postgresql://postgres@127.0.0.1:55439/rentnerproxy_upstream_test',
         )
@@ -632,30 +765,35 @@ export async function runIsolationEvaluation(options: IsolationOptions) {
         }
         console.log(JSON.stringify({ isolationReport: report }))
         return report
+    } catch (error) {
+        primary = { error }
+        throw error
     } finally {
-        await network.stop(true)
-        await database?.close()
-        if (
-            process.env.DATABASE_URL ===
-            'postgresql://postgres@127.0.0.1:55439/rentnerproxy_upstream_test'
-        ) {
-            const { closeDatabaseForRestoreMaintenance } = await import('../../web/src/db/index.ts')
-            await closeDatabaseForRestoreMaintenance()
+        try {
+            await finishIsolationFixture(
+                [
+                    () => network.stop(true),
+                    async () => database?.close(),
+                    async () => {
+                        if (
+                            process.env.DATABASE_URL ===
+                            'postgresql://postgres@127.0.0.1:55439/rentnerproxy_upstream_test'
+                        ) {
+                            const { closeDatabaseForRestoreMaintenance } =
+                                await import('../../web/src/db/index.ts')
+                            await closeDatabaseForRestoreMaintenance()
+                        }
+                    },
+                    async () => {
+                        if (postgresStartAttempted) await stopIsolationPostgres(directory, postgres)
+                    },
+                ],
+                () => removeFixtureDirectory(directory),
+                primary,
+            )
+        } finally {
+            clearTimeout(wallClock)
         }
-        if (postgresStarted)
-            await command([
-                'gosu',
-                'postgres',
-                'pg_ctl',
-                '-D',
-                directory + '/pg',
-                '-m',
-                'immediate',
-                '-w',
-                'stop',
-            ])
-        await removeFixtureDirectory(directory)
-        clearTimeout(wallClock)
     }
 }
 
