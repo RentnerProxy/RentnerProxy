@@ -65,6 +65,49 @@ test('an overwritten pre-destructive failure admits startup using its original r
     expect(start).toHaveBeenCalledTimes(1)
 })
 
+test.each([
+    'hidden failure',
+    'older recovery',
+    'newer preflight failure',
+    'newer recovery',
+] as const)('initial admission uses ordered restore receipts: %s', async (scenario) => {
+    maintenance = {
+        ...original,
+        id: '01900000-0000-7000-8000-000000000005',
+        operation: 'delete',
+        state: 'succeeded',
+    }
+    const unsafe: Result = { ...original, state: 'failed', phase: 'database' }
+    // Root journal position proves ordering; random operation IDs do not.
+    const recovery: Result = {
+        ...original,
+        id: '01900000-0000-7000-8000-000000000000',
+        state: 'succeeded',
+        phase: 'complete',
+    }
+    restoreResults = scenario === 'older recovery' ? [recovery, unsafe] : [unsafe]
+    if (scenario === 'newer preflight failure')
+        restoreResults.push({ ...recovery, state: 'failed', phase: 'validating' })
+    if (scenario === 'newer recovery') restoreResults.push(recovery)
+    const start = mock(() => undefined)
+    const stop = mock(async () => undefined)
+    const supervisor = createWorkerLifecycleSupervisor()
+    const initializing = supervisor.startWorkerLifecycle(async () => ({ start, stop }))
+    try {
+        await waitForRead()
+        if (scenario !== 'newer recovery') {
+            expect(start).not.toHaveBeenCalled()
+            restoreResults.push({ ...recovery, id: '01900000-0000-7000-8000-000000000006' })
+        }
+        await initializing
+        expect(start).toHaveBeenCalledTimes(1)
+    } finally {
+        await supervisor.stopWorkersForRestoreMaintenance()
+        await initializing
+    }
+    expect(stop).toHaveBeenCalledTimes(1)
+})
+
 test.each(['active', 'destructive failure', 'missing original'] as const)(
     '%s keeps admission fenced even when a newer operation hides the original result',
     async (scenario) => {

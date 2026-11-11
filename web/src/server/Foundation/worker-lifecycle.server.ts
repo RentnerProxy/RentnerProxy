@@ -56,7 +56,10 @@ export async function drainWorker(pending: Promise<unknown>, timeoutMs = 15_000)
 
 /** Keep writers fenced for queued/running restores and post-validation failures until the matching restore permits admission. */
 const shouldWait = (
-    status: RestoreObservation['maintenance'] | RestoreObservation['restoreResults'][number],
+    status:
+        | RestoreObservation['maintenance']
+        | RestoreObservation['restoreResults'][number]
+        | undefined,
 ) =>
     status?.operation === 'restore' &&
     (status.state === 'queued' ||
@@ -115,6 +118,8 @@ export function createWorkerLifecycleSupervisor() {
         let startAttempted = false
         // Startup deadlines bound the waiter; the load and any late cleanup stay owned.
         let loading: Promise<void> | undefined
+        let starting: Promise<void> | undefined
+        let startExecution: { pending: boolean; stopRequested: boolean } | undefined
         let stopping: Promise<void> | null = null
         const state = (value: BackgroundWorkerState) => {
             if (id) workerObservability.state(id, value)
@@ -134,12 +139,14 @@ export function createWorkerLifecycleSupervisor() {
 
         let stoppedWorker: WorkerLifecycle | undefined
         let workerStop: Promise<void> | undefined
-        /** Stop each loaded instance at most once and share its actual stop promise across startup and shutdown races. */
+        /** Share each stop request; an interrupted start also needs an idempotent cleanup after its actual settlement. */
         const stopLoaded = () => {
             if (!worker) return Promise.resolve()
             if (stoppedWorker !== worker) {
                 stoppedWorker = worker
                 const current = worker
+                const execution = startExecution
+                if (execution?.pending) execution.stopRequested = true
                 workerStop = Promise.resolve().then(() => current.stop())
             }
             return workerStop!
@@ -150,22 +157,50 @@ export function createWorkerLifecycleSupervisor() {
             await drainWorker(reading, options.startupTimeoutMs)
             return reading
         }
-        /** Bound worker loading while retaining its completion promise for late-instance cleanup. */
-        const drainLoaded = async (
-            pendingLoad: Promise<WorkerLifecycle>,
-            ownedLoad: Promise<void>,
-        ) => {
+        /** Bound startup readiness while retaining all completion and late-cleanup ownership. */
+        const awaitStartup = async <T>(readiness: Promise<T>, owned: Promise<void>): Promise<T> => {
             try {
-                await drainWorker(pendingLoad, options.startupTimeoutMs)
+                await drainWorker(readiness, options.startupTimeoutMs)
             } catch (error) {
                 if (error instanceof WorkerDrainTimeoutError)
-                    throw new WorkerDrainTimeoutError(ownedLoad)
+                    throw new WorkerDrainTimeoutError(owned)
                 throw error
             }
-            return pendingLoad
+            return readiness
         }
         // A retry may replace the worker, but cannot forget a restore whose safe result is unconfirmed.
         const waiting = new Set<string>()
+        const retainRestore = (restoreId: string) => {
+            // The root journal retains 100 IDs. Exhaustion cannot become admission proof.
+            if (!waiting.has(restoreId) && waiting.size === 100)
+                throw new Error('restore_admission_history_exhausted')
+            waiting.add(restoreId)
+        }
+        /** Root receipts preserve the serialized journal's append order; IDs and wall clocks are not ordering proof. */
+        const observeRestoreSafety = (observation: RestoreObservation) => {
+            const receipts = observation.restoreResults
+            const recovery = receipts.findLastIndex(
+                (receipt) => receipt.state === 'succeeded' && receipt.phase === 'complete',
+            )
+            for (const restoreId of waiting) {
+                const index = receipts.findIndex((receipt) => receipt.id === restoreId)
+                const result =
+                    observation.maintenance?.id === restoreId
+                        ? observation.maintenance
+                        : receipts[index]
+                if (observation.maintenance?.id === restoreId && shouldWait(result)) continue
+                if (
+                    (index >= 0 && index < recovery) ||
+                    (result?.operation === 'restore' &&
+                        !['queued', 'running'].includes(result.state) &&
+                        !shouldWait(result))
+                )
+                    waiting.delete(restoreId)
+            }
+            for (let index = recovery + 1; index < receipts.length; index++)
+                if (shouldWait(receipts[index])) retainRestore(receipts[index]!.id)
+            if (shouldWait(observation.maintenance)) retainRestore(observation.maintenance!.id)
+        }
         const initializing = (async () => {
             if (maintenanceStopped || shutdownRequested || controller.signal.aborted) return
             const attempts = Math.max(1, Math.min(options.maxAttempts ?? 3, 10))
@@ -177,6 +212,7 @@ export function createWorkerLifecycleSupervisor() {
                         const pendingLoad = load(controller.signal).then((loaded) => {
                             if (loaded === stoppedWorker) throw new WorkerStoppedInstanceError()
                             worker = loaded
+                            startExecution = undefined
                             return loaded
                         })
                         const ownedLoad = pendingLoad.then(async () => {
@@ -187,33 +223,14 @@ export function createWorkerLifecycleSupervisor() {
                             if (loading === ownedLoad) loading = undefined
                         }
                         void ownedLoad.then(settledLoad, settledLoad)
-                        worker = await drainLoaded(pendingLoad, ownedLoad)
+                        worker = await awaitStartup(pendingLoad, ownedLoad)
                     }
                     let observation = await readStatus()
-                    if (waiting.size > 0 || shouldWait(observation.maintenance)) {
+                    observeRestoreSafety(observation)
+                    if (waiting.size > 0) {
                         state('maintenance_paused')
                         while (!controller.signal.aborted) {
-                            const status = observation.maintenance
-                            if (shouldWait(status)) {
-                                // The root journal retains 100 IDs. Exhaustion cannot become admission proof.
-                                if (!waiting.has(status!.id) && waiting.size === 100)
-                                    throw new Error('restore_admission_history_exhausted')
-                                waiting.add(status!.id)
-                            }
-                            for (const restoreId of waiting) {
-                                const result =
-                                    status?.id === restoreId
-                                        ? status
-                                        : observation.restoreResults.find(
-                                              (entry) => entry.id === restoreId,
-                                          )
-                                if (
-                                    result?.operation === 'restore' &&
-                                    !['queued', 'running'].includes(result.state) &&
-                                    !shouldWait(result)
-                                )
-                                    waiting.delete(restoreId)
-                            }
+                            observeRestoreSafety(observation)
                             if (waiting.size === 0) break
                             await delay(250)
                             if (!controller.signal.aborted) observation = await readStatus()
@@ -225,10 +242,46 @@ export function createWorkerLifecycleSupervisor() {
                     }
                     state('idle')
                     startAttempted = true
-                    await drainWorker(
-                        Promise.resolve(worker.start(controller.signal)),
-                        options.startupTimeoutMs,
+                    const current = worker
+                    const execution = { pending: false, stopRequested: false }
+                    startExecution = execution
+                    const readiness = Promise.resolve().then(() => {
+                        if (controller.signal.aborted) return
+                        execution.pending = true
+                        return current.start(controller.signal)
+                    })
+                    const finishStart = () => {
+                        execution.pending = false
+                        if (!controller.signal.aborted) return Promise.resolve()
+                        if (execution.stopRequested) {
+                            execution.stopRequested = false
+                            const earlyStop = workerStop!
+                            // A stop begun before readiness may have captured older work. Drain it,
+                            // then ask the idempotent worker to drain all work from the settled start.
+                            const finalStop = Promise.allSettled([earlyStop]).then(() =>
+                                current.stop(),
+                            )
+                            workerStop = settleWorkerTasks([earlyStop, finalStop])
+                            return workerStop
+                        }
+                        return stopLoaded()
+                    }
+                    const ownedStart = settleWorkerTasks([readiness]).then(
+                        finishStart,
+                        (error: unknown) =>
+                            settleWorkerTasks([
+                                controller.signal.aborted && error === controller.signal.reason
+                                    ? null
+                                    : Promise.reject(error),
+                                finishStart(),
+                            ]),
                     )
+                    starting = ownedStart
+                    const settledStart = () => {
+                        if (starting === ownedStart) starting = undefined
+                    }
+                    void ownedStart.then(settledStart, settledStart)
+                    await awaitStartup(readiness, ownedStart)
                     return
                 } catch (error) {
                     if (controller.signal.aborted) return
@@ -263,7 +316,12 @@ export function createWorkerLifecycleSupervisor() {
             controller.abort()
             if (!stopping) state('stopping')
             stopping ??= drainWorker(
-                settleWorkerTasks([stopLoaded(), initializing.then(stopLoaded), loading ?? null]),
+                settleWorkerTasks([
+                    stopLoaded(),
+                    initializing.then(stopLoaded),
+                    loading ?? null,
+                    starting ?? null,
+                ]),
                 options.drainTimeoutMs,
             ).then(
                 () => state(maintenanceStopped ? 'maintenance_paused' : 'stopped'),
