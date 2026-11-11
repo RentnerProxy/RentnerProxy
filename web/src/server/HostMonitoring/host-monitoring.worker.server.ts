@@ -54,11 +54,44 @@ const complete = createHostMonitoringBatcher<HostMonitoringCompletion, boolean>(
 const release = createHostMonitoringBatcher<HostMonitoringClaim, boolean>({
     size: HOST_MONITORING_LIMITS.workerConcurrency,
     delayMs: 0,
-    /** Release a cancelled probe batch under token/version fences and publish only when at least one owned lease was actually released. */
+    /** Keep repeated policies in separate ordered transactions so every old/new token retains its own fence and result. */
     run: async (claims) => {
-        const results = await releaseHostMonitoringClaims(claims)
-        if (results.some(Boolean)) publishApplicationChange()
-        return results.map((value) => ({ status: 'fulfilled', value }))
+        const batches: HostMonitoringClaim[][] = []
+        let batch: HostMonitoringClaim[] = []
+        let seen = new Set<string>()
+        for (const claim of claims) {
+            if (seen.has(claim.policy.id)) {
+                batches.push(batch)
+                batch = []
+                seen = new Set()
+            }
+            batch.push(claim)
+            seen.add(claim.policy.id)
+        }
+        if (batch.length) batches.push(batch)
+        const results: PromiseSettledResult<boolean>[] = []
+        let released = false
+        for (const current of batches) {
+            try {
+                // oxlint-disable-next-line no-await-in-loop -- A later token for the same policy must follow the earlier fenced release.
+                const values = await releaseHostMonitoringClaims(current)
+                if (values.length !== current.length)
+                    throw new Error('Invalid monitoring release result.')
+                released ||= values.some(Boolean)
+                results.push(
+                    ...values.map((value): PromiseFulfilledResult<boolean> => ({
+                        status: 'fulfilled',
+                        value,
+                    })),
+                )
+            } catch (reason) {
+                results.push(
+                    ...current.map((): PromiseRejectedResult => ({ status: 'rejected', reason })),
+                )
+            }
+        }
+        if (released) publishApplicationChange()
+        return results
     },
 })
 

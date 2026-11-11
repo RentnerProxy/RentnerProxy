@@ -33,11 +33,20 @@ import type { CertificateJobRow } from './Types/certificate-jobs-storage.types.t
 import { observeWorkerOperation } from '@/server/Foundation/worker-operation.ts'
 import { workerObservability } from '@/server/Foundation/worker-observability.ts'
 import type { WorkerOutcome } from '@/server/Foundation/Types/worker-observability.types.ts'
+import { ResourceAdmissionError } from '@/server/Foundation/resource-admission.ts'
 
 const certificateJobController = {
     get: getControllerCertificate,
     issue: issueControllerCertificate,
     renew: renewControllerCertificate,
+}
+
+/** SQL pressure defers existing durable work without blaming the controller or changing retry intent. */
+function admissionOutcome(error: ResourceAdmissionError): WorkerOutcome {
+    if (error.reason === 'cancelled') return 'cancelled'
+    workerObservability.count('certificate_jobs', 'admissionRejected')
+    workerObservability.count('certificate_jobs', 'retry')
+    return 'deferred'
 }
 
 async function saveJobCertificateMetadata(
@@ -180,6 +189,11 @@ async function processCertificateJob(
             await releaseCertificateJob(job, {})
             return 'cancelled'
         }
+        if (error instanceof ResourceAdmissionError) {
+            const outcome = admissionOutcome(error)
+            await releaseCertificateJob(job, {})
+            return outcome
+        }
         if (error instanceof CertificateJobDomainError) {
             await releaseCertificateJob(job, {
                 stage: 'needs_attention',
@@ -214,14 +228,20 @@ export async function runCertificateJobsOnce(
     const claims = await Promise.allSettled(Array.from({ length: 4 }, () => claimCertificateJob()))
     const results = await Promise.allSettled(
         claims.map(async (claim): Promise<WorkerOutcome> => {
-            if (claim.status === 'rejected') throw claim.reason
-            const job = claim.value
-            if (!job) return 'deferred'
-            if (signal?.aborted) {
-                await releaseCertificateJob(job, {})
-                return 'cancelled'
+            try {
+                if (claim.status === 'rejected') throw claim.reason
+                const job = claim.value
+                if (!job) return 'deferred'
+                if (signal?.aborted) {
+                    await releaseCertificateJob(job, {})
+                    return 'cancelled'
+                }
+                return await processCertificateJob(job, controller, runtime, signal)
+            } catch (error) {
+                if (!(error instanceof ResourceAdmissionError)) throw error
+                const outcome = admissionOutcome(error)
+                return signal?.aborted ? 'cancelled' : outcome
             }
-            return processCertificateJob(job, controller, runtime, signal)
         }),
     )
     const failed = results.find((result) => result.status === 'rejected')

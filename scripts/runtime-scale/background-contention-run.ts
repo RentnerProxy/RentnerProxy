@@ -16,6 +16,14 @@ import { recoverReliabilityComponent } from '../runtime-reliability/component-re
 import { readMemoryObservation } from '../runtime-reliability/resource-probe.ts'
 import type { ResourceSample } from '../runtime-reliability/Types/control.types.ts'
 import type { BackgroundOptions } from './Types/background.types.ts'
+import { checkBackgroundCancellation } from './background-pause.ts'
+
+/** Add 15 minutes for bounded fixture commands, 60s replacement + 150s readiness, final observation and drain beyond the requested window. */
+export function contentionReceiverLifetimeMs(durationSeconds: number): number {
+    if (!Number.isInteger(durationSeconds) || durationSeconds < 1 || durationSeconds > 300)
+        throw new Error('Invalid contention duration')
+    return durationSeconds * 1_000 + 900_000
+}
 
 /** Stop always runs; diagnostics never replace the original workload or stop failure. */
 export async function withContentionCleanup<T>(
@@ -65,25 +73,27 @@ export async function runContentionWindow(
         contention: true,
     }
     console.log(JSON.stringify({ predeclaredContentionContract: contentionContract }))
-    const control = async () =>
-        contentionReceiverSchema.parse(
-            JSON.parse(
-                await context.docker(
-                    [
-                        'exec',
-                        context.container,
-                        'bun',
-                        '--no-env-file',
-                        '-e',
-                        "const r=await fetch('http://127.0.0.1:9018/status',{signal:AbortSignal.timeout(2000)});if(!r.ok)process.exit(1);process.stdout.write(await r.text())",
-                    ],
-                    { timeoutMs: 4000 },
-                ),
-            ),
+    const control = async () => {
+        checkBackgroundCancellation(signal)
+        const response = await context.docker(
+            [
+                'exec',
+                context.container,
+                'bun',
+                '--no-env-file',
+                '-e',
+                "const r=await fetch('http://127.0.0.1:9018/status',{signal:AbortSignal.timeout(2000)});if(!r.ok)process.exit(1);process.stdout.write(await r.text())",
+            ],
+            { timeoutMs: 4000 },
         )
+        checkBackgroundCancellation(signal)
+        return contentionReceiverSchema.parse(JSON.parse(response))
+    }
     /** Read the fixed recovery worker counters and timestamp this observation so later snapshot collection cannot inflate its progress latency. */
     const native = async () => {
+        checkBackgroundCancellation(signal)
         const response = await context.controller('/internal/v1/background/status')
+        checkBackgroundCancellation(signal)
         assert.equal(response.status, 200)
         const worker = contentionNativeSchema
             .parse(response.body)
@@ -121,6 +131,7 @@ export async function runContentionWindow(
     let proxyErrors = 0
     let snapshot
     const workload = async () => {
+        checkBackgroundCancellation(signal)
         await context.docker([
             'exec',
             '--detach',
@@ -131,40 +142,52 @@ export async function runContentionWindow(
             '--no-env-file',
             '/opt/rentnerproxy/web/background-contention-receiver.js',
             String(options.seed),
+            String(contentionReceiverLifetimeMs(options.durationSeconds)),
         ])
         await context.waitFor(
             async () => {
+                checkBackgroundCancellation(signal)
                 await control()
+                checkBackgroundCancellation(signal)
                 return true
             },
             'private contention receiver ready',
             10000,
         )
+        checkBackgroundCancellation(signal)
         await context.fixture('background-contention-seed', extra)
         seeded = true
+        checkBackgroundCancellation(signal)
         await recoverReliabilityComponent('web', recoveryDependencies(context))
+        checkBackgroundCancellation(signal)
         started()
         const began = performance.now()
         const begin = await context.fixture('background-start', extra)
+        checkBackgroundCancellation(signal)
         snapshot = backgroundSnapshotSchema.parse(begin.background)
         await context.waitFor(
-            async () =>
-                contentionStateSchema.parse(
-                    (await context.fixture('background-contention-read', extra)).contention,
-                ).postgres.monitoringLeases > 0,
+            async () => {
+                checkBackgroundCancellation(signal)
+                const value = await context.fixture('background-contention-read', extra)
+                checkBackgroundCancellation(signal)
+                return contentionStateSchema.parse(value.contention).postgres.monitoringLeases > 0
+            },
             'Actual monitoring leases are active before arming the mixed event burst',
             10000,
         )
+        checkBackgroundCancellation(signal)
         const arm = await context.fixture('background-contention-arm', extra)
+        checkBackgroundCancellation(signal)
         const armedRevision = Number(
             (arm.contention as { discoveryRevision?: number }).discoveryRevision,
         )
         assert.ok(Number.isSafeInteger(armedRevision))
         const baselineNative = await native()
         while (performance.now() - began < options.durationSeconds * 1000) {
-            assert.equal(signal.aborted, false, 'Contention scenario was cancelled')
+            checkBackgroundCancellation(signal)
             const captureStarted = performance.now()
             const envelope = await context.fixture('background-read', extra)
+            checkBackgroundCancellation(signal)
             snapshot = backgroundSnapshotSchema.parse(envelope.background)
             const state = contentionStateSchema.parse(envelope.contention)
             const results = await Promise.allSettled([
@@ -195,6 +218,7 @@ export async function runContentionWindow(
                     )
                     .then((value) => contentionWebSchema.parse(JSON.parse(value))),
             ])
+            checkBackgroundCancellation(signal)
             if (results[1]!.status === 'rejected') proxyErrors++
             for (const result of results) if (result.status === 'rejected') throw result.reason
             const [read, proxy, receiver, critical, revision, resource, web] = results as [
@@ -227,6 +251,7 @@ export async function runContentionWindow(
                 break
             await Bun.sleep(100)
         }
+        checkBackgroundCancellation(signal)
         const report = buildContentionReport(
             samples,
             { ...baselineNative, discoveryRevision: armedRevision },

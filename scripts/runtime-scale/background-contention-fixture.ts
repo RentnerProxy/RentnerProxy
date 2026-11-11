@@ -147,9 +147,11 @@ export async function backgroundContentionFixture(context: FixtureContext) {
         })
         await database.transaction(async (transaction) => {
             await lockProxyRuntimeSettings(transaction)
+            const current = await readDiscoveryRegistry(transaction)
+            assert.ok(!current.enabled, 'Contention requires unused disposable discovery settings')
             await writeDiscoveryRegistry(transaction, {
-                ...registry,
-                revision: registry.revision + 1,
+                ...current,
+                revision: current.revision + 1,
                 enabled: true,
                 actorUserId: actor.id,
                 connectorRevision: connected.configuration.revision,
@@ -162,21 +164,23 @@ export async function backgroundContentionFixture(context: FixtureContext) {
         return { status: 'seeded', potentialDeliveries: 320, inventory: 8, receiverDelayMs: 1500 }
     }
     if (context.command.phase === 'background-contention-arm') {
-        const registry = await database.transaction(readDiscoveryRegistry)
-        await database.transaction(async (transaction) => {
+        const discoveryRevision = await database.transaction(async (transaction) => {
             await lockProxyRuntimeSettings(transaction)
+            const registry = await readDiscoveryRegistry(transaction)
+            const revision = registry.revision + 1
             await writeDiscoveryRegistry(transaction, {
                 ...registry,
-                revision: registry.revision + 1,
+                revision,
                 error: 'reconcile_failed',
             })
+            return revision
         })
         const response = await fetch(control + '/arm', {
             method: 'POST',
             signal: AbortSignal.timeout(2000),
         })
         assert.equal(response.status, 204)
-        return { discoveryRevision: registry.revision + 1 }
+        return { discoveryRevision }
     }
     if (context.command.phase === 'background-contention-stop') {
         const saved = JSON.parse(await readFile(path, 'utf8')) as Saved
