@@ -1,4 +1,4 @@
-use super::background::{Outcome, Worker};
+use super::background::{Outcome, Pass, Worker};
 // Capture owned values before entering the bounded storage worker. Each expression
 // is one complete local store operation; network awaits stay outside this macro.
 macro_rules! acme_store {
@@ -385,11 +385,21 @@ impl ProxyRuntime {
             });
             return;
         }
+        self.finish_failed_acme_issue(&id, issue_error, pass).await;
+    }
+
+    /// Finish the failed operation and attempt DNS cleanup before classifying cancellation; cleanup failures retain their own evidence.
+    async fn finish_failed_acme_issue(
+        self: &Arc<Self>,
+        id: &str,
+        issue_error: Option<CertificateError>,
+        pass: Pass,
+    ) {
         let cancelled = matches!(issue_error.as_ref(), Some(CertificateError::AcmeCancelled));
         if let Some(error) = issue_error {
             acme_store!(@unit self; [id, error]; store => store.finish_failed(&id, error));
         }
-        self.recover_dns_cleanup_one(&id).await;
+        self.recover_dns_cleanup_one(id).await;
         if cancelled {
             pass.finish(Outcome::Cancelled);
         }
