@@ -256,6 +256,7 @@ test.each([
 test('saturated real critical admission defers all four claim producers without SQL or controller dispatch', async () => {
     const output = await runBunScript(
         `
+        import assert from 'node:assert/strict'
         import { mock } from 'bun:test'
         process.env.DATABASE_URL = 'postgresql://unit:unit@127.0.0.1:1/rentnerproxy_unit'
         let statements = 0
