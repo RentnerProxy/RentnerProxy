@@ -105,6 +105,7 @@ impl Discovery {
         Ok(Snapshot::for_configuration(document, restored))
     }
 
+    /// Fence inventory publication against the current persisted configuration; replaced/restored input is idle and unavailable publication fails.
     async fn publish(
         &self,
         configuration: &Document,

@@ -31,6 +31,7 @@ static ACME_JOBS: Semaphore = Semaphore::const_new(4);
 mod tests;
 
 impl ProxyRuntime {
+    /// Admit pending cleanup fairly under the shared ACME semaphore; scanning records idle while spawned jobs own completion evidence.
     pub(crate) async fn recover_dns_cleanup(self: &Arc<Self>) -> bool {
         let pass = self.background.begin(Worker::Orders);
         let Ok(mut ids) = self.certificate_store.pending_dns_cleanup_ids().await else {
@@ -60,6 +61,7 @@ impl ProxyRuntime {
         true
     }
 
+    /// Own one cleanup pass; missing work is idle and provider/cleanup errors remain failures while the store claim is released.
     async fn recover_dns_cleanup_one(&self, id: &str) {
         let pass = self.background.begin(Worker::Orders);
         let work = match self.certificate_store.begin_dns_cleanup(id).await {

@@ -5,6 +5,7 @@ import type {
     BackgroundWorkerLane,
 } from './Types/worker-observability.types.ts'
 
+/** Preserve operation results and error identity while recording its lane outcome; deadline aborts are failures and other aborts cancellations. */
 export async function observeWorkerOperation<T>(
     id: BackgroundWorkerId,
     operation: () => Promise<T>,

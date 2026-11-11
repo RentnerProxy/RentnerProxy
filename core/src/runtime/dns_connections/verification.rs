@@ -291,6 +291,7 @@ impl Store {
         first_error.map_or(Ok(()), Err)
     }
 
+    /// Rotate at most four pending connection cleanups with thirty-second deadlines; concurrent admission is harmless but cleanup errors return false.
     pub(in crate::runtime) async fn recover_permission_checks(&self) -> bool {
         let Ok(_checks) = self.checks.try_lock() else {
             return true;

@@ -9,6 +9,7 @@ import { readRestoreMaintenanceStatus } from '@/server/Backups/restore-maintenan
 
 let maintenanceStopped = false
 
+/** Fence future starts before collecting listener drain promises; propagate any failure to stop an existing writer. */
 export async function stopWorkersForRestoreMaintenance(): Promise<void> {
     maintenanceStopped = true
     const pending: Array<Promise<void>> = []
@@ -16,6 +17,7 @@ export async function stopWorkersForRestoreMaintenance(): Promise<void> {
     await Promise.all(pending)
 }
 
+/** Delay writer startup until restore state permits it and share shutdown/maintenance drain ownership across initialization races. */
 export async function startWorkerLifecycle(
     load: () => Promise<WorkerLifecycle>,
     id?: BackgroundWorkerId,
@@ -57,6 +59,7 @@ export async function startWorkerLifecycle(
         return worker
     })
     let stopping: Promise<void> | null = null
+    /** Latch stop intent before initialization completes and share one drain promise while retaining truthful terminal diagnostics. */
     const stop = (pending: Array<Promise<void>>) => {
         stoppingRequested = true
         if (id)

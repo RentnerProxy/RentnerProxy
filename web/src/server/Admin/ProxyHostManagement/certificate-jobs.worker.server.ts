@@ -130,6 +130,7 @@ async function loadOrIssueJobCertificate(
     return metadata
 }
 
+/** Fence job context before controller work and count success only after binding/runtime confirmation; release deferred and failed work durably. */
 async function processCertificateJob(
     job: CertificateJobRow,
     controller = certificateJobController,
@@ -189,6 +190,7 @@ async function processCertificateJob(
     }
 }
 
+/** Claim up to four jobs concurrently and aggregate failure before success; empty or pending batches remain deferred. */
 export async function runCertificateJobsOnce(
     controller = certificateJobController,
     runtime = certificateJobRuntime,
@@ -210,6 +212,7 @@ let timer: ReturnType<typeof setTimeout> | null = null
 let running: Promise<void> | null = null
 let stopped = true
 
+/** Start one nonoverlapping observed tick chain with five-second spacing after settlement. */
 export function startCertificateJobWorker(): void {
     if (!stopped) return
     stopped = false
@@ -234,6 +237,7 @@ export function startCertificateJobWorker(): void {
     tick()
 }
 
+/** Prevent rescheduling, cancel the pending timer, and await any in-flight job batch before returning. */
 export async function stopCertificateJobWorker(): Promise<void> {
     stopped = true
     if (timer) clearTimeout(timer)
