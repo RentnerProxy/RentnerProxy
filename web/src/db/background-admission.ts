@@ -21,15 +21,18 @@ if (
 )
     throw new Error('Background database partitions must match the connection budget')
 
-/** Mark worker-owned async work without reserving a SQL connection during network calls or timer waits. */
+/** Mark worker-owned work without reserving SQL during waits; explicit null detaches inherited cancellation for admitted finalization. */
 export function withBackgroundDatabaseContext<T>(
     operation: () => Promise<T>,
-    signal?: AbortSignal,
+    signal?: AbortSignal | null,
     resource?: BackgroundDatabaseClass,
 ): Promise<T> {
     const parent = background.getStore()
     return background.run(
-        { signal: signal ?? parent?.signal, resource: resource ?? parent?.resource ?? 'critical' },
+        {
+            signal: signal === null ? undefined : (signal ?? parent?.signal),
+            resource: resource ?? parent?.resource ?? 'critical',
+        },
         operation,
     )
 }
