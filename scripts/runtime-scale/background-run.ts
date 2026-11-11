@@ -16,6 +16,12 @@ import {
     backgroundSlo,
     parseBackgroundOptions,
 } from './background.ts'
+import {
+    backgroundPauseGuard,
+    backgroundPauseMarker,
+    checkBackgroundCancellation,
+    withBackgroundPause,
+} from './background-pause.ts'
 import { exerciseExtendedBackgroundRecovery } from './background-extended.ts'
 import { backgroundPolicies } from './background.ts'
 import { backgroundReceiptsSchema, backgroundSnapshotSchema } from './background.validation.ts'
@@ -79,67 +85,70 @@ async function installFixture(context: ReliabilityContext) {
 async function withPausedWeb<T>(
     context: ReliabilityContext,
     operation: () => Promise<T>,
+    signal: AbortSignal,
     proxyDomain = context.domain,
 ) {
+    checkBackgroundCancellation(signal)
     const dependencies = recoveryDependencies(context)
     const before = await dependencies.snapshot()
     const web = before?.processes.filter((item) => item.role === 'web')
     assert.ok(web?.length === 1)
     const target = web[0]!
-    const identity = `const stat=await Bun.file('/proc/${target.pid}/stat').text();if(stat.slice(stat.lastIndexOf(')')+2).trim().split(/\\s+/)[19]!==${JSON.stringify(target.startTicks)})throw new Error('web identity changed');`
-    const guardPath = '/tmp/background-resume-' + context.runId
-    await context.docker([
-        'exec',
-        '--detach',
-        context.container,
-        'bun',
-        '--no-env-file',
-        '-e',
-        `await Bun.write(${JSON.stringify(guardPath)},'armed');await Bun.sleep(90000);try{${identity}process.kill(${target.pid},'SIGCONT')}catch{}`,
-    ])
-    await context.waitFor(
-        async () =>
-            (await context.docker([
-                'exec',
-                context.container,
-                'bun',
-                '--no-env-file',
-                '-e',
-                `try{process.stdout.write(await Bun.file(${JSON.stringify(guardPath)}).text())}catch{}`,
-            ])) === 'armed',
-        'web resume guard armed',
-        5000,
-    )
-    await context.docker([
-        'exec',
-        context.container,
-        'bun',
-        '--no-env-file',
-        '-e',
-        identity + `process.kill(${target.pid},'SIGSTOP')`,
-    ])
-    try {
-        assert.equal(
-            (await context.http(proxyDomain)).status,
-            200,
-            'Proxy traffic remains available while the Bun owner is hung',
-        )
-        return await operation()
-    } finally {
-        await context.docker([
+    const guardPath = backgroundPauseMarker(context.runId)
+    const identity = `async()=>{try{const stat=await Bun.file('/proc/${target.pid}/stat').text();return stat.slice(stat.lastIndexOf(')')+2).trim().split(/\\s+/)[19]===${JSON.stringify(target.startTicks)}}catch{return false}}`
+    const exec = (script: string, detached = false) =>
+        context.docker([
             'exec',
+            ...(detached ? ['--detach'] : []),
             context.container,
             'bun',
             '--no-env-file',
             '-e',
-            identity + `process.kill(${target.pid},'SIGCONT')`,
+            script,
         ])
-        await context.waitFor(
-            dependencies.ready,
-            'Bun resumes bounded management service after hang',
-            10000,
+    const state = () =>
+        exec(
+            `try{process.stdout.write(await Bun.file(${JSON.stringify(guardPath)}).text())}catch{}`,
         )
-    }
+    return withBackgroundPause(
+        signal,
+        async () => {
+            await exec(
+                `await (${backgroundPauseGuard.toString()})({identity:${identity},signal:s=>process.kill(${target.pid},s),write:s=>Bun.write(${JSON.stringify(guardPath)},s),requested:()=>Bun.file(${JSON.stringify(guardPath + '.resume')}).exists(),now:()=>performance.now(),sleep:()=>Bun.sleep(100)}).catch(()=>process.exit(1))`,
+                true,
+            )
+            await context.waitFor(
+                async () => {
+                    checkBackgroundCancellation(signal)
+                    return (await state()) === 'armed'
+                },
+                'web resume guard armed',
+                5000,
+            )
+        },
+        async () => {
+            assert.equal(
+                (await context.http(proxyDomain)).status,
+                200,
+                'Proxy traffic remains available while the Bun owner is hung',
+            )
+            checkBackgroundCancellation(signal)
+            return operation()
+        },
+        async () => {
+            await exec(`await Bun.write(${JSON.stringify(guardPath + '.resume')},'resume')`)
+            await context.waitFor(
+                async () => (await state()) === 'resumed',
+                'web resume guard completed',
+                5000,
+            )
+            await context.waitFor(
+                dependencies.ready,
+                'Bun resumes bounded management service after hang',
+                10000,
+            )
+        },
+    )
 }
 
 export async function runBackgroundScenarios(options: BackgroundOptions) {
@@ -189,6 +198,10 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
           })
         | undefined
     let stage = 'setup'
+    const enter = (next: string) => {
+        checkBackgroundCancellation(abort.signal)
+        stage = next
+    }
     let recoveryComponent: 'web' | 'controller' | null = null
     let trafficDiagnostic: TrafficDiagnostic | undefined
     let imagePlatform: string | undefined
@@ -228,7 +241,9 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
         }),
     )
     try {
+        enter('setup')
         await harness.setup()
+        enter('setup')
         imagePlatform = await context.docker([
             'image',
             'inspect',
@@ -237,17 +252,19 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
             harness.imageIdentity,
         ])
         assert.match(imagePlatform, /^linux\/(amd64|arm64)$/u)
+        checkBackgroundCancellation(abort.signal)
         await installFixture(context)
+        checkBackgroundCancellation(abort.signal)
         await context.synced(await context.fixture('prepare'))
+        checkBackgroundCancellation(abort.signal)
         await context.synced(await context.fixture('background-prepare', extra))
         origin = performance.now()
-        stage = 'workload'
+        enter('workload')
         snapshot = backgroundSnapshotSchema.parse(
             (await context.fixture('background-start', extra)).background,
         )
         while (performance.now() - origin < options.durationSeconds * 1000) {
-            if (abort.signal.aborted)
-                throw new ReliabilityError('command', 'background scenario cancelled')
+            checkBackgroundCancellation(abort.signal)
             const responses = await Promise.allSettled([
                 (async () => {
                     const start = performance.now()
@@ -297,23 +314,33 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
         receiptsOverflowed = receipts.overflowed
         monitoring = backgroundMonitoringReport(options, snapshot, receipts.receipts, elapsedMs)
         const before = snapshot.observations.length
-        stage = 'fences'
-        fences = (await withPausedWeb(context, () => context.fixture('background-fences', extra)))
-            .fences
-        stage = 'discovery'
+        enter('fences')
+        fences = (
+            await withPausedWeb(
+                context,
+                () => context.fixture('background-fences', extra),
+                abort.signal,
+            )
+        ).fences
+        enter('discovery')
         discovery = (await context.fixture('background-discovery', extra)).discovery
-        stage = 'notifications'
+        enter('notifications')
         notifications = (
-            await withPausedWeb(context, () => context.fixture('background-notifications', extra))
+            await withPausedWeb(
+                context,
+                () => context.fixture('background-notifications', extra),
+                abort.signal,
+            )
         ).notifications
         for (const component of ['web', 'controller'] as const) {
             const started = performance.now()
             recoveryComponent = component
-            stage = 'recovery-revision'
+            enter('recovery-revision')
             await context.synced(await context.fixture('background-read', extra))
             const dependencies = recoveryDependencies(context)
             const deadline = started + backgroundSlo.recoveryMs
             const withinBudget = () => {
+                checkBackgroundCancellation(abort.signal)
                 if (performance.now() > deadline)
                     throw new ReliabilityError('timeout', 'background component recovery budget')
             }
@@ -338,16 +365,16 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
                 snapshot: async () => {
                     if (!initialSnapshot) return bounded.snapshot()
                     initialSnapshot = false
-                    stage = 'recovery-baseline'
+                    enter('recovery-baseline')
                     const baseline = await backgroundRecoveryBaseline(
                         bounded,
                         Math.max(0, deadline - performance.now()),
                     )
-                    stage = 'recovery-owners'
+                    enter('recovery-owners')
                     return baseline
                 },
             })
-            stage = 'recovery-durability'
+            enter('recovery-durability')
             await context.synced(await context.fixture('background-read', extra))
             const final = backgroundSnapshotSchema.parse(
                 (await context.fixture('background-read', extra)).background,
@@ -367,11 +394,11 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
                 elapsedMs: duration,
                 passed: duration <= backgroundSlo.recoveryMs,
             })
-            stage = 'recovery-resources'
+            enter('recovery-resources')
             await sample('recovered')
         }
         recoveryComponent = null
-        stage = 'postgres-pause'
+        enter('postgres-pause')
         const pauseStarted = performance.now()
         const pause = JSON.parse(
             await context.docker(
@@ -391,15 +418,17 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
         assert.equal(pause.resumed, true)
         const pauseElapsedMs = performance.now() - pauseStarted
         if (options.extendedRecovery) {
-            stage = 'extended-recovery'
+            enter('extended-recovery')
             const policy = backgroundPolicies(options)[0]!
             const domain = `bg-${policy.index}-${policy.latency}-${context.domain}`
             extendedRecovery = await exerciseExtendedBackgroundRecovery(
                 harness,
                 options,
-                (operation) => withPausedWeb(context, operation, domain),
+                (operation) => withPausedWeb(context, operation, abort.signal, domain),
+                () => checkBackgroundCancellation(abort.signal),
             )
         }
+        checkBackgroundCancellation(abort.signal)
         recovery.push({
             component: 'postgres-unavailable',
             elapsedMs: pauseElapsedMs,
