@@ -40,12 +40,12 @@ test('a failed stream join cannot prove owner settlement or permit replacement',
 
 test('a failed owner cannot acknowledge maintenance even after an earlier failed drain', async () => {
     const owner = { kill: (_signal: NodeJS.Signals) => {} }
-    await expect(joinMonitoringB2NativeOwner(owner, Promise.resolve(9), 'maintenance')).rejects.toThrow(
-        'B2 native worker failed closed',
-    )
-    await expect(joinMonitoringB2NativeOwner(owner, Promise.resolve(9), 'maintenance')).rejects.toThrow(
-        'B2 native worker failed closed',
-    )
+    await expect(
+        joinMonitoringB2NativeOwner(owner, Promise.resolve(9), 'maintenance'),
+    ).rejects.toThrow('B2 native worker failed closed')
+    await expect(
+        joinMonitoringB2NativeOwner(owner, Promise.resolve(9), 'maintenance'),
+    ).rejects.toThrow('B2 native worker failed closed')
 })
 
 test('a timed-out owner never overlaps replacement and must finish its forced-kill join', async () => {
