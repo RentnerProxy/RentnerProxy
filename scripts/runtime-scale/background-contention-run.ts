@@ -13,6 +13,8 @@ import type { ContentionSample } from './background-contention.ts'
 import type { createHarness } from '../runtime-reliability/harness.ts'
 import { recoveryDependencies } from '../runtime-reliability/run.ts'
 import { recoverReliabilityComponent } from '../runtime-reliability/component-recovery.ts'
+import { readMemoryObservation } from '../runtime-reliability/resource-probe.ts'
+import type { ResourceSample } from '../runtime-reliability/Types/control.types.ts'
 import type { BackgroundOptions } from './Types/background.types.ts'
 
 /** Stop always runs; diagnostics never replace the original workload or stop failure. */
@@ -49,7 +51,7 @@ export async function withContentionCleanup<T>(
 export async function runContentionWindow(
     harness: Awaited<ReturnType<typeof createHarness>>,
     options: BackgroundOptions,
-    sampleResources: () => Promise<void>,
+    sampleResources: () => Promise<ResourceSample>,
     started: () => void,
     signal: AbortSignal,
     reportCleanupFailure?: (category: 'contention-stop-failed') => void,
@@ -195,13 +197,13 @@ export async function runContentionWindow(
             ])
             if (results[1]!.status === 'rejected') proxyErrors++
             for (const result of results) if (result.status === 'rejected') throw result.reason
-            const [read, proxy, receiver, critical, revision, , web] = results as [
+            const [read, proxy, receiver, critical, revision, resource, web] = results as [
                 PromiseFulfilledResult<number>,
                 PromiseFulfilledResult<number>,
                 PromiseFulfilledResult<ReturnType<typeof contentionReceiverSchema.parse>>,
                 PromiseFulfilledResult<{ attempts: number; successes: number; observedAt: number }>,
                 PromiseFulfilledResult<Awaited<ReturnType<typeof context.controller>>>,
-                PromiseFulfilledResult<void>,
+                PromiseFulfilledResult<ResourceSample>,
                 PromiseFulfilledResult<ReturnType<typeof contentionWebSchema.parse>>,
             ]
             samples.push({
@@ -216,6 +218,7 @@ export async function runContentionWindow(
                 critical: critical.value,
                 revisionUnchanged: revision.value.body.activeRevision === begin.desiredRevision,
                 web: web.value,
+                processMemory: readMemoryObservation(resource.value),
             })
             if (
                 snapshot.observations.length >= options.policies &&

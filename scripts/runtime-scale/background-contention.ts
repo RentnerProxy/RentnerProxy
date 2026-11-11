@@ -1,5 +1,9 @@
 import { z } from 'zod'
 import {
+    readMemoryObservation,
+    memoryMeasurementSemantics,
+} from '../runtime-reliability/resource-probe.ts'
+import {
     BACKGROUND_DATABASE_POLICY,
     BACKGROUND_RESOURCE_ENVELOPE,
 } from '../../web/src/config/background-resources.config.ts'
@@ -60,6 +64,7 @@ export const contentionWebSchema = z.strictObject({
     bun: z.unknown().transform(readBunWorkerReport),
 })
 export type ContentionSample = {
+    processMemory?: ReturnType<typeof readMemoryObservation>
     elapsedMs: number
     criticalObservedMs: number
     captureSpanMs: number
@@ -85,7 +90,7 @@ export const contentionContract = {
     },
     discovery: { events: 256, detachedIdentities: 8, proxyAdoption: false },
     receiverOverhead:
-        'One additional root-owned Bun receiver process inside the unchanged appliance cgroup; its CPU/RSS/PIDs/connections count against the baseline',
+        'One additional root-owned Bun receiver process inside the unchanged appliance cgroup; its CPU/cgroup memory/PIDs/connections count against the baseline',
 } as const
 
 /** Require observed overlapping work, actual web-process metrics, bounded SQL pressure, and native progress; missing evidence never supports a capacity claim. */
@@ -94,6 +99,23 @@ export function buildContentionReport(
     baseline: { attempts: number; successes: number; discoveryRevision: number },
     proxyErrors: number,
 ) {
+    samples = samples.map(({ processMemory, ...sample }) => ({
+        ...sample,
+        processMemory: readMemoryObservation(processMemory),
+    }))
+    const processMemoryComplete =
+        samples.length > 0 &&
+        samples.every((item) => {
+            const memory = item.processMemory
+            return (
+                memory !== null &&
+                memory !== undefined &&
+                memory.cgroupMemoryCurrentBytes !== null &&
+                memory.webRssBytes !== null &&
+                memory.controllerRssBytes !== null &&
+                memory.caddyRssBytes !== null
+            )
+        })
     const management = backgroundDistribution(samples.map((item) => item.managementMs))
     const proxy = backgroundDistribution(samples.map((item) => item.proxyMs))
     const critical = samples.find(
@@ -162,6 +184,7 @@ export function buildContentionReport(
         )
     })
     const webEvidenceComplete =
+        processMemoryComplete &&
         webResources.length > 0 &&
         eventLoops.some(
             (value) => value.count > 0 && value.sampledAt !== null && value.maximumMs !== null,
@@ -198,7 +221,12 @@ export function buildContentionReport(
               : passed
                 ? 'met'
                 : 'unmet',
-        resourceEvidence: { complete: webEvidenceComplete, boundsMet: resourceBoundsMet },
+        resourceEvidence: {
+            complete: webEvidenceComplete,
+            boundsMet: resourceBoundsMet,
+            processMemoryComplete,
+            memoryMeasurementSemantics,
+        },
         model: 'Actual appliance notification, monitoring and discovery workers; controlled private slow receivers and Docker events; no manual delivery driver',
         contract: contentionContract,
         samples,

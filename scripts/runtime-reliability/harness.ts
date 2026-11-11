@@ -6,6 +6,7 @@ import {
     dockerEventSchema,
     responseObjectSchema,
 } from './responses.validation.ts'
+import { runtimeResourceProbeSource } from './resource-probe.ts'
 import { runSmokeProcess } from '../smoke/process.ts'
 import { waitForSmoke } from '../smoke/wait.ts'
 import type { CommandOptions, FixtureResult, ReliabilityContext } from './Types/harness.types.ts'
@@ -973,20 +974,14 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
     }
     let previousCpu: { usage: number; time: number } | undefined
     async function resources(elapsedSeconds: number): Promise<ResourceSample> {
-        const script = `import { readdir, readFile } from 'node:fs/promises';
+        const script = `${runtimeResourceProbeSource()}
+const {readFile}=await import('node:fs/promises');
 const text = p => readFile(p,'utf8');
-let webFds=0, controllerFds=0, caddyFds=0;
-for(const pid of await readdir('/proc')) { if(!/^\\d+$/.test(pid)||Number(pid)===process.pid) continue; try {
-const name=(await text('/proc/'+pid+'/comm')).trim();
-let kind=name==='caddy'?'caddy':name==='rentnerproxy-co'?'controller':undefined;
-if(name==='bun' && (await text('/proc/'+pid+'/cmdline')).includes('/docker/web/serve.ts')) kind='web';
-if(kind) { const count=(await readdir('/proc/'+pid+'/fd')).length; if(kind==='web')webFds+=count; if(kind==='controller')controllerFds+=count; if(kind==='caddy')caddyFds+=count; }
-} catch {} }
 const memory=Number(await text('/sys/fs/cgroup/memory.current'));
 const stat=await text('/sys/fs/cgroup/memory.stat');
 const inactive=Number(stat.match(/^inactive_file (\\d+)/m)?.[1]??0);
 const cpu=Number((await text('/sys/fs/cgroup/cpu.stat')).match(/^usage_usec (\\d+)/m)?.[1]);
-console.log(JSON.stringify({memoryBytes:Math.max(0,memory-inactive),pids:Number(await text('/sys/fs/cgroup/pids.current')),usage:cpu,webFds,controllerFds,caddyFds}));`
+console.log(JSON.stringify({...processResources,cgroupMemoryCurrentBytes:memory,memoryBytes:Math.max(0,memory-inactive),pids:Number(await text('/sys/fs/cgroup/pids.current')),usage:cpu}));`
         const metrics = JSON.parse(
             await docker(['exec', container, 'bun', '--no-env-file', '-e', script]),
         ) as Record<string, number>
@@ -1046,6 +1041,10 @@ console.log(JSON.stringify({memoryBytes:Math.max(0,memory-inactive),pids:Number(
             elapsedSeconds,
             phase: 'quiescent',
             memoryBytes: metrics.memoryBytes!,
+            cgroupMemoryCurrentBytes: metrics.cgroupMemoryCurrentBytes!,
+            webRssBytes: metrics.webRssBytes ?? null,
+            controllerRssBytes: metrics.controllerRssBytes ?? null,
+            caddyRssBytes: metrics.caddyRssBytes ?? null,
             cpuPercent,
             pids: metrics.pids!,
             postgresConnections,

@@ -41,6 +41,13 @@ function sample(): ContentionSample {
             },
             bun: readBunWorkerReport(workers.snapshot()),
         },
+        processMemory: {
+            memoryBytes: 100000,
+            cgroupMemoryCurrentBytes: 200000,
+            webRssBytes: 300000,
+            controllerRssBytes: 40000,
+            caddyRssBytes: 50000,
+        },
         elapsedMs: 1000,
         criticalObservedMs: 500,
         captureSpanMs: 250,
@@ -300,4 +307,35 @@ test('actual private TLS SMTP AUTH and webhook receivers retain slow in-flight w
         transport.close()
         await receiver.close()
     }
+})
+
+test('contention memory evidence requires every real serving owner and never substitutes cgroup memory for RSS', () => {
+    const base = { attempts: 1, successes: 1, discoveryRevision: 2 }
+    for (const field of [
+        'webRssBytes',
+        'controllerRssBytes',
+        'caddyRssBytes',
+        'cgroupMemoryCurrentBytes',
+    ] as const) {
+        const missing = sample()
+        missing.processMemory![field] = null
+        expect(buildContentionReport([missing], base, 0)).toMatchObject({
+            status: 'insufficient',
+            resourceEvidence: { complete: false, processMemoryComplete: false },
+        })
+    }
+    const old = sample()
+    delete old.processMemory
+    expect(buildContentionReport([old], base, 0).status).toBe('insufficient')
+    const mixed = sample()
+    mixed.processMemory!.webRssBytes = null
+    expect(buildContentionReport([sample(), mixed], base, 0).status).toBe('insufficient')
+    const complete = sample()
+    complete.processMemory = {
+        ...complete.processMemory!,
+        command: 'private secret',
+    } as NonNullable<ContentionSample['processMemory']>
+    expect(JSON.stringify(buildContentionReport([complete], base, 0))).not.toContain(
+        'private secret',
+    )
 })

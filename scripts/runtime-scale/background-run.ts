@@ -267,6 +267,7 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
             warmup: performance.now() - origin < 5000,
             sample: { ...value, phase: kind },
         })
+        return value
     }
     console.log(
         JSON.stringify({
