@@ -22,24 +22,46 @@ impl ProxyRuntime {
         self.certificate_store.events(after, limit).await
     }
 
+    /// Records cancellation for the specified delegated DNS operation via storage admission.
+    ///
+    /// Once admitted, the storage worker retains ownership if its waiter is dropped.
+    /// Worker failures become `StoreUnavailable`; certificate-store errors propagate.
     pub(crate) async fn cancel_delegated_dns(
-        &self,
+        self: &Arc<Self>,
         id: &str,
         action: &super::CertificateCancelRequest,
     ) -> Result<CertificateMetadata, CertificateError> {
-        self.certificate_store
-            .request_delegated_cancel(id, &action.operation_id)
-            .await
+        let id = id.to_owned();
+        let operation_id = action.operation_id.clone();
+        self.storage_async(move |runtime| async move {
+            runtime
+                .certificate_store
+                .request_delegated_cancel(&id, &operation_id)
+                .await
+        })
+        .await
+        .map_err(|_| CertificateError::StoreUnavailable)?
     }
 
+    /// Cancels a manual DNS order through the serialized storage worker.
+    ///
+    /// The owned action survives caller cancellation after admission. Worker failures
+    /// become `StoreUnavailable`; order validation errors remain certificate errors.
     pub(crate) async fn cancel_manual_dns(
-        &self,
+        self: &Arc<Self>,
         id: &str,
         action: &super::certificates::ManualDnsActionRequest,
     ) -> Result<CertificateMetadata, CertificateError> {
-        self.certificate_store
-            .cancel_manual_dns_order(id, action)
-            .await
+        let id = id.to_owned();
+        let action = action.clone();
+        self.storage_async(move |runtime| async move {
+            runtime
+                .certificate_store
+                .cancel_manual_dns_order(&id, &action)
+                .await
+        })
+        .await
+        .map_err(|_| CertificateError::StoreUnavailable)?
     }
 
     pub(crate) async fn certificate(
@@ -118,6 +140,11 @@ impl ProxyRuntime {
         self.certificate_store.get(staged.id()).await
     }
 
+    /// Admits candidate preparation and activation as one tracked background job.
+    ///
+    /// Shutdown or exhausted job slots return `OperationInProgress`. After admission,
+    /// dropping the caller leaves preparation and publication owned by the job;
+    /// loss of its result becomes `StoreUnavailable`.
     pub(crate) async fn retry_certificate_candidate(
         self: &Arc<Self>,
         id: &str,
@@ -128,21 +155,31 @@ impl ProxyRuntime {
         }
         let runtime = Arc::clone(self);
         let id = id.to_owned();
+        let (response, result) = tokio::sync::oneshot::channel();
         // Own preparation as well as publication: preparation acquires a lease
         // before waiting for the index, so caller cancellation must not drop it.
-        tokio::spawn(async move {
-            runtime
-                .retry_certificate_candidate_inner(&id, scheduled)
-                .await
-        })
-        .await
-        .unwrap_or_else(|error| {
-            super::task::report_join_failure("certificate_candidate_retry", &error);
-            Err(CertificateError::StoreUnavailable)
-        })
+        if !self
+            .background_jobs
+            .spawn("certificate_candidate_retry", async move {
+                let outcome = runtime
+                    .retry_certificate_candidate_inner(&id, scheduled)
+                    .await;
+                let _ = response.send(outcome);
+            })
+        {
+            return Err(CertificateError::OperationInProgress);
+        }
+        result
+            .await
+            .unwrap_or(Err(CertificateError::StoreUnavailable))
     }
 
-    async fn retry_certificate_candidate_inner(
+    /// Prepares a candidate under storage admission and applies it when eligible.
+    ///
+    /// Returns `None` when the store has no candidate ready for this retry. The
+    /// caller must retain ownership across preparation and activation; shutdown
+    /// rejects preparation and storage-worker failures become `StoreUnavailable`.
+    pub(super) async fn retry_certificate_candidate_inner(
         self: &Arc<Self>,
         id: &str,
         scheduled: bool,
@@ -168,10 +205,29 @@ impl ProxyRuntime {
             .map(Some)
     }
 
+    /// Runs certificate deletion in an owned task that survives caller cancellation.
+    ///
+    /// A join failure is reported and returned as `StoreUnavailable`. Usage checks
+    /// and deletion stay together inside the task while it holds the apply lock.
     pub(crate) async fn delete_certificate(
         self: &Arc<Self>,
         id: &str,
     ) -> Result<(), CertificateError> {
+        let runtime = Arc::clone(self);
+        let id = id.to_owned();
+        tokio::spawn(async move { runtime.delete_certificate_inner(&id).await })
+            .await
+            .unwrap_or_else(|error| {
+                super::task::report_join_failure("certificate_delete", &error);
+                Err(CertificateError::StoreUnavailable)
+            })
+    }
+
+    /// Holds the apply lock across live and cached usage checks and storage deletion.
+    ///
+    /// Lock timeout or an unavailable engine conservatively prevents deletion as in-use.
+    /// Storage-worker failures become `StoreUnavailable`; store deletion errors propagate.
+    async fn delete_certificate_inner(self: &Arc<Self>, id: &str) -> Result<(), CertificateError> {
         let _guard = timeout(self.settings.lock_wait, self.apply_lock.lock())
             .await
             .map_err(|_| CertificateError::InUse)?;
@@ -193,8 +249,14 @@ impl ProxyRuntime {
                         .iter()
                         .any(|host| host.certificate_id.as_deref() == Some(id))
             });
-        self.certificate_store
-            .delete_if_unused(id, in_use || cached_in_use)
-            .await
+        let id = id.to_owned();
+        self.storage_async(move |runtime| async move {
+            runtime
+                .certificate_store
+                .delete_if_unused(&id, in_use || cached_in_use)
+                .await
+        })
+        .await
+        .map_err(|_| CertificateError::StoreUnavailable)?
     }
 }

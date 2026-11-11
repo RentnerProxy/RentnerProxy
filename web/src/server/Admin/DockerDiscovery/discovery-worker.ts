@@ -1,7 +1,7 @@
 // oxlint-disable-next-line import/no-unassigned-import -- The lifecycle must only run on the server.
 import '@tanstack/react-start/server-only'
 import { sql } from 'drizzle-orm'
-import { getAuthDatabase } from '@/server/Auth/Core/database.server.ts'
+import { getBackgroundDatabase } from '@/server/Foundation/background-database.server.ts'
 import { lockProxyRuntimeSettings } from '@/server/ProxyRuntime/proxy-runtime-settings.ts'
 import { reconcileProxyConfigurationService } from '@/server/ProxyRuntime/proxy-runtime.service.ts'
 import { dockerDiscoveryController } from '@/server/Controller/docker-discovery.server.ts'
@@ -14,10 +14,12 @@ import { appendAuditEventInTransactionService } from '@/server/Audit/audit.servi
 import { createDiscoveryObserver, DiscoverySuperseded } from './discovery-observer.ts'
 import { DockerDiscoveryError } from './docker-discovery.errors.ts'
 import { observeWorkerOperation } from '@/server/Foundation/worker-operation.ts'
+import { withBackgroundDatabaseContext } from '@/db/background-admission.ts'
 import type { DockerDiscoverySnapshot } from '@/lib/DockerDiscovery/Types/docker-discovery.types.ts'
 
+/** Persist and audit one discovery failure under its SQL class, then announce only after commit. */
 async function recordDiscoveryFailure(): Promise<void> {
-    await getAuthDatabase().transaction(async (transaction) => {
+    await getBackgroundDatabase('discovery').transaction(async (transaction) => {
         markDiscoveryReconciliation(transaction)
         await transaction.execute(sql`set local lock_timeout = '5s'`)
         await lockProxyRuntimeSettings(transaction)
@@ -58,13 +60,14 @@ export function createDockerDiscoveryWorker() {
         }
     }
 
+    /** Admit SQL by discovery class, preserve fair cursor progress, and perform controller reconciliation outside the transaction permit. */
     async function runDiscoveryCycle(
         snapshot: DockerDiscoverySnapshot,
         signal: AbortSignal,
         assertCurrent: () => void,
         resetBudget: boolean,
     ): Promise<{ enabled: boolean; again: boolean }> {
-        const result = await getAuthDatabase().transaction(async (transaction) => {
+        const result = await getBackgroundDatabase('discovery').transaction(async (transaction) => {
             markDiscoveryReconciliation(transaction)
             await transaction.execute(sql`set local lock_timeout = '5s'`)
             await transaction.execute(sql`set local statement_timeout = '20s'`)
@@ -97,25 +100,29 @@ export function createDockerDiscoveryWorker() {
             return { enabled: result.enabled, again: result.enabled && remaining > 0 }
         const runtimeStatus = await reconcileProxyConfigurationService()
         if (runtimeStatus === 'applied') {
-            // An admitted apply can finish during stop; preserve its truthful receipt.
-            await getAuthDatabase().transaction(async (transaction) => {
-                markDiscoveryReconciliation(transaction)
-                await lockProxyRuntimeSettings(transaction)
-                const registry = await readDiscoveryRegistry(transaction)
-                if (registry.revision !== result.revision) return
-                registry.runtimeStatus = 'applied'
-                registry.revision += 1
-                await writeDiscoveryRegistry(transaction, registry)
-                await appendAuditEventInTransactionService(transaction, {
-                    actorUserId: registry.actorUserId,
-                    actorKind: 'user',
-                    action: 'apply',
-                    resource: 'proxy-runtime',
-                    targetId: null,
-                    result: 'success',
-                    metadata: { runtimeStatus: 'applied' },
-                })
-            })
+            // Finish an admitted apply under the same SQL budget after stop cancels collection.
+            await withBackgroundDatabaseContext(
+                () =>
+                    getBackgroundDatabase('discovery').transaction(async (transaction) => {
+                        markDiscoveryReconciliation(transaction)
+                        await lockProxyRuntimeSettings(transaction)
+                        const registry = await readDiscoveryRegistry(transaction)
+                        if (registry.revision !== result.revision) return
+                        registry.runtimeStatus = 'applied'
+                        registry.revision += 1
+                        await writeDiscoveryRegistry(transaction, registry)
+                        await appendAuditEventInTransactionService(transaction, {
+                            actorUserId: registry.actorUserId,
+                            actorKind: 'user',
+                            action: 'apply',
+                            resource: 'proxy-runtime',
+                            targetId: null,
+                            result: 'success',
+                            metadata: { runtimeStatus: 'applied' },
+                        })
+                    }),
+                null,
+            )
         }
         publishApplicationChange()
         return { enabled: result.enabled, again: remaining > 0 || runtimeStatus !== 'applied' }
@@ -124,12 +131,26 @@ export function createDockerDiscoveryWorker() {
     return createDiscoveryObserver({
         enabled: async () =>
             (
-                await getAuthDatabase().transaction(readDiscoveryRegistry, {
+                await getBackgroundDatabase('discovery').transaction(readDiscoveryRegistry, {
                     accessMode: 'read only',
                 })
             ).enabled,
-        read: readObservation,
-        watch: (cursor, signal) => dockerDiscoveryController.watch(cursor, signal),
+        read: (signal) =>
+            observeWorkerOperation(
+                'docker_discovery',
+                () => readObservation(signal),
+                signal,
+                undefined,
+                'collection',
+            ),
+        watch: (cursor, signal) =>
+            observeWorkerOperation(
+                'docker_discovery',
+                () => dockerDiscoveryController.watch(cursor, signal),
+                signal,
+                (reply) => (reply.snapshot ? 'success' : 'deferred'),
+                'collection',
+            ),
         reconcile: (snapshot, signal, assertCurrent, resetBudget) =>
             observeWorkerOperation(
                 'docker_discovery',

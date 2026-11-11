@@ -8,6 +8,7 @@ import type {
 } from './Types/crowdsec-reconcile.types.ts'
 import { createRuntimeReconciler } from '@/server/Foundation/runtime-reconciler.server.ts'
 
+/** Reconcile by fingerprint with drift checks and a bounded stop; unref waiters and attach diagnostics to the fixed CrowdSec worker. */
 export function createCrowdSecReconciler<T extends CrowdSecReconcileSnapshot>(
     dependencies: CrowdSecReconcileDependencies<T>,
     timeoutMs = 60_000,

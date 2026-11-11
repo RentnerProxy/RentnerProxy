@@ -1,7 +1,10 @@
 import { drizzle } from 'drizzle-orm/bun-sql'
 import { SQL } from 'bun'
+import { sql } from 'drizzle-orm'
 import { DATABASE_CONNECTION_BUDGET } from '../config/database.config.ts'
+import { BACKGROUND_DATABASE_POLICY } from '../config/background-resources.config.ts'
 import { validateDatabaseEnvironment } from '../server/env.server.ts'
+import { admitDatabaseTransaction } from './background-admission.ts'
 import * as schema from './schema.ts'
 
 const { DATABASE_URL } = validateDatabaseEnvironment()
@@ -24,7 +27,27 @@ if (process.env.NODE_ENV !== 'production') {
         client,
     }
 }
-export const db = drizzle(client, { schema })
+const database = drizzle(client, { schema })
+export const db = new Proxy(database, {
+    get(target, property, receiver) {
+        if (property !== 'transaction') return Reflect.get(target, property, receiver)
+        return <T>(
+            operation: Parameters<typeof database.transaction<T>>[0],
+            options?: Parameters<typeof database.transaction<T>>[1],
+        ): Promise<T> =>
+            admitDatabaseTransaction((resource) =>
+                target.transaction(async (transaction) => {
+                    if (resource) {
+                        const timeout = `${BACKGROUND_DATABASE_POLICY.classes[resource].transactionMs}ms`
+                        await transaction.execute(
+                            sql`select set_config('statement_timeout', ${timeout}, true), set_config('lock_timeout', ${timeout}, true), set_config('transaction_timeout', ${timeout}, true)`,
+                        )
+                    }
+                    return operation(transaction)
+                }, options),
+            )
+    },
+})
 
 export async function closeDatabaseForRestoreMaintenance(): Promise<void> {
     await client.close()

@@ -10,6 +10,36 @@ use axum::{
     response::Response,
 };
 use serde::de::DeserializeOwned;
+use std::{future::Future, sync::Arc};
+
+/// Waits cancellably for the binding lock, then detaches an owned transaction.
+///
+/// Once admitted, the task retains the guard through reconciliation and mutation
+/// even if the HTTP waiter disconnects. A join failure returns a no-store
+/// `StoreUnavailable` response.
+async fn owned_binding_transaction(
+    bindings: Arc<tokio::sync::Mutex<()>>,
+    transaction: impl Future<Output = Response> + Send + 'static,
+) -> Response {
+    // Waiting requests remain cancellable; only an admitted transaction detaches.
+    let binding = bindings.lock_owned().await;
+    // Reconciliation may continue in a storage worker after its waiter leaves.
+    // Keep the binding guard alive through the associated mutation as well.
+    tokio::spawn(async move {
+        let _binding = binding;
+        transaction.await
+    })
+    .await
+    .unwrap_or_else(|failure| {
+        tracing::warn!(
+            cancelled = failure.is_cancelled(),
+            panicked = failure.is_panic(),
+            "DNS connection binding transaction failed"
+        );
+        error(Error::StoreUnavailable)
+    })
+}
+
 fn error(error: Error) -> Response {
     let status = match error {
         Error::ConnectionNotFound => StatusCode::NOT_FOUND,
@@ -36,8 +66,19 @@ pub(in crate::server) async fn providers() -> Response {
     )
 }
 
+/// Lists connection metadata after reconciliation in an owned binding transaction.
 pub(in crate::server) async fn list(state: AppState) -> Response {
-    let _binding = state.runtime.dns_connections.bindings.lock().await;
+    owned_binding_transaction(
+        Arc::clone(&state.runtime.dns_connections.bindings),
+        async move { list_inner(state).await },
+    )
+    .await
+}
+
+/// Reconciles certificate references before listing under the caller-owned binding lock.
+///
+/// Reconciliation and registry errors become no-store HTTP error responses.
+async fn list_inner(state: AppState) -> Response {
     if let Err(e) = state.runtime.reconcile_provider_connections().await {
         return error(e);
     }
@@ -59,6 +100,10 @@ pub(in crate::server) async fn test(
         Err(e) => error(e),
     }
 }
+/// Parses a save request and admits reconciliation and mutation under the binding lock.
+///
+/// Waiting for the lock remains cancellable; an admitted transaction outlives
+/// the HTTP waiter and returns connection or validation errors as no-store responses.
 pub(in crate::server) async fn save(
     Path(id): Path<String>,
     state: AppState,
@@ -68,7 +113,17 @@ pub(in crate::server) async fn save(
         Ok(v) => v,
         Err(e) => return error(e),
     };
-    let _binding = state.runtime.dns_connections.bindings.lock().await;
+    owned_binding_transaction(
+        Arc::clone(&state.runtime.dns_connections.bindings),
+        async move { save_inner(id, state, request).await },
+    )
+    .await
+}
+
+/// Reconciles references, then saves while the transaction owns the binding lock.
+///
+/// Returns the saved metadata or a mapped no-store error response.
+async fn save_inner(id: String, state: AppState, request: SaveRequest) -> Response {
     if let Err(e) = state.runtime.reconcile_provider_connections().await {
         return error(e);
     }
@@ -77,6 +132,10 @@ pub(in crate::server) async fn save(
         Err(e) => error(e),
     }
 }
+/// Parses a revision-checked deletion and admits it under the binding lock.
+///
+/// The admitted transaction owns reconciliation and deletion after a disconnect;
+/// requests still queued for the lock remain cancellable.
 pub(in crate::server) async fn delete(
     Path(id): Path<String>,
     state: AppState,
@@ -86,7 +145,17 @@ pub(in crate::server) async fn delete(
         Ok(v) => v,
         Err(e) => return error(e),
     };
-    let _binding = state.runtime.dns_connections.bindings.lock().await;
+    owned_binding_transaction(
+        Arc::clone(&state.runtime.dns_connections.bindings),
+        async move { delete_inner(id, state, request).await },
+    )
+    .await
+}
+
+/// Reconciles references before deleting under the transaction-owned binding lock.
+///
+/// Returns confirmation or a mapped no-store error response.
+async fn delete_inner(id: String, state: AppState, request: DeleteRequest) -> Response {
     if let Err(e) = state.runtime.reconcile_provider_connections().await {
         return error(e);
     }
@@ -100,6 +169,12 @@ pub(in crate::server) async fn delete(
         Err(e) => error(e),
     }
 }
+/// Runs a revision-checked DNS write probe, then reconciles recorded outcomes.
+///
+/// A completed verification can record a provider failure and still return metadata;
+/// that result is reconciled too.
+/// Only post-verification reconciliation uses the owned binding transaction;
+/// waiting for its lock remains cancellable. All responses disable caching.
 pub(in crate::server) async fn verify(
     Path(id): Path<String>,
     state: AppState,
@@ -116,11 +191,16 @@ pub(in crate::server) async fn verify(
         .await
     {
         Ok(connection) => {
-            let _binding = state.runtime.dns_connections.bindings.lock().await;
-            if let Err(e) = state.runtime.reconcile_provider_connections().await {
-                return error(e);
-            }
-            no_store_json(connection)
+            owned_binding_transaction(
+                Arc::clone(&state.runtime.dns_connections.bindings),
+                async move {
+                    if let Err(e) = state.runtime.reconcile_provider_connections().await {
+                        return error(e);
+                    }
+                    no_store_json(connection)
+                },
+            )
+            .await
         }
         Err(e) => error(e),
     }

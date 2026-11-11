@@ -25,7 +25,13 @@ import { createSubscriptionManager } from './realtimeSubscriptions.ts'
 import type { LiveConnectionData } from './Types/realtime-subscriptions.types.ts'
 import { createRealtimeLifecycle } from './realtimeLifecycle.ts'
 import { createRealtimeHandler } from './realtimeHandler.ts'
+import {
+    ResourceAdmissionError,
+    releaseAfterSettled,
+} from '@/server/Foundation/resource-admission.ts'
+import { drainWorker } from '@/server/Foundation/worker-drain.ts'
 
+/** Share bounded snapshot admission across upgrades and subscriptions and retain one terminal shutdown/drain result. */
 export function createLiveWebSocketRuntime(
     options: LiveWebSocketRuntimeOptions,
 ): LiveWebSocketRuntime {
@@ -38,6 +44,7 @@ export function createLiveWebSocketRuntime(
     const pending = new Set<LiveConnectionData>()
     let pendingReservations = 0
     let shuttingDown = false
+    let shutdownResult: Promise<void> | null = null
 
     async function expectedOrigin(request: Request): Promise<string | null> {
         const value =
@@ -51,7 +58,7 @@ export function createLiveWebSocketRuntime(
     const manager = createSubscriptionManager({
         maxPayloadBytes,
         snapshotTimeoutMs,
-        readSnapshot: (subscription, signal) =>
+        readSnapshot: (subscription, signal, trackWork) =>
             readSubscriptionSnapshot(
                 subscription,
                 signal,
@@ -64,6 +71,7 @@ export function createLiveWebSocketRuntime(
                         current.queryText,
                     ),
                 maxPayloadBytes,
+                trackWork,
             ),
         closeUnauthorized: (connection) => lifecycle.unauthorized(connection),
         closeUnavailable: (connection, status) => {
@@ -86,6 +94,7 @@ export function createLiveWebSocketRuntime(
         idleTimeoutSeconds,
     })
 
+    /** Reserve connection capacity before asynchronous origin/auth checks, acquire realtime read capacity, and release failed upgrades and actual work separately. */
     async function handle(
         request: Request,
         server: Bun.Server<LiveSocketData>,
@@ -108,6 +117,7 @@ export function createLiveWebSocketRuntime(
         try {
             const origin = normalizeOrigin(request.headers.get('origin'))
             const configuredOrigin = await expectedOrigin(request)
+            if (shuttingDown) return { handled: true, response: statusResponse(503) }
             if (!origin || !configuredOrigin || origin !== configuredOrigin) {
                 return { handled: true, response: statusResponse(403) }
             }
@@ -125,13 +135,31 @@ export function createLiveWebSocketRuntime(
             pending.add(reservation)
             pendingReservations -= 1
             pendingReservation = false
-            const authStatus = await readLiveHandshake(
-                reservation,
-                snapshotPath,
-                snapshotTimeoutMs,
-                maxPayloadBytes,
-                options.readSnapshot,
-            )
+            const waiting = new AbortController()
+            reservation.handshakeAbortController = waiting
+            let release: (() => void) | undefined
+            let authStatus: number
+            const actualWork = new Set<Promise<unknown>>()
+            try {
+                release = await manager.acquireResource(waiting.signal)
+                if (reservation.closed || shuttingDown)
+                    return { handled: true, response: statusResponse(503) }
+                authStatus = await readLiveHandshake(
+                    reservation,
+                    snapshotPath,
+                    snapshotTimeoutMs,
+                    maxPayloadBytes,
+                    options.readSnapshot,
+                    (work) => actualWork.add(work),
+                )
+            } catch (error) {
+                if (!(error instanceof ResourceAdmissionError)) throw error
+                return { handled: true, response: statusResponse(503) }
+            } finally {
+                releaseAfterSettled(release, actualWork)
+                if (reservation.handshakeAbortController === waiting)
+                    reservation.handshakeAbortController = null
+            }
             if (shuttingDown) return { handled: true, response: statusResponse(503) }
             if (authStatus !== 200) return { handled: true, response: statusResponse(authStatus) }
             try {
@@ -151,8 +179,9 @@ export function createLiveWebSocketRuntime(
 
     const unsubscribeFromChanges = subscribeToApplicationChanges(() => manager.sampleAll())
 
-    async function shutdown(): Promise<void> {
-        if (shuttingDown) return
+    /** Latch shutdown before closing connections and await actual admitted snapshot work; repeated callers receive the same bounded drain result. */
+    function shutdown(): Promise<void> {
+        if (shutdownResult) return shutdownResult
         shuttingDown = true
         unsubscribeFromChanges()
         for (const connection of [...pending, ...manager.connections]) {
@@ -160,6 +189,8 @@ export function createLiveWebSocketRuntime(
         }
         pending.clear()
         manager.connections.clear()
+        shutdownResult = drainWorker(manager.drainResources())
+        return shutdownResult
     }
 
     return {

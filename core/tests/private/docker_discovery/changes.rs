@@ -3,6 +3,34 @@ use models::{Cursor, Error, Status, Watch};
 use std::time::Duration;
 use tokio::time::Instant;
 
+#[tokio::test]
+async fn wake_cancellation_drops_an_inflight_publication_without_recording_failure() {
+    use crate::runtime::background::{Outcome, Worker};
+    let root = directory();
+    let discovery = Discovery::new(root.clone());
+    let held = discovery.snapshot.lock().await;
+    let pass = discovery.background.begin(Worker::Docker);
+    let document = Document::default();
+    {
+        let publication = discovery.publish(&document, Some(Vec::new()), None);
+        tokio::pin!(publication);
+        tokio::select! {
+            biased;
+            _ = &mut publication => panic!("publication must wait for the held snapshot"),
+            _ = tokio::task::yield_now() => {},
+        }
+    }
+    pass.finish(Outcome::Cancelled);
+    let value = serde_json::to_value(discovery.background.snapshot()).unwrap();
+    let worker = &value["workers"][3];
+    assert_eq!(worker["attempts"], 1);
+    assert_eq!(worker["failures"], 0);
+    assert_eq!(worker["cancellations"], 1);
+    assert_eq!(worker["runningCount"], 0);
+    drop(held);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 fn after(cursor: &Cursor) -> Watch {
     Watch {
         runtime_id: Some(cursor.runtime_id.clone()),

@@ -3,7 +3,7 @@ import '@tanstack/react-start/server-only'
 
 import { sql } from 'drizzle-orm'
 import { HOST_MONITORING_LIMITS } from '@/config/host-monitoring.config.ts'
-import { getAuthDatabase } from '@/server/Auth/Core/database.server.ts'
+import { getBackgroundDatabase } from '@/server/Foundation/background-database.server.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
 import { lockProxyRuntimeSettings } from '@/server/ProxyRuntime/proxy-runtime-settings.ts'
 import type { HostMonitoringPolicy } from './Types/host-monitoring.repository.types.ts'
@@ -13,6 +13,7 @@ export async function lockMonitoring(transaction: AuthTransaction): Promise<void
     )
 }
 
+/** Bounds SQL/lock time and preserves settings-before-monitoring lock order when settings are needed. */
 export async function prepareWorkerTransaction(
     transaction: AuthTransaction,
     runtimeSettings = true,
@@ -126,7 +127,7 @@ export async function pruneHistoryInTransaction(transaction: AuthTransaction): P
 }
 
 export async function pruneHostMonitoringHistory(): Promise<void> {
-    await getAuthDatabase().transaction(async (transaction) => {
+    await getBackgroundDatabase('housekeeping').transaction(async (transaction) => {
         await prepareWorkerTransaction(transaction, false)
         await pruneHistoryInTransaction(transaction)
     })

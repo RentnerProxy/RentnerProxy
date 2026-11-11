@@ -31,9 +31,13 @@ func run(args []string) error {
 	return validate(args[0], info)
 }
 
+// validate checks the profile's pinned compiler, required modules and build settings.
+// Caddy must declare its approved local source replacement; CrowdSec's reviewed forks
+// are optional and validated when present. Missing or duplicate required entries,
+// disallowed replacements, obsolete dependencies and unknown profiles are rejected.
 func validate(profile string, info *debug.BuildInfo) error {
 	var expected map[string]string
-	compiler := "go1.27.3"
+	var compiler string
 	settings := map[string]string{"CGO_ENABLED": "0"}
 	switch profile {
 	case "caddy":
@@ -47,6 +51,7 @@ func validate(profile string, info *debug.BuildInfo) error {
 			"github.com/mholt/caddy-l4":                  "v0.1.3-0.20261029145729-f607ccea1b7d",
 		}
 	case "crowdsec":
+		compiler = "go1.27.3"
 		expected = map[string]string{
 			"google.golang.org/grpc": "v1.85.0",
 			"golang.org/x/crypto":    "v0.58.0",

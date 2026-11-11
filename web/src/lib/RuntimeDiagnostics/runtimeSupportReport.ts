@@ -15,6 +15,7 @@ import { RUNTIME_SUPPORT_REPORT_PERMISSIONS } from '@/config/permissions.config.
 import { CONTROLLER_SERVICE } from '@/config/controller.config.ts'
 import { isRecord } from '@/lib/Records/isRecord.ts'
 import { readBunWorkerReport, readControllerWorkerReport } from './backgroundWorkerReport.ts'
+import { readBackgroundResourceReport } from './backgroundResourceReport.ts'
 import type { PermissionKey } from '@/config/Types/permissions-config.types.ts'
 import type {
     RuntimeSupportReport,
@@ -143,6 +144,7 @@ function connected(value: unknown): 'connected' | 'unavailable' {
     return isRecord(value) && value.state === 'connected' ? 'connected' : 'unavailable'
 }
 
+/** Build the allowlisted report from independently validated sections; absent worker snapshots stay unavailable and make completeness partial. */
 export function createRuntimeSupportReport(
     input: RuntimeSupportReportInput,
     capturedAt: Date,
@@ -184,6 +186,7 @@ export function createRuntimeSupportReport(
     const certificateJobs = section(jobCounts(input.certificateJobs))
     const bunWorkers = section(readBunWorkerReport(input.bunWorkers))
     const controllerWorkers = section(readControllerWorkerReport(input.controllerWorkers))
+    const backgroundResources = section(readBackgroundResourceReport(input.backgroundResources))
     const database = connected(input.databaseHealth)
     const valkey = connected(input.valkeyHealth)
     const unavailableSections: string[] = []
@@ -199,6 +202,8 @@ export function createRuntimeSupportReport(
     if (certificateJobs.state === 'unavailable') unavailableSections.push('certificate_jobs')
     if (bunWorkers.state === 'unavailable') unavailableSections.push('bun_workers')
     if (controllerWorkers.state === 'unavailable') unavailableSections.push('controller_workers')
+    if (backgroundResources.state === 'unavailable')
+        unavailableSections.push('background_resources')
 
     return {
         format: RUNTIME_SUPPORT_REPORT_FORMAT,
@@ -229,6 +234,7 @@ export function createRuntimeSupportReport(
         certificates,
         certificateJobs,
         backgroundWorkers: {
+            resources: backgroundResources,
             bun: bunWorkers,
             controller: controllerWorkers,
             omissions: [

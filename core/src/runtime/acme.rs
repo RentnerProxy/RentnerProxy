@@ -1,4 +1,29 @@
-use super::background::{Outcome, Worker};
+use super::background::{Outcome, Pass, Worker};
+
+/// Runs one complete local ACME store operation with owned worker captures.
+///
+/// Network awaits must stay outside this macro. Missing worker results become
+/// `StoreUnavailable`; the `@unit` form deliberately discards best-effort results.
+/// Once started, a blocking storage operation is not cancelled by dropping its wait.
+macro_rules! acme_store {
+    ($runtime:expr; [$($capture:ident),*]; $store:ident => $operation:expr) => {{
+        $(let $capture = $capture.to_owned();)*
+        $runtime.storage_async(move |runtime| async move {
+            let $store = &runtime.certificate_store;
+            $operation.await
+        }).await.unwrap_or(Err(crate::runtime::certificates::CertificateError::StoreUnavailable))
+    }};
+    (@unit $runtime:expr; [$($capture:ident),*]; $store:ident => $operation:expr) => {{
+        $(let $capture = $capture.to_owned();)*
+        let _ = $runtime.storage_async(move |runtime| async move {
+            let $store = &runtime.certificate_store;
+            $operation.await;
+        }).await;
+    }};
+}
+
+pub(super) use acme_store;
+
 mod accounts;
 #[path = "acme_http.rs"]
 mod acme_http;
@@ -12,12 +37,13 @@ use super::{
 use crate::{
     runtime::certificates::{
         AcmeChallengeType, CertificateError, CertificateIssueRequest, DnsValidationMode,
+        FailedIssueOutcome,
     },
     server::challenges::ChallengeStore,
 };
 use std::{sync::Arc, time::Duration};
 use tokio::{
-    sync::{Semaphore, SemaphorePermit},
+    sync::{Semaphore, oneshot},
     time::timeout,
 };
 const ORDER_TIMEOUT: Duration = Duration::from_secs(120);
@@ -31,6 +57,12 @@ static ACME_JOBS: Semaphore = Semaphore::const_new(4);
 mod tests;
 
 impl ProxyRuntime {
+    /// Dispatches pending DNS cleanup in rotating order under shared ACME capacity.
+    ///
+    /// Each accepted cleanup belongs to the runtime's background-job registry and
+    /// records its own outcome. Returns false when pending work cannot be listed;
+    /// successful scanning is idle rather than evidence that cleanup has completed.
+    /// Shutdown or exhausted capacity stops further dispatch without undoing writes.
     pub(crate) async fn recover_dns_cleanup(self: &Arc<Self>) -> bool {
         let pass = self.background.begin(Worker::Orders);
         let Ok(mut ids) = self.certificate_store.pending_dns_cleanup_ids().await else {
@@ -51,7 +83,7 @@ impl ProxyRuntime {
                 break;
             };
             let runtime = Arc::clone(self);
-            tokio::spawn(async move {
+            self.background_jobs.spawn("acme_dns_cleanup", async move {
                 let _permit = permit;
                 runtime.recover_dns_cleanup_one(&id).await;
             });
@@ -60,11 +92,16 @@ impl ProxyRuntime {
         true
     }
 
-    async fn recover_dns_cleanup_one(&self, id: &str) {
+    /// Claims one persisted cleanup attempt and reconciles its provider records.
+    ///
+    /// Missing or busy work is idle; store/provider failures retain failure evidence.
+    /// Attempt release is best-effort after reconciliation, including provider failure;
+    /// unresolved intents remain available for recovery.
+    async fn recover_dns_cleanup_one(self: &Arc<Self>, id: &str) {
         let pass = self.background.begin(Worker::Orders);
-        let work = match self.certificate_store.begin_dns_cleanup(id).await {
+        let work = match acme_store!(self; [id]; store => store.begin_dns_cleanup(&id)) {
             Ok(Some(work)) => work,
-            Ok(None) => {
+            Ok(None) | Err(CertificateError::OperationInProgress) => {
                 pass.finish(Outcome::Idle);
                 return;
             }
@@ -81,7 +118,7 @@ impl ProxyRuntime {
             Ok(provider) => self.cleanup_dns_challenges(id, &provider, &intents).await,
             Err(error) => Err(error),
         };
-        self.certificate_store.finish_dns_cleanup(id).await;
+        acme_store!(@unit self; [id]; store => store.finish_dns_cleanup(&id));
         pass.finish(if result.is_ok() {
             Outcome::Success
         } else {
@@ -89,28 +126,91 @@ impl ProxyRuntime {
         });
     }
 
+    /// Transfers an ACME operation to the runtime and waits for its initial metadata.
+    ///
+    /// Dropping the caller's wait does not cancel an accepted job. The job owns the
+    /// runtime and reply sender; it may continue after replying to finish issuance.
+    ///
+    /// # Errors
+    /// Returns `OperationInProgress` when background admission is closed or full, the job's
+    /// preparation error when reported, or `StoreUnavailable` if its reply is lost.
+    async fn owned_acme_job<F, Fut>(
+        self: &Arc<Self>,
+        operation: &'static str,
+        job: F,
+    ) -> Result<super::CertificateMetadata, CertificateError>
+    where
+        F: FnOnce(
+            Arc<Self>,
+            oneshot::Sender<Result<super::CertificateMetadata, CertificateError>>,
+        ) -> Fut,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let (response, result) = oneshot::channel();
+        if !self
+            .background_jobs
+            .spawn(operation, job(Arc::clone(self), response))
+        {
+            return Err(CertificateError::OperationInProgress);
+        }
+        result
+            .await
+            .unwrap_or(Err(CertificateError::StoreUnavailable))
+    }
+
+    /// Admits issuance under the global ACME limit and returns its prepared metadata.
+    ///
+    /// The registered job owns the request, challenge store, and permit through issuance;
+    /// a successful return means preparation succeeded, not that a certificate is active.
+    /// Dropping the caller does not stop the accepted job.
+    ///
+    /// # Errors
+    /// Returns `OperationInProgress` for exhausted capacity, closed admission, or conflicting
+    /// work; provider-binding and certificate-store preparation errors are propagated.
     pub(crate) async fn start_acme_issue(
         self: &Arc<Self>,
         id: String,
         request: CertificateIssueRequest,
         challenges: ChallengeStore,
     ) -> Result<super::CertificateMetadata, CertificateError> {
-        if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(CertificateError::OperationInProgress);
-        }
+        let permit = ACME_JOBS
+            .try_acquire()
+            .map_err(|_| CertificateError::OperationInProgress)?;
+        self.owned_acme_job("acme_issue", move |runtime, response| async move {
+            let _permit = permit;
+            match runtime.prepare_acme_issue(&id, &request).await {
+                Ok(metadata) => {
+                    let _ = response.send(Ok(metadata));
+                    runtime.issue_acme_inner(id, request, challenges).await;
+                }
+                Err(error) => {
+                    let _ = response.send(Err(error));
+                }
+            }
+        })
+        .await
+    }
+
+    /// Reserves any provider connection and persists the initial issuance state.
+    ///
+    /// Pending candidates reject new issuance. Provider bindings stay locked through
+    /// reservation and the bounded store operation; a failed start triggers best-effort
+    /// binding reconciliation.
+    ///
+    /// # Errors
+    /// Returns candidate conflicts, provider-connection failures, or certificate-store errors.
+    async fn prepare_acme_issue(
+        self: &Arc<Self>,
+        id: &str,
+        request: &CertificateIssueRequest,
+    ) -> Result<super::CertificateMetadata, CertificateError> {
         if self
             .certificate_store
             .pending_candidate_ids()
             .await?
             .iter()
-            .any(|candidate_id| candidate_id == &id)
+            .any(|candidate_id| candidate_id == id)
         {
-            return Err(CertificateError::OperationInProgress);
-        }
-        let permit = ACME_JOBS
-            .try_acquire()
-            .map_err(|_| CertificateError::OperationInProgress)?;
-        if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(CertificateError::OperationInProgress);
         }
         let binding = if request
@@ -126,104 +226,143 @@ impl ProxyRuntime {
             self.reconcile_provider_connections()
                 .await
                 .map_err(super::provider_connections::certificate_error)?;
-            self.reserve_certificate_connection(&id, &request).await?;
+            self.reserve_certificate_connection(id, request).await?;
         }
-        let metadata = match self
-            .certificate_store
-            .begin_issue(&id, request.clone(), false)
-            .await
-        {
-            Ok(metadata) => metadata,
+        match acme_store!(self; [id, request]; store => store.begin_issue(&id, request, false)) {
+            Ok(metadata) => Ok(metadata),
             Err(error) => {
                 if binding.is_some() {
                     let _ = self.reconcile_provider_connections().await;
                 }
-                return Err(error);
+                Err(error)
             }
-        };
-        let runtime = Arc::clone(self);
-        tokio::spawn(async move {
-            let _permit = permit;
-            runtime.issue_acme_inner(id, request, challenges).await;
-        });
-        Ok(metadata)
+        }
     }
 
+    /// Retries an existing candidate or prepares a new runtime-owned renewal.
+    ///
+    /// Returns the candidate result or initial renewal metadata before any new ACME order
+    /// finishes. The accepted job keeps ownership if the caller stops waiting.
+    ///
+    /// # Errors
+    /// Propagates candidate, admission, capacity, and store errors; no ACME permit is
+    /// needed when an existing candidate can be retried.
     pub(crate) async fn start_acme_renewal(
         self: &Arc<Self>,
         id: String,
         challenges: ChallengeStore,
     ) -> Result<super::CertificateMetadata, CertificateError> {
-        if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(CertificateError::OperationInProgress);
-        }
-        if let Some(metadata) = self.retry_certificate_candidate(&id, false).await? {
-            return Ok(metadata);
-        }
-        let permit = ACME_JOBS
-            .try_acquire()
-            .map_err(|_| CertificateError::OperationInProgress)?;
-        self.renew_with_permit(id, challenges, permit).await
+        self.owned_acme_job("acme_renewal", move |runtime, response| async move {
+            let preparation = async {
+                if let Some(metadata) = runtime
+                    .retry_certificate_candidate_inner(&id, false)
+                    .await?
+                {
+                    return Ok((metadata, None));
+                }
+                let permit = ACME_JOBS
+                    .try_acquire()
+                    .map_err(|_| CertificateError::OperationInProgress)?;
+                let (metadata, request) =
+                    acme_store!(runtime; [id]; store => store.begin_renewal(&id))?;
+                Ok((metadata, Some((request, permit))))
+            }
+            .await;
+            match preparation {
+                Ok((metadata, continuation)) => {
+                    let _ = response.send(Ok(metadata));
+                    if let Some((request, _permit)) = continuation {
+                        runtime.issue_acme_inner(id, request, challenges).await;
+                    }
+                }
+                Err(error) => {
+                    let _ = response.send(Err(error));
+                }
+            }
+        })
+        .await
     }
 
+    /// Rechecks renewal eligibility inside an admitted job before persisting a renewal.
+    ///
+    /// The job holds an ACME permit and continues issuance after returning initial metadata,
+    /// including if the caller drops its wait.
+    ///
+    /// # Errors
+    /// Returns `OperationInProgress` when capacity, admission, or due/allowed checks reject
+    /// the renewal; certificate lookup and preparation failures are propagated.
     pub(crate) async fn start_scheduled_acme_renewal(
         self: &Arc<Self>,
         id: String,
         challenges: ChallengeStore,
     ) -> Result<super::CertificateMetadata, CertificateError> {
-        if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(CertificateError::OperationInProgress);
-        }
         let permit = ACME_JOBS
             .try_acquire()
             .map_err(|_| CertificateError::OperationInProgress)?;
-        let certificate = self.certificate_store.get(&id).await?;
-        if !self.certificate_store.renewal_is_allowed(&id).await
-            || !Self::renewal_is_due(&certificate)
-        {
-            return Err(CertificateError::OperationInProgress);
-        }
-        self.renew_with_permit(id, challenges, permit).await
+        self.owned_acme_job(
+            "acme_scheduled_renewal",
+            move |runtime, response| async move {
+                let _permit = permit;
+                let preparation = async {
+                    let certificate = runtime.certificate_store.get(&id).await?;
+                    if !runtime.certificate_store.renewal_is_allowed(&id).await
+                        || !Self::renewal_is_due(&certificate)
+                    {
+                        return Err(CertificateError::OperationInProgress);
+                    }
+                    acme_store!(runtime; [id]; store => store.begin_renewal(&id))
+                }
+                .await;
+                match preparation {
+                    Ok((metadata, request)) => {
+                        let _ = response.send(Ok(metadata));
+                        runtime.issue_acme_inner(id, request, challenges).await;
+                    }
+                    Err(error) => {
+                        let _ = response.send(Err(error));
+                    }
+                }
+            },
+        )
+        .await
     }
 
+    /// Starts a persisted ACME retry under a runtime-owned job and global permit.
+    ///
+    /// Returns metadata once retry preparation succeeds; the job retains the request and
+    /// permit while issuance continues independently of the caller's wait.
+    ///
+    /// # Errors
+    /// Returns admission/capacity errors or the store's retry-preparation failure.
     pub(crate) async fn start_scheduled_acme_retry(
         self: &Arc<Self>,
         id: String,
         challenges: ChallengeStore,
     ) -> Result<super::CertificateMetadata, CertificateError> {
-        if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(CertificateError::OperationInProgress);
-        }
         let permit = ACME_JOBS
             .try_acquire()
             .map_err(|_| CertificateError::OperationInProgress)?;
-        let (metadata, request) = self.certificate_store.begin_acme_retry(&id).await?;
-        let runtime = Arc::clone(self);
-        tokio::spawn(async move {
+        self.owned_acme_job("acme_retry", move |runtime, response| async move {
             let _permit = permit;
-            runtime.issue_acme_inner(id, request, challenges).await;
-        });
-        Ok(metadata)
+            match acme_store!(runtime; [id]; store => store.begin_acme_retry(&id)) {
+                Ok((metadata, request)) => {
+                    let _ = response.send(Ok(metadata));
+                    runtime.issue_acme_inner(id, request, challenges).await;
+                }
+                Err(error) => {
+                    let _ = response.send(Err(error));
+                }
+            }
+        })
+        .await
     }
 
-    async fn renew_with_permit(
-        self: &Arc<Self>,
-        id: String,
-        challenges: ChallengeStore,
-        permit: SemaphorePermit<'static>,
-    ) -> Result<super::CertificateMetadata, CertificateError> {
-        if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(CertificateError::OperationInProgress);
-        }
-        let (metadata, request) = self.certificate_store.begin_renewal(&id).await?;
-        let runtime = Arc::clone(self);
-        tokio::spawn(async move {
-            let _permit = permit;
-            runtime.issue_acme_inner(id, request, challenges).await;
-        });
-        Ok(metadata)
-    }
-
+    /// Runs an admitted issuance attempt, stages its result, and attempts activation.
+    ///
+    /// Owns the request and runtime while network work runs outside bounded storage
+    /// workers. HTTP registrations are removed after the order attempt; DNS cleanup is
+    /// recovered from persisted intents on success or failure. Failures are recorded
+    /// best-effort, and order timeouts do not prove that a provider mutation was undone.
     async fn issue_acme_inner(
         self: Arc<Self>,
         id: String,
@@ -241,9 +380,7 @@ impl ProxyRuntime {
             AcmeChallengeType::Http01 => None,
             AcmeChallengeType::Dns01 => {
                 let Some(config) = request.dns_provider.clone() else {
-                    self.certificate_store
-                        .finish_failed(&id, CertificateError::AcmeDnsRequired)
-                        .await;
+                    acme_store!(@unit self; [id]; store => store.finish_failed(&id, CertificateError::AcmeDnsRequired));
                     return;
                 };
                 let resolved = self
@@ -256,7 +393,7 @@ impl ProxyRuntime {
                 {
                     Ok(provider) => Some(provider),
                     Err(error) => {
-                        self.certificate_store.finish_failed(&id, error).await;
+                        acme_store!(@unit self; [id, error]; store => store.finish_failed(&id, error));
                         return;
                     }
                 }
@@ -268,7 +405,7 @@ impl ProxyRuntime {
         {
             Ok(intents) => intents,
             Err(error) => {
-                self.certificate_store.finish_failed(&id, error).await;
+                acme_store!(@unit self; [id, error]; store => store.finish_failed(&id, error));
                 return;
             }
         };
@@ -294,10 +431,7 @@ impl ProxyRuntime {
         };
         let (candidate, issue_error) = match order_result {
             Ok((certificate_pem, private_key_pem)) => {
-                match self
-                    .certificate_store
-                    .stage_acme(&id, &request, certificate_pem, private_key_pem)
-                    .await
+                match acme_store!(self; [id, request, certificate_pem, private_key_pem]; store => store.stage_acme(&id, &request, certificate_pem, private_key_pem))
                 {
                     Ok(staged) => (Some(staged), None),
                     Err(error) => (None, Some(error)),
@@ -318,14 +452,42 @@ impl ProxyRuntime {
             });
             return;
         }
-        if let Some(error) = issue_error {
-            self.certificate_store.finish_failed(&id, error).await;
-        }
-        self.recover_dns_cleanup_one(&id).await;
+        self.finish_failed_acme_issue(&id, issue_error, pass).await;
     }
 
+    /// Finish the failed operation and classify its persisted outcome after DNS cleanup; cleanup failures retain their own evidence.
+    async fn finish_failed_acme_issue(
+        self: &Arc<Self>,
+        id: &str,
+        issue_error: Option<CertificateError>,
+        pass: Pass,
+    ) {
+        let outcome = if let Some(error) = issue_error {
+            let id = id.to_owned();
+            self.storage_async(move |runtime| async move {
+                runtime.certificate_store.finish_failed(&id, error).await
+            })
+            .await
+            .ok()
+        } else {
+            None
+        };
+        self.recover_dns_cleanup_one(id).await;
+        if matches!(outcome, Some(FailedIssueOutcome::Cancelled)) {
+            pass.finish(Outcome::Cancelled);
+        }
+    }
+
+    /// Reconciles old DNS intents before allowing a new order to create proofs.
+    ///
+    /// Returns no intents after complete cleanup, or bounded unconfirmed delegated
+    /// writes whose authority must remain available for later recovery.
+    ///
+    /// # Errors
+    /// Returns store/provider errors or `DnsCleanupFailed` when retained intents cannot
+    /// safely coexist with the requested order.
     async fn prepare_dns_challenges(
-        &self,
+        self: &Arc<Self>,
         id: &str,
         request: &CertificateIssueRequest,
         provider: Option<&DnsProvider>,
@@ -355,8 +517,13 @@ impl ProxyRuntime {
         Ok(retained)
     }
 
+    /// Removes owned DNS proofs and requires every persisted intent to be resolved.
+    ///
+    /// # Errors
+    /// Propagates reconciliation errors, or returns `DnsCleanupFailed` when ambiguous
+    /// provider writes still require retained cleanup authority.
     async fn cleanup_dns_challenges(
-        &self,
+        self: &Arc<Self>,
         id: &str,
         provider: &DnsProvider,
         intents: &[DnsRecordIntent],
@@ -372,8 +539,17 @@ impl ProxyRuntime {
         }
     }
 
+    /// Cleans DNS intents in sequence and persists the remaining recovery work.
+    ///
+    /// Returns unresolved ambiguous writes: an empty provider read cannot disprove an
+    /// accepted POST. Provider awaits run outside storage workers; each successful cleanup
+    /// is followed by a bounded store update before advancing.
+    ///
+    /// # Errors
+    /// Propagates provider/store errors and maps the overall cleanup timeout to
+    /// `DnsCleanupFailed`; interrupted work remains represented by persisted intents.
     async fn reconcile_dns_challenges(
-        &self,
+        self: &Arc<Self>,
         id: &str,
         provider: &DnsProvider,
         intents: &[DnsRecordIntent],
@@ -396,9 +572,7 @@ impl ProxyRuntime {
                     .await?;
                 let mut pending = retained.clone();
                 pending.extend_from_slice(&intents[index + 1..]);
-                self.certificate_store
-                    .set_pending_dns_records(id, pending)
-                    .await?;
+                acme_store!(self; [id, pending]; store => store.set_pending_dns_records(&id, pending))?;
             }
             Ok(retained)
         })

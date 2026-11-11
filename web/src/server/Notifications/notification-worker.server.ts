@@ -35,6 +35,7 @@ export const notificationWorker = createNotificationWorker({
             undefined,
             'collection',
         ),
+    /** Classify persistence as progress only when the collection commit changed durable state; empty commits remain deferred. */
     commitCollection: (claim, batch) =>
         observeWorkerOperation(
             'notifications',
@@ -59,6 +60,7 @@ export const notificationWorker = createNotificationWorker({
             undefined,
             'persistence',
         ),
+    /** Classify the delivery result on its own lane so bookkeeping cannot clear delivery failures and cancellation does not count as success. */
     deliver: (claim, signal) =>
         observeWorkerOperation(
             'notifications',

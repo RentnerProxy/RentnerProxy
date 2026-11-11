@@ -24,6 +24,7 @@ import type { ProxyRuntimeMutationStatus } from '@/lib/ProxyRuntime/Types/proxy-
 import { requirePermissionService } from '@/server/Auth/Access/authorization.service.ts'
 import { requirePermissionInTransaction } from '@/server/Auth/Access/rbac.service.ts'
 import { getAuthDatabase } from '@/server/Auth/Core/database.server.ts'
+import { getBackgroundDatabase } from '@/server/Foundation/background-database.server.ts'
 import { isProxyRuntimeReconciliationEnabled } from '@/server/env.server.ts'
 import { appendAuditEventInTransactionService } from '@/server/Audit/audit.service.ts'
 import {
@@ -70,8 +71,9 @@ function runtimeMatches(
     )
 }
 
+/** Load configuration through reserved critical SQL capacity, then derive the controller request after releasing the database permit. */
 async function loadReconcileSnapshot(): Promise<ReconcileSnapshot> {
-    const stored = await getAuthDatabase().transaction(
+    const stored = await getBackgroundDatabase('critical').transaction(
         (transaction) => readStoredCrowdSecConfiguration(transaction),
         { isolationLevel: 'repeatable read', accessMode: 'read only' },
     )
@@ -97,13 +99,13 @@ function controllerResponseMatches(
 export const reconcileCrowdSecConfiguration = createCrowdSecReconciler({
     enabled: isProxyRuntimeReconciliationEnabled(),
     load: loadReconcileSnapshot,
-    apply: async (snapshot) =>
+    apply: async (snapshot, signal) =>
         controllerResponseMatches(
             snapshot.request,
-            await applyCrowdSecConfiguration(snapshot.request),
+            await applyCrowdSecConfiguration(snapshot.request, signal),
         ),
-    hasDrift: async (snapshot) => {
-        const runtime = await getCrowdSecRuntimeStatus()
+    hasDrift: async (snapshot, signal) => {
+        const runtime = await getCrowdSecRuntimeStatus(signal)
         if (!runtime || runtime.mode !== snapshot.request.mode) return true
         if (snapshot.request.mode === 'disabled') return runtime.enforcementActive
         if (!runtime.enforcementActive || runtime.state !== 'connected') return true

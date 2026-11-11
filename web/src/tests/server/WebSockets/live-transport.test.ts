@@ -110,11 +110,12 @@ describe('live WebSocket transport', () => {
         await runtime.shutdown()
     })
 
-    test('releases a handshake reservation when the snapshot reader hangs', async () => {
+    test('releases a handshake reservation but drains timed-out snapshot work before shutdown', async () => {
+        const reader = Promise.withResolvers<Response>()
         const runtime = createLiveWebSocketRuntime({
             allowedOrigin: 'http://allowed.test',
             snapshotTimeoutMs: 5,
-            readSnapshot: () => new Promise<Response>(() => undefined),
+            readSnapshot: () => reader.promise,
         })
         const result = await runtime.handle(
             new Request('http://localhost/api/live', {
@@ -125,7 +126,15 @@ describe('live WebSocket transport', () => {
 
         expect(result.response?.status).toBe(503)
         expect(runtime.connectionCount).toBe(0)
-        await runtime.shutdown()
+        let drained = false
+        const shutdown = runtime.shutdown().then(() => {
+            drained = true
+        })
+        await new Promise<void>((resolve) => setImmediate(resolve))
+        expect(drained).toBe(false)
+        reader.resolve(Response.json({ revision: 'fixture' }))
+        await shutdown
+        expect(drained).toBe(true)
     })
 
     test('sends changed snapshots, ignores volatile fields, and stops sampling after close', async () => {

@@ -1,3 +1,4 @@
+import { memoryResourceEvidence } from './resource-probe.ts'
 import { resourceLimits, metrics } from './control.config.ts'
 import type { ResourceMetric, ResourceAnalysis } from './Types/control.types.ts'
 import type {
@@ -179,6 +180,7 @@ export function analyzeResources(samples: ResourceSample[], concurrency: number)
     }
     return {
         sampleCount: samples.length,
+        memoryMeasurements: memoryResourceEvidence(samples),
         trendEvidence: comparable ? 'comparable' : 'insufficient',
         passed: violations.length === 0,
         violations,
@@ -192,6 +194,7 @@ export function analyzeResources(samples: ResourceSample[], concurrency: number)
     }
 }
 
+/** Validate bounded progress and fixed failure categories before deriving pass status; interrupted or cancelled evidence cannot produce a successful report. */
 export function buildReliabilityReport(input: ReliabilityReportInput) {
     if (
         !/^[a-f0-9]{40}$/.test(input.targetSha) ||
@@ -235,7 +238,9 @@ export function buildReliabilityReport(input: ReliabilityReportInput) {
         const { stage, category } = input.failure
         if (
             !['setup', 'warmup', 'cycle', 'resources', 'cleanup'].includes(stage) ||
-            !['assertion', 'timeout', 'command', 'telemetry', 'unexpected'].includes(category)
+            !['assertion', 'timeout', 'command', 'telemetry', 'unexpected', 'cancelled'].includes(
+                category,
+            )
         )
             throw new Error('Invalid report failure')
         failure = { stage, category }

@@ -588,6 +588,8 @@ async fn recovery_reaches_later_accounts_despite_repeated_failures_in_the_first_
     assert_eq!(records.len(), 5);
 }
 
+/// Corrupts a stored credential to verify adoption skips that candidate while independent accounts
+/// and an explicit replacement of the damaged credential remain usable.
 #[tokio::test]
 async fn corrupt_adoption_candidate_does_not_block_other_accounts_or_credential_repair() {
     let fixture = fixture().await;
@@ -600,7 +602,7 @@ async fn corrupt_adoption_candidate_does_not_block_other_accounts_or_credential_
         let mut state = fixture.store.lock().await.unwrap();
         let mut next = Store::registry(&mut state).unwrap().clone();
         next.connections[0].secret.ciphertext[0] ^= 1;
-        fixture.store.commit(&mut state, next).unwrap();
+        fixture.store.commit(state, next).await.unwrap();
     }
     assert!(
         fixture

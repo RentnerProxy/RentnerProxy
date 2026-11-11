@@ -10,7 +10,7 @@ import {
     getAllowedNotificationCategories,
 } from '@/lib/Notifications/notification-access.ts'
 import { resolveActiveUserAccessInTransaction } from '@/server/Auth/Access/rbac.service.ts'
-import { getAuthDatabase } from '@/server/Auth/Core/database.server.ts'
+import { getBackgroundDatabase } from '@/server/Foundation/background-database.server.ts'
 import { resolveEffectiveNotificationConfigurationInTransaction } from './notification-access.ts'
 import { claimNotificationDelivery, finishNotificationDelivery } from './incident-engine.ts'
 import {
@@ -37,8 +37,9 @@ import {
 import { nextNotificationDeliveryAt } from './notification-scheduling.ts'
 import { workerObservability } from '@/server/Foundation/worker-observability.ts'
 
+/** Read scheduling and pending counts in one read-only notification-partition snapshot; disabled/restored queues retain unavailable evidence. */
 export async function readNextNotificationDeliveryAt(): Promise<number | null> {
-    const sample = await getAuthDatabase().transaction(
+    const sample = await getBackgroundDatabase('notifications').transaction(
         async (transaction) => {
             const configuration = await readNotificationConfiguration(transaction)
             if (!configuration.enabled || configuration.pausedAfterRestore)
@@ -62,18 +63,22 @@ export async function readNextNotificationDeliveryAt(): Promise<number | null> {
     return sample.nextDueAt
 }
 
+/** Use notification capacity for read-only disabled checks and configuration-before-runtime locking before durable collection admission. */
 export async function claimNotificationCollection(): Promise<NotificationCollectionClaim | null> {
     // Keep the disabled default read-only, including before the first channel is configured.
-    const snapshot = await getAuthDatabase().transaction(readNotificationConfiguration, {
-        accessMode: 'read only',
-    })
+    const snapshot = await getBackgroundDatabase('notifications').transaction(
+        readNotificationConfiguration,
+        {
+            accessMode: 'read only',
+        },
+    )
     if (
         !snapshot.enabled ||
         snapshot.pausedAfterRestore ||
         !snapshot.channels.some((channel) => channel.enabled)
     )
         return null
-    return getAuthDatabase().transaction(async (transaction) => {
+    return getBackgroundDatabase('notifications').transaction(async (transaction) => {
         // Always lock configuration before runtime, matching administrative updates and delivery acknowledgements.
         const configuration = await resolveEffectiveNotificationConfigurationInTransaction(
             transaction,
@@ -88,11 +93,12 @@ export async function claimNotificationCollection(): Promise<NotificationCollect
     })
 }
 
+/** Consume the collection fence under notification SQL admission and atomically persist reconciled availability and notification effects. */
 export async function commitNotificationCollection(
     claim: NotificationCollectionClaim,
     batch: NotificationCollectedBatch,
 ): Promise<boolean> {
-    return getAuthDatabase().transaction(async (transaction) => {
+    return getBackgroundDatabase('notifications').transaction(async (transaction) => {
         const configuration = await resolveEffectiveNotificationConfigurationInTransaction(
             transaction,
             await lockNotificationConfiguration(transaction),
@@ -117,12 +123,16 @@ export async function commitNotificationCollection(
     })
 }
 
+/** Claim durable work under the notification partition and return only a channel matching its admitted revision; transport runs after SQL release. */
 export async function claimNextNotificationDelivery(): Promise<NotificationDeliveryClaim | null> {
-    const snapshot = await getAuthDatabase().transaction(readNotificationConfiguration, {
-        accessMode: 'read only',
-    })
+    const snapshot = await getBackgroundDatabase('notifications').transaction(
+        readNotificationConfiguration,
+        {
+            accessMode: 'read only',
+        },
+    )
     if (!snapshot.enabled || snapshot.pausedAfterRestore) return null
-    return getAuthDatabase().transaction(async (transaction) => {
+    return getBackgroundDatabase('notifications').transaction(async (transaction) => {
         const configuration = await resolveEffectiveNotificationConfigurationInTransaction(
             transaction,
             await lockNotificationConfiguration(transaction),
@@ -149,11 +159,12 @@ export async function claimNextNotificationDelivery(): Promise<NotificationDeliv
     })
 }
 
+/** Apply a delivery result under its lease token and current configuration within notification SQL capacity, writing only changed durable state. */
 export async function acknowledgeNotificationDelivery(
     leaseToken: string,
     result: NotificationDeliveryResult,
 ): Promise<void> {
-    await getAuthDatabase().transaction(async (transaction) => {
+    await getBackgroundDatabase('notifications').transaction(async (transaction) => {
         const configuration = await resolveEffectiveNotificationConfigurationInTransaction(
             transaction,
             await lockNotificationConfiguration(transaction),
@@ -173,10 +184,11 @@ export async function acknowledgeNotificationDelivery(
     })
 }
 
+/** Recheck live lease, channel revision, resource access, and owner permissions in a read-only notification transaction before transport. */
 export async function authorizeNotificationDelivery(
     claim: NotificationDeliveryClaim,
 ): Promise<NotificationDeliveryAuthorization | null> {
-    return getAuthDatabase().transaction(
+    return getBackgroundDatabase('notifications').transaction(
         async (transaction) => {
             const configuration = await readNotificationConfiguration(transaction)
             if (!configuration.enabled || configuration.pausedAfterRestore) return null

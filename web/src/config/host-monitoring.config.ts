@@ -6,6 +6,7 @@ export const HOST_MONITORING_LIMITS = {
     persistenceBatchSize: 16,
     persistenceDelayMs: 25,
     pollIntervalMs: 250,
+    idlePollMaximumMs: 30_000,
     leaseMs: 45_000,
     transactionTimeoutMs: 2_000,
     maxObservations: 100_000,

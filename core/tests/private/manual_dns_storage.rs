@@ -137,6 +137,365 @@ fn action(order: &ManualDnsOrder) -> ManualDnsActionRequest {
     }
 }
 
+/// Disconnects a manual-DNS HTTP caller while storage is paused and verifies the admitted action
+/// still commits under serialization and publishes its completion event.
+#[tokio::test(flavor = "current_thread")]
+async fn cancelled_manual_dns_caller_preserves_serialized_commit_and_event_publication() {
+    use crate::{
+        runtime::{ProxyRuntime, RuntimeSettings},
+        server::{AppState, app_with_state},
+    };
+    use axum::{body::Body, http::Request};
+    use std::{
+        future::{Future, poll_fn},
+        sync::{Arc, mpsc},
+        task::Poll,
+        time::Duration,
+    };
+    use tokio::{sync::oneshot, time::timeout};
+    use tower::ServiceExt;
+
+    let fixture = Fixture::new().await;
+    let order = fixture.paused(false).await;
+    let runtime = ProxyRuntime::new(RuntimeSettings::new(fixture.directory.clone(), 0), None);
+    runtime.certificate_store.initialize().await.unwrap();
+    let store = &runtime.certificate_store;
+    let before = store.get(ID).await.unwrap();
+    let index = store.index.lock().await;
+    let (started, running) = oneshot::channel();
+    let (release, gate) = mpsc::channel();
+    let blocker = {
+        let runtime = Arc::clone(&runtime);
+        tokio::spawn(async move {
+            runtime
+                .storage(move |_| {
+                    started.send(()).unwrap();
+                    let _ = gate.recv();
+                })
+                .await
+        })
+    };
+    timeout(Duration::from_secs(2), running)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let mut caller = {
+        let runtime = Arc::clone(&runtime);
+        let action = action(&order);
+        Box::pin(async move { runtime.cancel_manual_dns(ID, &action).await })
+    };
+    poll_fn(|cx| {
+        assert!(caller.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    assert!(
+        !store.leases.lock().await.contains(ID),
+        "certificate work must wait for storage admission before acquiring its lease"
+    );
+    let response = timeout(
+        Duration::from_secs(2),
+        app_with_state(AppState::new(Arc::clone(&runtime), None))
+            .oneshot(Request::get("/health").body(Body::empty()).unwrap()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(response.status().is_success());
+
+    release.send(()).unwrap();
+    blocker.await.unwrap().unwrap();
+    let caller = tokio::spawn(caller);
+    timeout(Duration::from_secs(2), async {
+        while !store.leases.lock().await.contains(ID) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    caller.abort();
+    assert!(caller.await.unwrap_err().is_cancelled());
+    assert_eq!(
+        index.certificates[ID]
+            .metadata
+            .current_operation
+            .as_ref()
+            .unwrap()
+            .stage,
+        CertificateOperationStage::AwaitingDns
+    );
+    drop(index);
+
+    timeout(Duration::from_secs(2), async {
+        while store.leases.lock().await.contains(ID) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let cancelled = store.get(ID).await.unwrap();
+    assert_eq!(
+        cancelled.current_operation.as_ref().unwrap().id,
+        before.current_operation.as_ref().unwrap().id
+    );
+    assert_eq!(
+        cancelled.current_operation.as_ref().unwrap().stage,
+        CertificateOperationStage::Cancelled
+    );
+    assert_eq!(
+        store
+            .events(None, 200)
+            .await
+            .unwrap()
+            .events
+            .iter()
+            .filter(|event| {
+                event.operation_id == order.operation_id
+                    && event.kind == CertificateEventKind::Cancelled
+            })
+            .count(),
+        1
+    );
+    let restored = CertificateStore::new(fixture.directory.clone());
+    restored.initialize().await.unwrap();
+    assert_eq!(restored.get(ID).await.unwrap(), cancelled);
+    assert_eq!(
+        restored.events(None, 200).await.unwrap(),
+        store.events(None, 200).await.unwrap()
+    );
+    assert!(!store.leases.lock().await.contains(ID));
+}
+
+/// Cancels a deletion waiter at the storage boundary and checks that the apply lock continues to
+/// fence dependent work until the owned deletion has persisted its removal.
+#[tokio::test(flavor = "current_thread")]
+async fn cancelled_certificate_delete_keeps_apply_lock_until_persisted_removal() {
+    use crate::runtime::{ProxyRuntime, RuntimeSettings};
+    use std::{
+        sync::{Arc, mpsc},
+        time::Duration,
+    };
+    use tokio::{sync::oneshot, time::timeout};
+
+    let fixture = Fixture::new().await;
+    let order = fixture.paused(false).await;
+    let runtime = ProxyRuntime::new(RuntimeSettings::new(fixture.directory.clone(), 0), None);
+    runtime.certificate_store.initialize().await.unwrap();
+    runtime
+        .cancel_manual_dns(ID, &action(&order))
+        .await
+        .unwrap();
+    runtime.state.lock().await.engine_available = true;
+    let (started, running) = oneshot::channel();
+    let (release, gate) = mpsc::channel();
+    let blocker = {
+        let runtime = Arc::clone(&runtime);
+        tokio::spawn(async move {
+            runtime
+                .storage(move |_| {
+                    started.send(()).unwrap();
+                    let _ = gate.recv();
+                })
+                .await
+        })
+    };
+    timeout(Duration::from_secs(2), running)
+        .await
+        .unwrap()
+        .unwrap();
+    let caller = {
+        let runtime = Arc::clone(&runtime);
+        tokio::spawn(async move { runtime.delete_certificate(ID).await })
+    };
+    timeout(Duration::from_secs(2), async {
+        while runtime.apply_lock.try_lock().is_ok() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    caller.abort();
+    assert!(caller.await.unwrap_err().is_cancelled());
+    assert!(runtime.apply_lock.try_lock().is_err());
+    assert!(runtime.certificate(ID).await.is_ok());
+    release.send(()).unwrap();
+    blocker.await.unwrap().unwrap();
+    let _guard = timeout(Duration::from_secs(2), runtime.apply_lock.lock())
+        .await
+        .unwrap();
+    assert_eq!(
+        runtime.certificate(ID).await,
+        Err(CertificateError::NotFound)
+    );
+    let restored = CertificateStore::new(fixture.directory.clone());
+    restored.initialize().await.unwrap();
+    assert_eq!(restored.get(ID).await, Err(CertificateError::NotFound));
+}
+
+/// Abandons an admitted list request during provider reconciliation and verifies the binding lock
+/// still excludes following transactions until that reconciliation completes.
+#[tokio::test(flavor = "current_thread")]
+async fn cancelled_dns_list_keeps_binding_fenced_until_reconciliation_finishes() {
+    use crate::{
+        config::Config,
+        runtime::{ProxyRuntime, RuntimeSettings},
+        server::{AppState, app_with_state},
+    };
+    use axum::{body::Body, http::Request};
+    use std::{
+        sync::{Arc, mpsc},
+        time::Duration,
+    };
+    use tokio::{sync::oneshot, time::timeout};
+    use tower::ServiceExt;
+
+    let fixture = Fixture::new().await;
+    let runtime = ProxyRuntime::new(RuntimeSettings::new(fixture.directory.clone(), 0), None);
+    runtime.certificate_store.initialize().await.unwrap();
+    let token = "synthetic-dns-binding-cancellation-token";
+    let config = Config::from_values(None, Some(token), None, None, None, false).unwrap();
+    let router = app_with_state(AppState::new(Arc::clone(&runtime), config.controller_token));
+    let (started, running) = oneshot::channel();
+    let (release, gate) = mpsc::channel();
+    let blocker = {
+        let runtime = Arc::clone(&runtime);
+        tokio::spawn(async move {
+            runtime
+                .storage(move |_| {
+                    started.send(()).unwrap();
+                    let _ = gate.recv();
+                })
+                .await
+        })
+    };
+    timeout(Duration::from_secs(2), running)
+        .await
+        .unwrap()
+        .unwrap();
+    let caller = tokio::spawn(async move {
+        router
+            .oneshot(
+                Request::get("/internal/v1/dns/connections")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+    });
+    timeout(Duration::from_secs(2), async {
+        while runtime.dns_connections.bindings.try_lock().is_ok() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    caller.abort();
+    assert!(caller.await.unwrap_err().is_cancelled());
+    assert!(runtime.dns_connections.bindings.try_lock().is_err());
+    release.send(()).unwrap();
+    blocker.await.unwrap().unwrap();
+    let _guard = timeout(
+        Duration::from_secs(2),
+        runtime.dns_connections.bindings.lock(),
+    )
+    .await
+    .unwrap();
+    assert!(runtime.dns_connections.list().await.unwrap().is_empty());
+}
+
+/// Cancels a delete request before binding admission, proving no detached mutation survives it;
+/// a later admitted delete must still succeed against the unchanged registry.
+#[tokio::test(flavor = "current_thread")]
+async fn cancelled_queued_dns_delete_drops_transaction_without_mutation() {
+    use crate::{
+        config::Config,
+        runtime::{ProxyRuntime, RuntimeSettings, dns::encryption, state::state_dir},
+        server::{AppState, app_with_state},
+    };
+    use axum::{body::Body, http::Request};
+    use std::{
+        future::{Future, poll_fn},
+        sync::Arc,
+        task::Poll,
+    };
+    use tower::ServiceExt;
+
+    let fixture = Fixture::new().await;
+    let secret = encryption::encrypt_bytes(
+        b"synthetic-unused-dns-token",
+        &format!("dns-connection:{ID}:v1"),
+        &[7; 32],
+    )
+    .unwrap();
+    let registry = serde_json::to_vec(&serde_json::json!({
+        "version": 1,
+        "connections": [{
+            "metadata": {
+                "id": ID, "provider": "cloudflare", "ownership": "instance",
+                "name": "Queued delete fixture", "createdByUserId": STALE,
+                "revision": 1,
+                "zones": [{"id": "a".repeat(32), "name": "example.com"}],
+                "references": [],
+                "createdAt": "2026-01-01T00:00:00Z",
+                "updatedAt": "2026-01-01T00:00:00Z"
+            },
+            "secret": secret
+        }]
+    }))
+    .unwrap();
+    state_dir(&fixture.directory)
+        .unwrap()
+        .atomic_write("dns-connections.json", &registry)
+        .unwrap();
+    let runtime = ProxyRuntime::new(RuntimeSettings::new(fixture.directory.clone(), 0), None);
+    runtime.certificate_store.initialize().await.unwrap();
+    assert_eq!(runtime.dns_connections.list().await.unwrap().len(), 1);
+    let token = "synthetic-queued-dns-delete-token";
+    let config = Config::from_values(None, Some(token), None, None, None, false).unwrap();
+    let router = app_with_state(AppState::new(Arc::clone(&runtime), config.controller_token));
+    let binding = runtime.dns_connections.bindings.lock().await;
+    let owners = Arc::strong_count(&runtime);
+    let mut caller = Box::pin(
+        router.clone().oneshot(
+            Request::delete(format!("/internal/v1/dns/connections/{ID}"))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(r#"{"expectedRevision":1}"#))
+                .unwrap(),
+        ),
+    );
+    poll_fn(|cx| {
+        assert!(caller.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    drop(caller);
+    // No detached task may retain the cancelled request while admission is held.
+    // This assertion also catches a task that has not yet been scheduled.
+    assert_eq!(Arc::strong_count(&runtime), owners);
+    drop(binding);
+    assert_eq!(runtime.dns_connections.list().await.unwrap()[0].revision, 1);
+    assert_eq!(
+        state_dir(&fixture.directory)
+            .unwrap()
+            .read_file("dns-connections.json", 1024 * 1024)
+            .unwrap(),
+        registry
+    );
+    // The same delete succeeds when its caller remains present for admission.
+    let response = router
+        .oneshot(
+            Request::delete(format!("/internal/v1/dns/connections/{ID}"))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(r#"{"expectedRevision":1}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+    assert!(runtime.dns_connections.list().await.unwrap().is_empty());
+}
+
 fn with_csr(mut order: ManualDnsOrder, domains: Vec<String>) -> ManualDnsOrder {
     let key = rcgen::KeyPair::generate().unwrap();
     let csr = rcgen::CertificateParams::new(domains)

@@ -6,6 +6,7 @@ import {
     dockerEventSchema,
     responseObjectSchema,
 } from './responses.validation.ts'
+import { runtimeResourceProbeSource } from './resource-probe.ts'
 import { runSmokeProcess } from '../smoke/process.ts'
 import { waitForSmoke } from '../smoke/wait.ts'
 import type { CommandOptions, FixtureResult, ReliabilityContext } from './Types/harness.types.ts'
@@ -14,6 +15,7 @@ import assert from 'node:assert/strict'
 import { dockerBuildDiagnostic } from '../smoke/docker-build-diagnostics.ts'
 import { pebbleFailureCategories } from './diagnostics.ts'
 import { randomBytes } from 'node:crypto'
+import { isIPv4 } from 'node:net'
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -23,6 +25,7 @@ import { sharedSmokeImage } from '../smoke/images.ts'
 import { smokeCompose, smokeDockerArguments, smokeRunScope } from '../smoke/resources.ts'
 import type { ReliabilityCheck, ReliabilityOptions, ResourceSample } from './Types/control.types.ts'
 import { fixtureTransport } from './fixture-transport.config.ts'
+import { TLS_TEST_CA } from '../../web/src/tests/server/Notifications/Types/tls-test.types.ts'
 import {
     caddyTransportErrors,
     createTrafficObserver,
@@ -32,7 +35,7 @@ import type { FixtureControl, TrafficDiagnostic } from './Types/fixture-transpor
 
 export class ReliabilityError extends Error {
     constructor(
-        readonly category: 'command' | 'timeout' | 'assertion' | 'telemetry',
+        readonly category: 'command' | 'timeout' | 'assertion' | 'telemetry' | 'cancelled',
         label: string,
     ) {
         super(label)
@@ -43,6 +46,46 @@ const pebbleImage =
     'ghcr.io/letsencrypt/pebble:2.10.1@sha256:ddf230642b1a584f519f32e347de1b05a6e4c1f6c35c1863b33effeab5f78199'
 const healthcheck = '/opt/rentnerproxy/web/docker/web/healthcheck.ts'
 const repositoryRoot = resolve(import.meta.dir, '../..')
+
+/** Preserve ordinary harness networking unless the caller explicitly requests an egress-isolated fixture. */
+export function reliabilityNetworkArguments(network: string, internalNetwork = false): string[] {
+    return ['network', 'create', ...(internalNetwork ? ['--internal'] : []), network]
+}
+
+/** Only the two controlled boundary inventory SANs may join this owned fixture's DNS. */
+export function createFixtureDnsAddressUpdater(domain: string, addresses: Map<string, string>) {
+    assert.match(
+        domain,
+        /^reliability-[a-f0-9]{12}\.example\.com$/u,
+        'Owned DNS fixture domain required',
+    )
+    const registered = new Set<string>()
+    return (address: string, aliases: readonly string[] = []) => {
+        assert.ok(isIPv4(address), 'Owned appliance must have an IPv4 address')
+        assert.ok(aliases.length <= 2, 'At most two boundary DNS aliases are allowed')
+        const next = new Set([...registered, ...aliases])
+        assert.ok(next.size <= 2, 'Boundary DNS registration stays bounded across refreshes')
+        const indexes = new Set<string>()
+        for (const alias of next) {
+            assert.ok(
+                alias.length <= 253 && alias.endsWith('-' + domain),
+                'Boundary DNS alias must use the owned fixture suffix',
+            )
+            const prefix = alias.slice(0, -(domain.length + 1))
+            const match = /^bg-(998|999)-(healthy|slow|timeout|failure)$/u.exec(prefix)
+            assert.ok(match, 'Only controlled boundary inventory domains are allowed')
+            assert.ok(
+                !indexes.has(match[1]!),
+                'Only one latency identity per boundary index is allowed',
+            )
+            indexes.add(match[1]!)
+        }
+        // Validate the whole update before mutating even the original A record.
+        for (const alias of aliases) registered.add(alias)
+        addresses.set(domain, address)
+        for (const alias of registered) addresses.set(alias, address)
+    }
+}
 
 export async function stageReliabilityFixtureSources(fixtureRoot: string): Promise<void> {
     for (const relativePath of [
@@ -118,11 +161,13 @@ async function archive(revision: string, destination: string, paths: string[] = 
     await rm(path)
 }
 
+/** Own a uniquely named disposable appliance and its private fixture state, DNS, transport observers, and cleanup handles for bounded reliability scenarios. */
 export async function createHarness(options: ReliabilityOptions, checks: ReliabilityCheck[]) {
     const runId = randomBytes(6).toString('hex')
     if (!process.env.RENTNERPROXY_SMOKE_RUN) process.env.RENTNERPROXY_SMOKE_RUN = 'local-' + runId
     smokeRunScope()
     const prefix = 'rentnerproxy-reliability-' + runId
+    const domain = 'reliability-' + runId + '.example.com'
     const container = prefix + '-app'
     const pebble = prefix + '-pebble'
     const upstream = prefix + '-upstream'
@@ -139,6 +184,7 @@ export async function createHarness(options: ReliabilityOptions, checks: Reliabi
     const ownedImages: string[] = sharedHttp3Image ? [] : [http3Image]
     const docker = (args: string[], config?: CommandOptions) => command(['docker', ...args], config)
     const dns = await startCertificateDnsFixture(randomBytes(16).toString('hex'))
+    const updateDnsAddress = createFixtureDnsAddressUpdater(domain, dns.addresses)
     const traffic = createTrafficObserver()
     let fixtureTlsStarted = false
     let imageIdentity = 'sha256:' + '0'.repeat(64)
@@ -146,7 +192,6 @@ export async function createHarness(options: ReliabilityOptions, checks: Reliabi
     let image = options.image ?? builtImage
     let started = false
     const eventStart = Math.floor(Date.now() / 1000)
-    const domain = 'reliability-' + runId + '.example.com'
     function check(name: ReliabilityCheck['name'], label: string) {
         checks.push({ name, passed: true })
         console.log('PASS ' + label)
@@ -296,15 +341,15 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
             )
         }, 'desired revision did not become active')
     }
-    async function refreshDns() {
+    /** Refresh the owned appliance IPv4 address while preserving registered boundary SANs; validate aliases before changing any DNS record. */
+    async function refreshDns(aliases: readonly string[] = []) {
         const address = await docker([
             'inspect',
             '--format',
             '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}',
             container,
         ])
-        assert.match(address, /^\d+\.\d+\.\d+\.\d+$/u)
-        dns.addresses.set(domain, address)
+        updateDnsAddress(address, aliases)
     }
     async function ready() {
         await waitFor(
@@ -436,6 +481,7 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
         fixtureTlsStarted = true
         return fixtureTransport.tlsPort
     }
+    /** Export only allowlisted stages/categories and bounded transport evidence, preserving cancellation while incomplete probes remain explicitly partial. */
     async function captureTrafficDiagnostic(
         stage: string,
         category: string,
@@ -463,6 +509,7 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
                 'timeout',
                 'telemetry',
                 'unexpected',
+                'cancelled',
             ].includes(category)
                 ? category
                 : 'unexpected',
@@ -554,6 +601,10 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
         return evidence
     }
     async function writeCompose() {
+        if (options.backgroundContention)
+            await writeFile(join(temp, 'background-contention-ca.pem'), TLS_TEST_CA, {
+                mode: 0o644,
+            })
         const config = {
             services: {
                 rentnerproxy: {
@@ -573,18 +624,32 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
                         RENTNERPROXY_PROXY_PUBLIC_HTTPS_PORT: '8443',
                         RENTNERPROXY_ACME_TEST_DIRECTORY_URL: 'https://pebble:14000/dir',
                         RENTNERPROXY_ACME_TEST_ROOT_CERT: '/test/pebble.minica.pem',
-                        SMTP_HOST: '127.0.0.1',
+                        SMTP_HOST: options.backgroundContention
+                            ? 'notification-tls.invalid'
+                            : '127.0.0.1',
                         SMTP_PORT: '2525',
-                        SMTP_SECURE: 'false',
+                        SMTP_SECURE: options.backgroundContention ? 'true' : 'false',
                         SMTP_FROM: 'reliability@example.invalid',
                         SMTP_USER: 'reliability',
                         SMTP_PASSWORD: 'fixture-only',
+                        ...(options.backgroundContention
+                            ? { NODE_EXTRA_CA_CERTS: '/test/background-contention-ca.pem' }
+                            : {}),
                     },
                     volumes: [
                         volume + ':/var/lib/rentnerproxy',
                         join(temp, 'pebble.minica.pem') + ':/test/pebble.minica.pem:ro',
+                        ...(options.backgroundContention
+                            ? [
+                                  join(temp, 'background-contention-ca.pem') +
+                                      ':/test/background-contention-ca.pem:ro',
+                              ]
+                            : []),
                     ],
                     networks: ['fixture'],
+                    ...(options.backgroundContention
+                        ? { extra_hosts: ['notification-tls.invalid:127.0.0.1'] }
+                        : {}),
                 },
             },
             volumes: { [volume]: { name: volume, external: true } },
@@ -592,6 +657,7 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
         }
         await writeFile(composeFile, smokeCompose(Bun.YAML.stringify(config)), { mode: 0o600 })
     }
+    /** Restore the owned current-source appliance into a fresh volume, reestablish private fixture ownership, and verify exact durable state and desired revision. */
     async function backupRestore() {
         assert.equal(options.source, 'current')
         const before = await fixture('durability-read')
@@ -642,15 +708,6 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
         ])
         await docker(['cp', statePath, container + ':/tmp/rentnerproxy-reliability-fixture.json'])
         const fixtureStatePath = '/tmp/rentnerproxy-reliability-fixture.json'
-        const copiedOwner = await docker([
-            'exec',
-            container,
-            'stat',
-            '--format=%u:%g:%a',
-            fixtureStatePath,
-        ])
-        assert.match(copiedOwner, /^\d+:\d+:[0-7]{3,4}$/u)
-        console.log('Restored private fixture state owner/mode: ' + copiedOwner)
         // The maintenance fixture runs as root; match its original private file ownership.
         await docker(['exec', container, 'chown', '0:0', fixtureStatePath])
         await docker([
@@ -664,6 +721,7 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
             await docker(['exec', container, 'stat', '--format=%u:%g:%a', fixtureStatePath]),
             '0:0:600',
         )
+        console.log('Restored fixture state verified private (owner 0:0, mode 600)')
         await ready()
         const after = await fixture('durability-read')
         assert.deepEqual(after.durableCounts, before.durableCounts)
@@ -690,6 +748,7 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
             traffic.recordFailure({ route, status, hostFetchCode: null })
         },
         startFixtureTls,
+        refreshDns,
         runId,
         container,
         network,
@@ -742,7 +801,12 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
                     'Current prebuilt image must identify the exact target revision',
                 )
         }
-        await docker(['network', 'create', network])
+        await docker(reliabilityNetworkArguments(network, options.internalNetwork))
+        if (
+            options.internalNetwork &&
+            (await docker(['network', 'inspect', '--format', '{{.Internal}}', network])) !== 'true'
+        )
+            throw new ReliabilityError('assertion', 'Internal fixture network isolation not proven')
         await docker(['volume', 'create', volume])
         const transportBundle = join(temp, 'fixture-transport.js')
         await command([
@@ -917,20 +981,14 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
     }
     let previousCpu: { usage: number; time: number } | undefined
     async function resources(elapsedSeconds: number): Promise<ResourceSample> {
-        const script = `import { readdir, readFile } from 'node:fs/promises';
+        const script = `${runtimeResourceProbeSource()}
+const {readFile}=await import('node:fs/promises');
 const text = p => readFile(p,'utf8');
-let webFds=0, controllerFds=0, caddyFds=0;
-for(const pid of await readdir('/proc')) { if(!/^\\d+$/.test(pid)||Number(pid)===process.pid) continue; try {
-const name=(await text('/proc/'+pid+'/comm')).trim();
-let kind=name==='caddy'?'caddy':name==='rentnerproxy-co'?'controller':undefined;
-if(name==='bun' && (await text('/proc/'+pid+'/cmdline')).includes('/docker/web/serve.ts')) kind='web';
-if(kind) { const count=(await readdir('/proc/'+pid+'/fd')).length; if(kind==='web')webFds+=count; if(kind==='controller')controllerFds+=count; if(kind==='caddy')caddyFds+=count; }
-} catch {} }
 const memory=Number(await text('/sys/fs/cgroup/memory.current'));
 const stat=await text('/sys/fs/cgroup/memory.stat');
 const inactive=Number(stat.match(/^inactive_file (\\d+)/m)?.[1]??0);
 const cpu=Number((await text('/sys/fs/cgroup/cpu.stat')).match(/^usage_usec (\\d+)/m)?.[1]);
-console.log(JSON.stringify({memoryBytes:Math.max(0,memory-inactive),pids:Number(await text('/sys/fs/cgroup/pids.current')),usage:cpu,webFds,controllerFds,caddyFds}));`
+console.log(JSON.stringify({...processResources,cgroupMemoryCurrentBytes:memory,memoryBytes:Math.max(0,memory-inactive),pids:Number(await text('/sys/fs/cgroup/pids.current')),usage:cpu}));`
         const metrics = JSON.parse(
             await docker(['exec', container, 'bun', '--no-env-file', '-e', script]),
         ) as Record<string, number>
@@ -990,6 +1048,10 @@ console.log(JSON.stringify({memoryBytes:Math.max(0,memory-inactive),pids:Number(
             elapsedSeconds,
             phase: 'quiescent',
             memoryBytes: metrics.memoryBytes!,
+            cgroupMemoryCurrentBytes: metrics.cgroupMemoryCurrentBytes!,
+            webRssBytes: metrics.webRssBytes ?? null,
+            controllerRssBytes: metrics.controllerRssBytes ?? null,
+            caddyRssBytes: metrics.caddyRssBytes ?? null,
             cpuPercent,
             pids: metrics.pids!,
             postgresConnections,
@@ -1023,6 +1085,22 @@ console.log(JSON.stringify({memoryBytes:Math.max(0,memory-inactive),pids:Number(
         },
         setAuthMode(value: 'allow' | 'deny' | 'unavailable') {
             return fixtureControl({ authMode: value })
+        },
+        /** Read bounded upstream receipt evidence through the private fixture control endpoint; return unknown data for caller schema validation. */
+        async backgroundReceipts() {
+            return JSON.parse(
+                await docker(
+                    [
+                        'exec',
+                        upstream,
+                        'bun',
+                        '--no-env-file',
+                        '-e',
+                        `const r=await fetch('http://127.0.0.1:${fixtureTransport.controlPort}/background-receipts',{signal:AbortSignal.timeout(3000)});if(!r.ok)process.exit(1);process.stdout.write(await r.text())`,
+                    ],
+                    { timeoutMs: 5000 },
+                ),
+            ) as unknown
         },
     }
 }

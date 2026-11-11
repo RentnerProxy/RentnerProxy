@@ -114,8 +114,12 @@ export async function enrollCrowdSecConsole(
     return 'unavailable'
 }
 
-export async function getCrowdSecRuntimeStatus(): Promise<CrowdSecRuntimeStatus | null> {
+/** Pass caller cancellation into the bounded privileged status read; malformed controller snapshots remain unavailable rather than usable runtime evidence. */
+export async function getCrowdSecRuntimeStatus(
+    signal?: AbortSignal,
+): Promise<CrowdSecRuntimeStatus | null> {
     const payload = await controllerRequest('/internal/v1/crowdsec/status', {
+        ...(signal ? { signal } : {}),
         timeoutMs: CROWDSEC_STATUS_TIMEOUT_MS,
         privileged: true,
     })
@@ -153,10 +157,13 @@ export async function getCrowdSecDashboard(
     return result.data
 }
 
+/** Apply with the bounded controller deadline and caller cancellation; external credentials use confidential transport and malformed results remain unavailable. */
 export async function applyCrowdSecConfiguration(
     request: CrowdSecControllerRequest,
+    signal?: AbortSignal,
 ): Promise<CrowdSecRuntimeStatus | null> {
     const payload = await controllerRequest('/internal/v1/crowdsec/config', {
+        ...(signal ? { signal } : {}),
         timeoutMs: CROWDSEC_APPLY_TIMEOUT_MS,
         privileged: true,
         confidential: request.mode === 'external',

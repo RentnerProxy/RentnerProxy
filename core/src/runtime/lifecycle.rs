@@ -429,6 +429,7 @@ impl ProxyRuntime {
 
     /// Signals background subsystems to reject new work before the bounded shutdown drains them.
     pub(crate) fn begin_shutdown(&self) {
+        self.background_jobs.stop_accepting();
         self.stopping.store(true, Ordering::SeqCst);
         self.background.stopping();
         self.ddns_automation.stop_accepting();
@@ -442,12 +443,17 @@ impl ProxyRuntime {
     }
 
     /// Stops workers and the engine within the caller's single shutdown deadline.
+    ///
+    /// Background jobs share a phase capped at three seconds; overdue async jobs
+    /// are aborted, but blocking I/O already started by them may continue. The
+    /// remaining deadline bounds apply-lock draining and engine shutdown.
     pub(crate) async fn shutdown_until(&self, deadline: Instant) {
         self.begin_shutdown();
         // Background workers share a short phase, leaving the rest of the one
         // signal-time deadline for Caddy, including its forced-reap reserve.
         let workers_deadline = (Instant::now() + Duration::from_secs(3)).min(deadline);
         tokio::join!(
+            self.background_jobs.stop_until(workers_deadline),
             self.docker_discovery.stop_until(workers_deadline),
             self.stop_ddns_scheduler_until(workers_deadline),
         );

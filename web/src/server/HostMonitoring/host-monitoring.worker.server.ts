@@ -3,7 +3,10 @@ import { HOST_MONITORING_LIMITS } from '@/config/host-monitoring.config.ts'
 import { observeWorkerOperation } from '@/server/Foundation/worker-operation.ts'
 import { workerObservability } from '@/server/Foundation/worker-observability.ts'
 import { inspectControllerDomain } from '@/server/Controller/domain-diagnostics.server.ts'
-import { publishApplicationChange } from '@/server/WebSockets/applicationChanges.ts'
+import {
+    publishApplicationChange,
+    subscribeToApplicationChanges,
+} from '@/server/WebSockets/applicationChanges.ts'
 import { createHostMonitoringBatcher } from './host-monitoring.batch.ts'
 import { createHostMonitoringWorker } from './host-monitoring.worker.ts'
 import { createHostMonitoringProbe } from './host-monitoring.probe.ts'
@@ -12,8 +15,9 @@ import {
     claimDueHostMonitoringPolicies,
     completeHostMonitoringClaims,
     readHostMonitoringClaimContexts,
-    releaseHostMonitoringClaim,
+    releaseHostMonitoringClaims,
     pruneHostMonitoringHistory,
+    readNextHostMonitoringAdmissionAt,
 } from './host-monitoring.repository.ts'
 import type {
     HostMonitoringClaim,
@@ -37,10 +41,56 @@ const readContext = createHostMonitoringBatcher<
 const complete = createHostMonitoringBatcher<HostMonitoringCompletion, boolean>({
     size: HOST_MONITORING_LIMITS.persistenceBatchSize,
     delayMs: HOST_MONITORING_LIMITS.persistenceDelayMs,
+    /** Publish a change only when a durable batch completion was accepted; rejected or failed writes cannot announce progress. */
     run: async (items) => {
         const results = await completeHostMonitoringClaims(items)
         if (results.some((result) => result.status === 'fulfilled' && result.value))
             publishApplicationChange()
+        return results
+    },
+})
+
+// Coalesce a cancelled 64-probe flight into one fenced transaction within the drain budget.
+const release = createHostMonitoringBatcher<HostMonitoringClaim, boolean>({
+    size: HOST_MONITORING_LIMITS.workerConcurrency,
+    delayMs: 0,
+    /** Keep repeated policies in separate ordered transactions so every old/new token retains its own fence and result. */
+    run: async (claims) => {
+        const batches: HostMonitoringClaim[][] = []
+        let batch: HostMonitoringClaim[] = []
+        let seen = new Set<string>()
+        for (const claim of claims) {
+            if (seen.has(claim.policy.id)) {
+                batches.push(batch)
+                batch = []
+                seen = new Set()
+            }
+            batch.push(claim)
+            seen.add(claim.policy.id)
+        }
+        if (batch.length) batches.push(batch)
+        const results: PromiseSettledResult<boolean>[] = []
+        let released = false
+        for (const current of batches) {
+            try {
+                // oxlint-disable-next-line no-await-in-loop -- A later token for the same policy must follow the earlier fenced release.
+                const values = await releaseHostMonitoringClaims(current)
+                if (values.length !== current.length)
+                    throw new Error('Invalid monitoring release result.')
+                released ||= values.some(Boolean)
+                results.push(
+                    ...values.map((value): PromiseFulfilledResult<boolean> => ({
+                        status: 'fulfilled',
+                        value,
+                    })),
+                )
+            } catch (reason) {
+                results.push(
+                    ...current.map((): PromiseRejectedResult => ({ status: 'rejected', reason })),
+                )
+            }
+        }
+        if (released) publishApplicationChange()
         return results
     },
 })
@@ -54,11 +104,13 @@ export const hostMonitoringWorker = createHostMonitoringWorker({
             () => 'deferred',
             'admission',
         ),
+    /** Count progress only after accepted persistence, treating busy outcomes as deferred and unknown dependency results as failures. */
     runClaim: (claim, signal) => {
         let progress: 'success' | 'failure' | 'deferred' = 'deferred'
         const execute = createHostMonitoringProbe({
             readContext,
             inspect: inspectControllerDomain,
+            /** Persist under the current claim fence before updating progress; admission rejection remains distinct from successful probes. */
             complete: async (current, outcome, before, currentSignal) => {
                 const stored = await complete({
                     claim: current,
@@ -66,23 +118,30 @@ export const hostMonitoringWorker = createHostMonitoringWorker({
                     before,
                     signal: currentSignal,
                 })
-                if (stored) progress = outcome.status === 'unknown' ? 'failure' : 'success'
+                if (stored)
+                    progress =
+                        outcome.code === 'busy'
+                            ? 'deferred'
+                            : outcome.status === 'unknown'
+                              ? 'failure'
+                              : 'success'
                 if (outcome.code === 'busy')
                     workerObservability.count('host_monitoring', 'admissionRejected')
                 return stored
             },
-            release: releaseHostMonitoringClaim,
+            release,
         })
         return observeWorkerOperation(
             'host_monitoring',
             () => execute(claim, signal),
             signal,
-            () => progress,
+            () => ({ outcome: progress, recoverLane: progress !== 'deferred' }),
         )
     },
     releaseCancelled: async (claim) => {
-        await releaseHostMonitoringClaim(claim)
+        await release(claim)
     },
+    /** Observe retention independently from probe execution, then refresh queue evidence after successful pruning. */
     prune: async () => {
         await observeWorkerOperation(
             'host_monitoring',
@@ -93,6 +152,8 @@ export const hostMonitoringWorker = createHostMonitoringWorker({
         )
         await sampleHostMonitoringBacklog()
     },
+    nextAdmissionAt: readNextHostMonitoringAdmissionAt,
+    subscribe: subscribeToApplicationChanges,
     unavailable: () =>
         console.warn('[host-monitoring] Worker temporarily unavailable.', {
             retryMs: HOST_MONITORING_LIMITS.pollIntervalMs,

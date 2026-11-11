@@ -246,6 +246,97 @@ async fn begin_delegated(runtime: &ProxyRuntime) -> String {
         .id
 }
 
+/// Accepts delegated cancellation while failure settlement waits for storage admission.
+/// Only a persisted cancellation counts as cancelled; failed metadata replacement
+/// remains a failure and releases the observed pass.
+#[test]
+fn late_delegated_cancellation_uses_settled_store_outcome() {
+    if !isolated("late_delegated_cancellation_uses_settled_store_outcome") {
+        return;
+    }
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for persist in [true, false] {
+                let runtime = runtime().await;
+                let operation_id = begin_delegated(&runtime).await;
+                let (entered, started) = tokio::sync::oneshot::channel();
+                let (release, blocked) = std::sync::mpsc::channel();
+                let storage_runtime = Arc::clone(&runtime);
+                let storage = tokio::spawn(async move {
+                    storage_runtime
+                        .storage(move |_| {
+                            entered.send(()).unwrap();
+                            blocked.recv().unwrap();
+                        })
+                        .await
+                        .unwrap();
+                });
+                timeout(Duration::from_secs(3), started)
+                    .await
+                    .unwrap()
+                    .unwrap();
+
+                let pass = runtime.background.begin(Worker::Orders);
+                let mut finish = Box::pin(runtime.finish_failed_acme_issue(
+                    ID,
+                    Some(CertificateError::AcmeFailed),
+                    pass,
+                ));
+                // Poll the failure path into its blocked storage wait before accepting
+                // cancellation. No cancellation snapshot taken before that wait is valid.
+                std::future::poll_fn(|context| {
+                    assert!(finish.as_mut().poll(context).is_pending());
+                    std::task::Poll::Ready(())
+                })
+                .await;
+                runtime
+                    .certificate_store
+                    .request_delegated_cancel(ID, &operation_id)
+                    .await
+                    .unwrap();
+                if !persist {
+                    let path = runtime
+                        .settings
+                        .state_dir
+                        .join("certificates/certificate-metadata.json");
+                    std::fs::remove_file(&path).unwrap();
+                    std::fs::create_dir(&path).unwrap();
+                }
+                release.send(()).unwrap();
+                timeout(Duration::from_secs(3), finish).await.unwrap();
+                storage.await.unwrap();
+
+                let observed = serde_json::to_value(runtime.background.snapshot()).unwrap();
+                let orders = &observed["workers"][4];
+                assert_eq!(orders["id"], "acme_orders");
+                assert_eq!(orders["cancellations"], u64::from(persist));
+                assert_eq!(orders["failures"], u64::from(!persist));
+                assert_eq!(orders["runningCount"], 0);
+                if persist {
+                    let metadata = runtime.certificate_store.get(ID).await.unwrap();
+                    assert_eq!(metadata.last_error_code.as_deref(), Some("acme_cancelled"));
+                    assert_eq!(
+                        metadata.current_operation.unwrap().stage,
+                        crate::runtime::certificates::CertificateOperationStage::Cancelled
+                    );
+                    let restarted = crate::runtime::certificates::CertificateStore::new(
+                        runtime.settings.state_dir.clone(),
+                    );
+                    restarted.initialize().await.unwrap();
+                    assert_eq!(
+                        restarted.get(ID).await.unwrap().last_error_code.as_deref(),
+                        Some("acme_cancelled")
+                    );
+                }
+            }
+        });
+}
+
+/// Cancels after a provider has accepted a write, proving the operation retains authority until
+/// that write finishes and its exact committed proof can be cleaned up.
 #[test]
 fn cancellation_waits_for_accepted_provider_post_then_cleans_its_committed_value() {
     if !isolated("cancellation_waits_for_accepted_provider_post_then_cleans_its_committed_value") {
@@ -261,12 +352,13 @@ fn cancellation_waits_for_accepted_provider_post_then_cleans_its_committed_value
             let proof = intent();
             let fixture = Fixture::new(false, &proof).await;
             let provider = fixture.provider();
+            let pass = runtime.background.begin(Worker::Orders);
             let write_runtime = runtime.clone();
             let write_provider = provider.clone();
             let write = tokio::spawn(async move {
                 let mut intents = Vec::new();
                 let result = super::super::delegated::present(
-                    &write_runtime.certificate_store,
+                    &write_runtime,
                     ID,
                     &write_provider,
                     &mut intents,
@@ -315,9 +407,16 @@ fn cancellation_waits_for_accepted_provider_post_then_cleans_its_committed_value
                 intents
             );
             runtime
-                .certificate_store
-                .finish_failed(ID, CertificateError::AcmeCancelled)
+                .finish_failed_acme_issue(ID, Some(CertificateError::AcmeCancelled), pass)
                 .await;
+            let observed = serde_json::to_value(runtime.background.snapshot()).unwrap();
+            let orders = &observed["workers"][4];
+            assert_eq!(orders["id"], "acme_orders");
+            assert_eq!(orders["cancellations"], 1);
+            // The fixture deliberately lacks the saved connection: only that real cleanup
+            // failure degrades Orders; cancellation must not add another failed pass.
+            assert_eq!(orders["failures"], 1);
+            assert_eq!(orders["runningCount"], 0);
             runtime
                 .cleanup_dns_challenges(ID, &provider, &intents)
                 .await
@@ -335,6 +434,8 @@ fn cancellation_waits_for_accepted_provider_post_then_cleans_its_committed_value
         });
 }
 
+/// Leaves a provider write outcome uncertain and verifies its persisted authority survives until
+/// a later committed proof can be removed without replaying the original write.
 #[test]
 fn uncertain_provider_write_retains_authority_until_late_commit_can_be_cleaned() {
     if !isolated("uncertain_provider_write_retains_authority_until_late_commit_can_be_cleaned") {
@@ -352,14 +453,8 @@ fn uncertain_provider_write_retains_authority_until_late_commit_can_be_cleaned()
             let provider = fixture.provider();
             let mut intents = Vec::new();
             assert_eq!(
-                super::super::delegated::present(
-                    &runtime.certificate_store,
-                    ID,
-                    &provider,
-                    &mut intents,
-                    proof
-                )
-                .await,
+                super::super::delegated::present(&runtime, ID, &provider, &mut intents, proof)
+                    .await,
                 Err(CertificateError::DnsProviderUnavailable)
             );
             assert_eq!(intents.len(), 1);
@@ -405,6 +500,8 @@ fn uncertain_provider_write_retains_authority_until_late_commit_can_be_cleaned()
         });
 }
 
+/// Restarts with an unresolved provider write and verifies later cleanup remains possible when
+/// the remote proof finally becomes visible.
 #[test]
 fn unknown_write_allows_later_proof_cleanup_and_survives_restart_until_late_commit() {
     if !isolated("unknown_write_allows_later_proof_cleanup_and_survives_restart_until_late_commit")
@@ -418,7 +515,7 @@ fn unknown_write_allows_later_proof_cleanup_and_survives_restart_until_late_comm
         let fixture = Fixture::new(true, &proof).await;
         let provider = fixture.provider();
         let mut journal = Vec::new();
-        assert_eq!(super::super::delegated::present(&runtime.certificate_store, ID, &provider, &mut journal, proof).await,
+        assert_eq!(super::super::delegated::present(&runtime, ID, &provider, &mut journal, proof).await,
             Err(CertificateError::DnsProviderUnavailable));
         let retained = journal.clone();
         assert!(retained[0].unconfirmed_write);
@@ -431,7 +528,7 @@ fn unknown_write_allows_later_proof_cleanup_and_survives_restart_until_late_comm
         fixture.state.release_post.add_permits(1);
         let mut newer = intent();
         newer.value = "newer-stored-attempt-proof".to_owned();
-        super::super::delegated::present(&runtime.certificate_store, ID, &provider, &mut journal, newer.clone()).await.unwrap();
+        super::super::delegated::present(&runtime, ID, &provider, &mut journal, newer.clone()).await.unwrap();
         assert_eq!(journal.len(), 2);
         assert_eq!(journal[0], retained[0]);
         assert_eq!(journal[1], newer);
@@ -541,6 +638,8 @@ fn unrelated_read_or_confirmed_cleanup_failure_blocks_later_attempt() {
     });
 }
 
+/// Reuses an unresolved proof identity and checks that neither another provider write nor a
+/// duplicate cleanup-journal entry is created for it.
 #[test]
 fn unresolved_exact_same_proof_is_not_replayed_or_added_to_journal() {
     if !isolated("unresolved_exact_same_proof_is_not_replayed_or_added_to_journal") {
@@ -557,26 +656,14 @@ fn unresolved_exact_same_proof_is_not_replayed_or_added_to_journal() {
             let provider = fixture.provider();
             let mut journal = Vec::new();
             assert_eq!(
-                super::super::delegated::present(
-                    &runtime.certificate_store,
-                    ID,
-                    &provider,
-                    &mut journal,
-                    intent()
-                )
-                .await,
+                super::super::delegated::present(&runtime, ID, &provider, &mut journal, intent())
+                    .await,
                 Err(CertificateError::DnsProviderUnavailable)
             );
             let original = journal.clone();
             assert_eq!(
-                super::super::delegated::present(
-                    &runtime.certificate_store,
-                    ID,
-                    &provider,
-                    &mut journal,
-                    intent()
-                )
-                .await,
+                super::super::delegated::present(&runtime, ID, &provider, &mut journal, intent())
+                    .await,
                 Err(CertificateError::DnsCleanupFailed)
             );
             assert_eq!(journal, original);
@@ -678,6 +765,20 @@ fn cleanup_recovery_keeps_authority_when_connection_is_missing_and_releases_work
                     .await
                     .unwrap()
                     .is_some()
+            );
+            let observed_before = serde_json::to_value(runtime.background.snapshot()).unwrap();
+            runtime.recover_dns_cleanup_one(ID).await;
+            let observed_after = serde_json::to_value(runtime.background.snapshot()).unwrap();
+            let orders_before = &observed_before["workers"][4];
+            let orders_after = &observed_after["workers"][4];
+            assert_eq!(orders_after["id"], "acme_orders");
+            assert_eq!(orders_after["failures"], orders_before["failures"]);
+            assert_eq!(orders_after["successes"], orders_before["successes"]);
+            assert_eq!(orders_after["runningCount"], 0);
+            assert_eq!(
+                runtime.certificate_store.begin_dns_cleanup(ID).await,
+                Err(CertificateError::OperationInProgress),
+                "a competing cleanup pass must not release the owner's live lease"
             );
             runtime.certificate_store.finish_dns_cleanup(ID).await;
             runtime.recover_dns_cleanup().await;

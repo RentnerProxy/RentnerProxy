@@ -118,6 +118,16 @@ impl AcmeHttpClient {
 }
 
 impl HttpClient for AcmeHttpClient {
+    /// Sends a bounded ACME request to the configured HTTPS origin.
+    ///
+    /// The returned future owns transport/runtime handles independently of this borrow.
+    /// Persists actionable retry deadlines through bounded store operations before
+    /// reading the response, and observes successful order expiry data when enabled.
+    /// Dropping the future cannot undo a request already accepted by the server.
+    ///
+    /// # Errors
+    /// Returns transport errors for invalid origin/body size, request or response failures,
+    /// or retry-deadline persistence failure; preserves ACME status and headers on success.
     fn request(
         &self,
         request: Request<BodyWrapper<Bytes>>,
@@ -171,18 +181,12 @@ impl HttpClient for AcmeHttpClient {
                 && let Some(deadline) = parse_retry_after(&headers, OffsetDateTime::now_utc())
             {
                 if retry_after_is_account_scoped(status) {
-                    runtime
-                        .certificate_store
-                        .defer_acme_account_retry(environment, deadline)
-                        .await
+                    acme_store!(runtime; [environment, deadline]; store => store.defer_acme_account_retry(environment, deadline))
                         .map_err(|_| {
                             other_error("unable to persist ACME account retry deadline")
                         })?;
                 }
-                runtime
-                    .certificate_store
-                    .defer_acme_retry(&certificate_id, deadline)
-                    .await
+                acme_store!(runtime; [certificate_id, deadline]; store => store.defer_acme_retry(&certificate_id, deadline))
                     .map_err(|_| other_error("unable to persist ACME retry deadline"))?;
             }
             let bytes = read_bounded_body(response).await?;

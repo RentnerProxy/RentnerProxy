@@ -9,6 +9,8 @@ import (
 	"testing"
 )
 
+// fixture returns an otherwise-valid build record for the selected binary so a
+// test can isolate the compiler, dependency or build-setting policy it mutates.
 func fixture(profile string) *debug.BuildInfo {
 	info := &debug.BuildInfo{GoVersion: "go1.27.3"}
 	if profile == "caddy" {
@@ -36,6 +38,29 @@ func fixture(profile string) *debug.BuildInfo {
 	return info
 }
 
+// TestCompilerPolicy verifies that each binary accepts its own pinned compiler
+// and rejects the other profile's compiler rather than sharing one global pin.
+func TestCompilerPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		profile string
+		version string
+		valid   bool
+	}{
+		{"caddy", "go1.27.4", true},
+		{"caddy", "go1.27.3", false},
+		{"crowdsec", "go1.27.3", true},
+		{"crowdsec", "go1.27.4", false},
+	} {
+		t.Run(tc.profile+"/"+tc.version, func(t *testing.T) {
+			info := fixture(tc.profile)
+			info.GoVersion = tc.version
+			if err := validate(tc.profile, info); (err == nil) != tc.valid {
+				t.Fatalf("validate compiler %s: got %v, want valid=%v", tc.version, err, tc.valid)
+			}
+		})
+	}
+}
+
 func TestPolicies(t *testing.T) {
 	for _, profile := range []string{"caddy", "crowdsec"} {
 		t.Run(profile, func(t *testing.T) {
@@ -43,14 +68,7 @@ func TestPolicies(t *testing.T) {
 				t.Fatal(err)
 			}
 			cases := map[string]func(*debug.BuildInfo){
-				"compiler": func(i *debug.BuildInfo) { i.GoVersion = "go1.27.1" },
-				"other profile compiler": func(i *debug.BuildInfo) {
-					if profile == "caddy" {
-						i.GoVersion = "go1.27.3"
-					} else {
-						i.GoVersion = "go1.27.4"
-					}
-				},
+				"compiler":             func(i *debug.BuildInfo) { i.GoVersion = "go1.27.1" },
 				"missing dependency":   func(i *debug.BuildInfo) { i.Deps = i.Deps[1:] },
 				"duplicate dependency": func(i *debug.BuildInfo) { i.Deps = append(i.Deps, i.Deps[0]) },
 				"missing CGO":          func(i *debug.BuildInfo) { i.Settings = i.Settings[1:] },

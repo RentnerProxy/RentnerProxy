@@ -1,10 +1,10 @@
 use super::{Error, Registry, Store};
-use tokio::sync::MutexGuard;
+use tokio::sync::OwnedMutexGuard;
 
 // The registry guard fences credential rotation, zone removal and deletion for
 // the complete read/modify/verify sequence of one selected DNS record.
-pub(in crate::runtime) struct RecordAccess<'a> {
-    _state: MutexGuard<'a, Option<Registry>>,
+pub(in crate::runtime) struct RecordAccess {
+    _state: OwnedMutexGuard<Option<Registry>>,
     pub(in crate::runtime) zone_name: String,
     pub(in crate::runtime) provider: crate::runtime::dns::capabilities::ProviderId,
     pub(in crate::runtime) token: String,
@@ -41,6 +41,10 @@ impl Store {
         }
     }
 
+    /// Finds a verified connection matching a legacy provider, zone and token.
+    ///
+    /// Unreadable candidate tokens are skipped so optional adoption does not block
+    /// unrelated connections; registry and provider-metadata errors still propagate.
     pub(in crate::runtime) async fn matching_connection(
         &self,
         config: &crate::runtime::dns::DnsProviderConfig,
@@ -54,7 +58,10 @@ impl Store {
             // without blocking unrelated accounts. Explicit use still fails closed.
             if super::resolve_provider(None, Some(entry))? == config.provider_id()
                 && entry.metadata.verified_for(zone_id)
-                && self.decrypt(entry).is_ok_and(|stored| stored == token)
+                && self
+                    .decrypt(entry)
+                    .await
+                    .is_ok_and(|stored| stored == token)
             {
                 return Ok(Some(crate::runtime::dns::DnsProviderConfig::Connection {
                     provider: config.provider_id(),
@@ -66,11 +73,15 @@ impl Store {
         Ok(None)
     }
 
+    /// Returns decrypted zone access together with an owned registry guard.
+    ///
+    /// Retaining the result fences credential rotation, zone removal and deletion
+    /// through a record operation. Missing zones and unreadable credentials fail closed.
     pub(in crate::runtime) async fn record_access(
         &self,
         connection: &str,
         zone: &str,
-    ) -> Result<RecordAccess<'_>, Error> {
+    ) -> Result<RecordAccess, Error> {
         let mut state = self.lock().await?;
         let entry = Self::registry(&mut state)?
             .connections
@@ -86,7 +97,7 @@ impl Store {
             .name
             .clone();
         let provider = super::resolve_provider(None, Some(entry))?;
-        let token = self.decrypt(entry)?;
+        let token = self.decrypt(entry).await?;
         Ok(RecordAccess {
             _state: state,
             zone_name,

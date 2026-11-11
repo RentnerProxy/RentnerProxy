@@ -14,6 +14,8 @@ import {
     planBackupAuditBatch,
 } from '@/server/Admin/Backups/backup-outcomes.ts'
 import { createBackupAuditWorker } from '@/server/Admin/Backups/backup-outcomes.worker.ts'
+import { createResourceAdmission } from '@/server/Foundation/resource-admission.ts'
+import { BACKGROUND_DATABASE_POLICY } from '@/config/background-resources.config.ts'
 import type {
     BackupAuditCursor,
     BackupAuditDependencies,
@@ -98,7 +100,7 @@ function persistence(
                     draft = structuredClone(nextCursor)
                 },
             })
-            if (failCommit) throw new Error('commit unavailable')
+            if (failCommit && rows.length > 0) throw new Error('commit unavailable')
             cursor = draft
             queue = draftQueue
             audit.push(...rows)
@@ -207,8 +209,118 @@ test('concurrent workers and process restart share durable cursor without duplic
     expect(await Promise.all([first(freshSignal()), second(freshSignal())])).toEqual([2, 0])
     expect(await createBackupAuditIngestor(dependencies)(freshSignal())).toBe(0)
     expect(store.audit()).toHaveLength(2)
-    expect(reads).toBe(3)
+    expect(reads).toBe(4)
     expect(store.cursor()).toEqual({ storeId, sequence: 2 })
+})
+
+test('a root status read longer than the SQL deadline releases housekeeping for other owners', async () => {
+    const store = persistence()
+    const admission = createResourceAdmission(BACKGROUND_DATABASE_POLICY.classes.housekeeping)
+    const reading = Promise.withResolvers<void>()
+    const ingest = createBackupAuditIngestor({
+        transaction: (run) => admission.run(() => store.transaction(run)),
+        status: async () => {
+            expect(admission.snapshot().running).toBe(0)
+            reading.resolve()
+            await Bun.sleep(BACKGROUND_DATABASE_POLICY.classes.housekeeping.transactionMs + 50)
+            return snapshot([event(1)])
+        },
+        acknowledge: async () => {},
+    })
+    const pending = ingest(freshSignal())
+    await reading.promise
+    expect(await admission.run(async () => 'retention progressed')).toBe('retention progressed')
+    expect(await pending).toBe(1)
+    expect(store.cursor()).toEqual({ storeId, sequence: 1 })
+    expect(admission.snapshot()).toMatchObject({ running: 0, pending: 0, deadline: 0 })
+})
+
+test('a delayed old-store snapshot cannot overtake a committed replacement store', async () => {
+    const store = persistence(notificationConfiguration)
+    const reading = Promise.withResolvers<void>()
+    const finish = Promise.withResolvers<void>()
+    const acknowledged: string[] = []
+    let reads = 0
+    const oldConsumer = createBackupAuditIngestor({
+        transaction: store.transaction,
+        status: async () => {
+            if (++reads === 1) {
+                reading.resolve()
+                await finish.promise
+                return snapshot([event(1)])
+            }
+            return snapshot([event(1)], actorId)
+        },
+        acknowledge: async (cursor) => {
+            acknowledged.push(cursor.storeId)
+        },
+    })
+    const pending = oldConsumer(freshSignal())
+    await reading.promise
+    const newConsumer = createBackupAuditIngestor({
+        transaction: store.transaction,
+        status: async () => snapshot([event(1)], actorId),
+        acknowledge: async (cursor) => {
+            acknowledged.push(cursor.storeId)
+        },
+    })
+    expect(await newConsumer(freshSignal())).toBe(1)
+    finish.resolve()
+    expect(await pending).toBe(0)
+    expect(reads).toBe(2)
+    expect(store.cursor()).toEqual({ storeId: actorId, sequence: 1 })
+    expect(store.audit()).toHaveLength(1)
+    expect(store.queue().deliveries).toHaveLength(1)
+    expect(acknowledged).toEqual([actorId, actorId])
+})
+
+test('cursor contention retries one fresh snapshot and never acknowledges a stale read', async () => {
+    const store = persistence(undefined, { storeId, sequence: 0 })
+    let reads = 0
+    let acknowledgements = 0
+    const ingest = createBackupAuditIngestor({
+        transaction: store.transaction,
+        status: async () => {
+            reads++
+            await store.transaction(async (transaction) => {
+                await transaction.save({ storeId, sequence: transaction.cursor.sequence + 1 })
+            })
+            return snapshot([event(1)])
+        },
+        acknowledge: async () => {
+            acknowledgements++
+        },
+    })
+    await expect(ingest(freshSignal())).rejects.toThrow('Backup audit cursor changed')
+    expect(reads).toBe(2)
+    expect(acknowledgements).toBe(0)
+    expect(store.audit()).toHaveLength(0)
+})
+
+test('a restore marker installed during a status read requires a fresh root snapshot', async () => {
+    const store = persistence()
+    let reads = 0
+    const acknowledged: number[] = []
+    const ingest = createBackupAuditIngestor({
+        transaction: store.transaction,
+        status: async () => {
+            if (++reads === 1) {
+                await store.transaction(async (transaction) => {
+                    await transaction.save({ storeId: null, sequence: 0, restorePending: true })
+                })
+                return snapshot([event(1)])
+            }
+            return snapshot([event(151)])
+        },
+        acknowledge: async (cursor) => {
+            acknowledged.push(cursor.sequence)
+        },
+    })
+    expect(await ingest(freshSignal())).toBe(1)
+    expect(reads).toBe(2)
+    expect(store.cursor()).toEqual({ storeId, sequence: 151 })
+    expect(store.audit()).toHaveLength(1)
+    expect(acknowledged).toEqual([151])
 })
 
 test.each(['append', 'save', 'commit'] as const)(

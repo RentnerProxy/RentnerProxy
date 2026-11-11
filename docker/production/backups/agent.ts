@@ -512,7 +512,7 @@ export async function startBackupAgent() {
         write: async (state) => {
             await writePrivateJson(stateFile, state)
             try {
-                await writeMaintenanceProgress(state.maintenance ?? null)
+                await writeMaintenanceProgress(state.maintenance ?? null, state.maintenanceRequests)
             } catch (error) {
                 fatal = true
                 throw error
@@ -672,7 +672,8 @@ export async function startBackupAgent() {
         await reconcileBackupControl(status.jobs, phase, io, status.maintenance)
         await reconcileBackupArtifacts(status.jobs)
     }
-    await writeMaintenanceProgress((await engine.status()).maintenance ?? null)
+    const state = await loadManagedBackupState()
+    await writeMaintenanceProgress(state?.maintenance ?? null, state?.maintenanceRequests)
     await reconcileCompletedWork('startup')
     const socket = join(controlRoot, 'agent.sock')
     const server = createBackupAgentServer(socket, createBackupAgentHandler(engine, offHost))

@@ -4,6 +4,7 @@ mod access;
 mod desec;
 mod hetzner;
 mod models;
+mod persistence;
 mod references;
 #[cfg(test)]
 mod tests;
@@ -11,10 +12,11 @@ mod validation;
 mod verification;
 
 pub(crate) use super::dns::capabilities::{ProviderId, catalog as provider_catalog};
+#[cfg(test)]
+use super::state::state_dir;
 use super::{
     clock::utc_now,
     dns::{EncryptedDnsConfig, encryption},
-    state::state_dir,
 };
 pub(crate) use models::Metadata;
 pub(crate) use models::{
@@ -22,8 +24,8 @@ pub(crate) use models::{
 };
 use models::{TestResult, ValidatedReference, Zone};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, path::PathBuf};
-use tokio::sync::{Mutex, MutexGuard};
+use std::{path::PathBuf, sync::Arc};
+use tokio::sync::Mutex;
 
 const FILE: &str = "dns-connections.json";
 const MAX_BYTES: usize = 1024 * 1024;
@@ -44,39 +46,66 @@ struct Registry {
 
 pub(crate) struct Store {
     path: PathBuf,
-    state: Mutex<Option<Registry>>,
-    pub(crate) bindings: Mutex<()>,
+    state: Arc<Mutex<Option<Registry>>>,
+    pub(crate) bindings: Arc<Mutex<()>>,
     checks: Mutex<()>,
+    key_io: Arc<Mutex<()>>,
     cleanup_cursor: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
     key: Option<[u8; 32]>,
     #[cfg(test)]
     endpoint: Option<String>,
     #[cfg(test)]
-    fail_after_persist: std::sync::atomic::AtomicBool,
+    fail_after_persist: Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(test)]
+    io_pause: std::sync::Mutex<Option<tests::IoPause>>,
 }
 impl Store {
+    /// Creates a lazily loaded registry with separate registry, binding, check and key locks.
     pub(crate) fn new(path: PathBuf) -> Self {
         Self {
             path,
-            state: Mutex::new(None),
-            bindings: Mutex::new(()),
+            state: Arc::new(Mutex::new(None)),
+            bindings: Arc::new(Mutex::new(())),
             checks: Mutex::new(()),
+            key_io: Arc::new(Mutex::new(())),
             cleanup_cursor: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
             key: None,
             #[cfg(test)]
             endpoint: None,
             #[cfg(test)]
-            fail_after_persist: std::sync::atomic::AtomicBool::new(false),
+            fail_after_persist: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            #[cfg(test)]
+            io_pause: std::sync::Mutex::new(None),
         }
     }
-    fn key(&self) -> Result<[u8; 32], Error> {
+    /// Reads the current installation key on a blocking worker without caching it.
+    ///
+    /// The worker owns the key-I/O lock through completion even if its async waiter
+    /// is cancelled. Key lookup and worker failures become `CredentialsUnavailable`.
+    async fn key(&self) -> Result<[u8; 32], Error> {
+        let guard = Arc::clone(&self.key_io).lock_owned().await;
         #[cfg(test)]
-        if let Some(key) = self.key {
-            return Ok(key);
-        }
-        encryption::encryption_key_from_environment().map_err(|_| Error::CredentialsUnavailable)
+        let key = self.key;
+        #[cfg(test)]
+        let pause = self.io_pause.lock().unwrap().take();
+        tokio::task::spawn_blocking(move || {
+            // The key file may rotate: read on every use, retaining admission
+            // until the read finishes even if the caller has been cancelled.
+            let _guard = guard;
+            #[cfg(test)]
+            if let Some(pause) = pause {
+                pause.wait();
+            }
+            #[cfg(test)]
+            if let Some(key) = key {
+                return Ok(key);
+            }
+            encryption::encryption_key_from_environment().map_err(|_| Error::CredentialsUnavailable)
+        })
+        .await
+        .map_err(|_| Error::CredentialsUnavailable)?
     }
     #[cfg(test)]
     fn endpoint(&self) -> &str {
@@ -101,83 +130,13 @@ impl Store {
         }
         .to_owned())
     }
-    async fn lock(&self) -> Result<MutexGuard<'_, Option<Registry>>, Error> {
-        let mut state = self.state.lock().await;
-        if state.is_none() {
-            *state = Some(self.load()?);
-        }
-        Ok(state)
-    }
-    fn registry<'a>(
-        state: &'a mut MutexGuard<'_, Option<Registry>>,
-    ) -> Result<&'a mut Registry, Error> {
-        state.as_mut().ok_or(Error::StoreUnavailable)
-    }
-    fn load(&self) -> Result<Registry, Error> {
-        let dir = state_dir(&self.path).map_err(|_| Error::StoreUnavailable)?;
-        let bytes = match dir.read_file(FILE, MAX_BYTES) {
-            Ok(bytes) => bytes,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Registry {
-                    version: 1,
-                    connections: vec![],
-                });
-            }
-            Err(_) => return Err(Error::StoreUnavailable),
-        };
-        let registry: Registry =
-            serde_json::from_slice(&bytes).map_err(|_| Error::StoreUnavailable)?;
-        if registry.version != 1 || registry.connections.len() > 100 {
-            return Err(Error::StoreUnavailable);
-        }
-        let mut ids = BTreeSet::new();
-        let mut names = BTreeSet::new();
-        for entry in &registry.connections {
-            validation::metadata(&entry.metadata).map_err(|_| Error::StoreUnavailable)?;
-            verification::validate_pending(entry)?;
-            if !ids.insert(&entry.metadata.id)
-                || !names.insert(entry.metadata.name.to_lowercase())
-                || entry.secret.version != 1
-                || entry.secret.nonce.len() != 12
-                || !(17..=528).contains(&entry.secret.ciphertext.len())
-            {
-                return Err(Error::StoreUnavailable);
-            }
-        }
-        Ok(registry)
-    }
-    fn persist(&self, registry: &Registry) -> Result<(), Error> {
-        let bytes = serde_json::to_vec(registry).map_err(|_| Error::StoreUnavailable)?;
-        if bytes.len() > MAX_BYTES {
-            return Err(Error::StoreUnavailable);
-        }
-        state_dir(&self.path)
-            .and_then(|dir| dir.atomic_write(FILE, &bytes))
-            .map_err(|_| Error::StoreUnavailable)?;
-        #[cfg(test)]
-        if self
-            .fail_after_persist
-            .swap(false, std::sync::atomic::Ordering::SeqCst)
-        {
-            return Err(Error::StoreUnavailable);
-        }
-        Ok(())
-    }
-    fn commit(
-        &self,
-        state: &mut MutexGuard<'_, Option<Registry>>,
-        registry: Registry,
-    ) -> Result<(), Error> {
-        // Replacement may succeed before a later directory sync fails. Only
-        // authoritative disk state can decide the next admitted operation.
-        **state = None;
-        self.persist(&registry)?;
-        **state = Some(registry);
-        Ok(())
-    }
-    fn decrypt(&self, entry: &Entry) -> Result<String, Error> {
+    /// Decrypts and validates a stored token using the current installation key.
+    ///
+    /// Key, authentication, UTF-8 and token-validation failures return
+    /// `CredentialsUnavailable`, so an unreadable credential cannot be used.
+    async fn decrypt(&self, entry: &Entry) -> Result<String, Error> {
         let aad = format!("dns-connection:{}:v1", entry.metadata.id);
-        let bytes = encryption::decrypt_bytes(&entry.secret, &aad, &self.key()?)
+        let bytes = encryption::decrypt_bytes(&entry.secret, &aad, &self.key().await?)
             .map_err(|_| Error::CredentialsUnavailable)?;
         let token = String::from_utf8(bytes).map_err(|_| Error::CredentialsUnavailable)?;
         validation::token(&token).map_err(|_| Error::CredentialsUnavailable)?;
@@ -191,6 +150,11 @@ impl Store {
             .map(|e| e.metadata.clone())
             .collect())
     }
+    /// Checks provider access and selected zones without certifying DNS write permission.
+    ///
+    /// Uses a supplied token when present; otherwise decrypts the stored credential with
+    /// the current key. Before returning a successful result for a stored connection,
+    /// its ID and revision are rechecked after the provider request.
     pub(crate) async fn test(&self, request: TestRequest) -> Result<TestResult, Error> {
         if let Some(id) = &request.connection_id {
             validation::id(id)?;
@@ -227,7 +191,10 @@ impl Store {
         validation::selection(&selected, false)?;
         let token = match request.api_token {
             Some(token) => token,
-            None => self.decrypt(entry.as_ref().ok_or(Error::TokenRequired)?)?,
+            None => {
+                self.decrypt(entry.as_ref().ok_or(Error::TokenRequired)?)
+                    .await?
+            }
         };
         if selected.iter().any(|id| !provider.valid_zone_id(id)) {
             return Err(Error::InvalidInput);
@@ -248,6 +215,11 @@ impl Store {
             dns_write_verified: false,
         })
     }
+    /// Validates provider access and commits an encrypted, revision-checked connection.
+    ///
+    /// Rejects overlapping permission checks, removed zones still in use and registry
+    /// limits. The final registry guard transfers into commit through disk replacement
+    /// and cache publication; persistence errors may follow a successful replacement.
     pub(crate) async fn save(&self, id: String, request: SaveRequest) -> Result<Metadata, Error> {
         let _checks = self
             .checks
@@ -300,7 +272,10 @@ impl Store {
         }
         let token = match &request.api_token {
             Some(token) => token.clone(),
-            None => self.decrypt(old.as_ref().ok_or(Error::TokenRequired)?)?,
+            None => {
+                self.decrypt(old.as_ref().ok_or(Error::TokenRequired)?)
+                    .await?
+            }
         };
         let permitted =
             validation::permitted(provider, &self.provider_endpoint(provider)?, &token).await?;
@@ -312,7 +287,7 @@ impl Store {
         let secret = encryption::encrypt_bytes(
             token.as_bytes(),
             &format!("dns-connection:{id}:v1"),
-            &self.key()?,
+            &self.key().await?,
         )
         .map_err(|_| Error::CredentialsUnavailable)?;
         let mut state = self.lock().await?;
@@ -380,9 +355,13 @@ impl Store {
             secret,
             pending_checks,
         });
-        self.commit(&mut state, next)?;
+        self.commit(state, next).await?;
         Ok(metadata)
     }
+    /// Deletes the expected revision only when no consumers or permission checks remain.
+    ///
+    /// Commit owns the registry guard through persistence and cache publication.
+    /// A storage error may leave a replaced file, requiring a reload on the next access.
     pub(crate) async fn delete(&self, id: &str, expected_revision: u32) -> Result<(), Error> {
         validation::id(id)?;
         if expected_revision == 0 {
@@ -401,9 +380,13 @@ impl Store {
         }
         let mut next = registry.clone();
         next.connections.retain(|e| e.metadata.id != id);
-        self.commit(&mut state, next)?;
+        self.commit(state, next).await?;
         Ok(())
     }
+    /// Checks the selected connection and zone and verifies its token can be decrypted.
+    ///
+    /// The registry lock spans validation and key lookup. Missing or unreadable
+    /// credentials fail closed; this check does not certify DNS write permission.
     pub(crate) async fn validate_reference(
         &self,
         reference: Reference,
@@ -424,7 +407,7 @@ impl Store {
             .cloned()
             .ok_or(Error::ZoneNotPermitted)?;
         // Checking decryption fails closed if the installation key was lost or rotated.
-        self.decrypt(entry)?;
+        self.decrypt(entry).await?;
         Ok(ValidatedReference {
             reference,
             revision: entry.metadata.revision,

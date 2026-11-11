@@ -2,8 +2,78 @@ import { describe, expect, test } from 'bun:test'
 
 import { workerObservability } from '@/server/Foundation/worker-observability.ts'
 import { observeWorkerOperation } from '@/server/Foundation/worker-operation.ts'
+import { ResourceAdmissionError } from '@/server/Foundation/resource-admission.ts'
 
 describe('observed worker execution', () => {
+    test('unexecuted completions and resource admission preserve a failed lane until actual recovery', async () => {
+        workerObservability.reset()
+        workerObservability.begin('host_monitoring')('failure')
+        await observeWorkerOperation(
+            'host_monitoring',
+            async () => undefined,
+            undefined,
+            () => ({ outcome: 'deferred', recoverLane: false }),
+        )
+        await Promise.all(
+            (['busy', 'deadline', 'cancelled'] as const).map((reason) => {
+                const error = new ResourceAdmissionError(reason)
+                return expect(
+                    observeWorkerOperation('host_monitoring', async () => {
+                        throw error
+                    }),
+                ).rejects.toBe(error)
+            }),
+        )
+        expect(
+            workerObservability.snapshot().workers.find((item) => item.id === 'host_monitoring'),
+        ).toMatchObject({
+            state: 'degraded',
+            degradedLanes: ['execution'],
+            counters: { failure: 1, deferred: 3, cancelled: 1, success: 0 },
+        })
+        await observeWorkerOperation('host_monitoring', async () => undefined)
+        expect(
+            workerObservability.snapshot().workers.find((item) => item.id === 'host_monitoring'),
+        ).toMatchObject({ state: 'idle', degradedLanes: [] })
+    })
+    test('a combined deadline abort records a dependency failure while shutdown stays cancelled', async () => {
+        workerObservability.reset()
+        const shutdown = new AbortController()
+        const timeout = AbortSignal.abort(new DOMException('Fixture deadline', 'TimeoutError'))
+        const deadlineSignal = AbortSignal.any([shutdown.signal, timeout])
+        await expect(
+            observeWorkerOperation(
+                'notifications',
+                async () => {
+                    throw deadlineSignal.reason
+                },
+                deadlineSignal,
+                undefined,
+                'collection',
+            ),
+        ).rejects.toBe(timeout.reason)
+        shutdown.abort()
+        await expect(
+            observeWorkerOperation(
+                'notifications',
+                async () => {
+                    throw shutdown.signal.reason
+                },
+                shutdown.signal,
+                undefined,
+                'collection',
+            ),
+        ).rejects.toBe(shutdown.signal.reason)
+        expect(
+            workerObservability.snapshot().workers.find((item) => item.id === 'notifications'),
+        ).toMatchObject({
+            state: 'degraded',
+            degradedLanes: ['collection'],
+            lastSuccessAt: null,
+            counters: { failure: 1, cancelled: 1, success: 0 },
+        })
+    })
+
     test('records actual work, preserves error identity, cancellation and maintenance state', async () => {
         workerObservability.reset()
         const pending = Promise.withResolvers<boolean>()

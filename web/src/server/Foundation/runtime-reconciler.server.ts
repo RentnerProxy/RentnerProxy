@@ -3,6 +3,9 @@ import '@tanstack/react-start/server-only'
 
 import type { ProxyRuntimeMutationStatus } from '@/lib/ProxyRuntime/Types/proxy-runtime.types.ts'
 import { workerObservability } from './worker-observability.ts'
+import { drainWorker, settleWorkerTasks } from './worker-lifecycle.server.ts'
+import { withBackgroundDatabaseContext } from '@/db/background-admission.ts'
+import { ResourceAdmissionError } from './resource-admission.ts'
 import type {
     RuntimeReconcileDependencies,
     RuntimeReconcileOptions,
@@ -14,6 +17,7 @@ const INITIAL_RETRY_DELAY_MS = 1_000
 const MAX_RETRY_DELAY_MS = 60_000
 const DRIFT_CHECK_INTERVAL_MS = 60_000
 
+/** Own serialized, coalesced applies and one drift flight with shared cancellation and bounded drain; rejected revisions stay degraded until recovery. */
 export function createRuntimeReconciler<T>(
     dependencies: RuntimeReconcileDependencies<T>,
     options: RuntimeReconcileOptions,
@@ -22,6 +26,9 @@ export function createRuntimeReconciler<T>(
     let completed = 0
     let worker: Promise<void> | null = null
     let stopped = false
+    let started = false
+    const controller = new AbortController()
+    let driftFlight: Promise<void> | null = null
     let driftTimer: ReturnType<typeof setInterval> | null = null
     let wakeResolver: (() => void) | null = null
     let publicFlight: Promise<ProxyRuntimeMutationStatus> | null = null
@@ -59,6 +66,7 @@ export function createRuntimeReconciler<T>(
         }
     }
 
+    /** Pass cancellation through serialized applies and retain nonretryable rejection across idle checks until a stable successful apply resolves waiters. */
     async function runWorker(): Promise<void> {
         let retryDelay = INITIAL_RETRY_DELAY_MS
         // oxlint-disable-next-line no-unmodified-loop-condition -- stop() changes this lifecycle flag.
@@ -72,14 +80,15 @@ export function createRuntimeReconciler<T>(
             const target = requested
             const finish = options.workerId ? workerObservability.begin(options.workerId) : () => {}
             try {
-                const snapshot = await dependencies.load()
+                const snapshot = await dependencies.load(controller.signal)
                 if (stopped) break
                 if (rejectedRevision === dependencies.revision(snapshot)) {
                     completed = target
+                    finish('deferred', { recoverLane: false })
                     resolveWaiters('pending')
                     continue
                 }
-                const applied = await dependencies.apply(snapshot)
+                const applied = await dependencies.apply(snapshot, controller.signal)
                 if (stopped) break
                 if (typeof applied !== 'boolean') {
                     finish('failure')
@@ -106,7 +115,7 @@ export function createRuntimeReconciler<T>(
                 }
                 if (!applied) throw new Error('apply_failed')
                 rejectedRevision = null
-                const latest = await dependencies.load()
+                const latest = await dependencies.load(controller.signal)
                 if (stopped) break
                 if (
                     target !== requested ||
@@ -117,8 +126,16 @@ export function createRuntimeReconciler<T>(
                 retryDelay = INITIAL_RETRY_DELAY_MS
                 finish('success')
                 resolveWaiters('applied')
-            } catch {
-                finish('failure')
+            } catch (error) {
+                finish(
+                    stopped ||
+                        (error instanceof ResourceAdmissionError && error.reason === 'cancelled')
+                        ? 'cancelled'
+                        : error instanceof ResourceAdmissionError
+                          ? 'deferred'
+                          : 'failure',
+                    { recoverLane: false },
+                )
                 if (stopped) break
                 resolveWaiters('pending')
                 console.warn(`[${options.name}] reconcile unavailable`)
@@ -134,7 +151,7 @@ export function createRuntimeReconciler<T>(
     function enqueue(): void {
         requested += 1
         if (!worker && !stopped) {
-            worker = runWorker().finally(() => {
+            worker = withBackgroundDatabaseContext(runWorker, controller.signal).finally(() => {
                 worker = null
             })
         }
@@ -165,8 +182,10 @@ export function createRuntimeReconciler<T>(
         return publicFlight
     }
 
+    /** Admit the initial reconciliation once and register one unrefed drift timer; stopped reconcilers cannot restart. */
     function start(): void {
-        if (stopped || dependencies.enabled === false) return
+        if (started || stopped || dependencies.enabled === false) return
+        started = true
         enqueue()
         if (driftTimer === null) {
             driftTimer = setInterval(() => void checkDrift(), DRIFT_CHECK_INTERVAL_MS)
@@ -174,41 +193,65 @@ export function createRuntimeReconciler<T>(
         }
     }
 
-    async function checkDrift(): Promise<void> {
+    /** Share a single drift observation so repeated triggers cannot create untracked work during drain. */
+    function checkDrift(): Promise<void> {
         const drift = dependencies.drift
-        if (!drift || stopped || dependencies.enabled === false) return
+        if (!drift || stopped || dependencies.enabled === false) return Promise.resolve()
+        if (driftFlight) return driftFlight
+        driftFlight = withBackgroundDatabaseContext(
+            () => observeDrift(drift),
+            controller.signal,
+        ).finally(() => {
+            driftFlight = null
+        })
+        return driftFlight
+    }
+
+    /** Observe drift with the owned cancellation signal and enqueue only while active; failures remain diagnostic and do not apply stale work. */
+    async function observeDrift(
+        drift: NonNullable<RuntimeReconcileDependencies<T>['drift']>,
+    ): Promise<void> {
+        const finish = options.workerId
+            ? workerObservability.begin(options.workerId, 'collection')
+            : () => {}
         try {
             let hasDrift: boolean
             if ('check' in drift) {
-                hasDrift = await drift.check()
+                hasDrift = await drift.check(controller.signal)
             } else {
-                const snapshot = await dependencies.load()
+                const snapshot = await dependencies.load(controller.signal)
                 if (stopped) return
-                hasDrift = await drift.matches(snapshot)
+                hasDrift = await drift.matches(snapshot, controller.signal)
             }
+            finish(stopped ? 'cancelled' : 'deferred')
             if (!stopped && hasDrift) enqueue()
-        } catch {
+        } catch (error) {
+            finish(
+                stopped || (error instanceof ResourceAdmissionError && error.reason === 'cancelled')
+                    ? 'cancelled'
+                    : error instanceof ResourceAdmissionError
+                      ? 'deferred'
+                      : 'failure',
+                { recoverLane: false },
+            )
             console.warn(`[${options.name}] drift check unavailable`)
+        } finally {
+            finish('cancelled')
         }
     }
 
+    /** Abort controller work, release pending waiters, and drain both apply and drift ownership under the shared shutdown bound. */
     async function stop(): Promise<void> {
         stopped = true
+        controller.abort()
         if (driftTimer !== null) clearInterval(driftTimer)
         driftTimer = null
         resolveWaiters('pending')
         wake()
-        if (worker) {
-            let timer: ReturnType<typeof setTimeout> | undefined
-            await Promise.race([
-                worker,
-                new Promise<void>((resolve) => {
-                    timer = setTimeout(resolve, options.stopTimeoutMs)
-                    timer.unref?.()
-                }),
-            ])
-            if (timer !== undefined) clearTimeout(timer)
-        }
+        await drainWorker(
+            settleWorkerTasks([worker, driftFlight]),
+            Math.min(options.stopTimeoutMs, 15_000),
+        )
     }
 
     return Object.assign(reconcile, { checkDrift, start, stop })

@@ -55,7 +55,10 @@ import type { ManagedBackupMaintenance } from '../../../web/src/lib/Backups/Type
 export const maintenanceRoot = '/run/rentnerproxy/maintenance'
 const phaseFile = join(controlRoot, 'restore-progress.json')
 
-export async function writeMaintenanceProgress(operation: ManagedBackupMaintenance | null) {
+export async function writeMaintenanceProgress(
+    operation: ManagedBackupMaintenance | null,
+    history: ManagedBackupMaintenance[] = [],
+) {
     await mkdir(maintenanceRoot, { recursive: true, mode: 0o770 })
     const directory = await lstat(maintenanceRoot)
     if (!directory.isDirectory() || directory.isSymbolicLink() || directory.uid !== 0)
@@ -63,7 +66,20 @@ export async function writeMaintenanceProgress(operation: ManagedBackupMaintenan
     await chown(maintenanceRoot, 0, 10002)
     await chmod(maintenanceRoot, 0o770)
     const path = join(maintenanceRoot, 'progress.json')
-    await writePrivateJson(path, { maintenance: operation }, { gid: 10002, mode: 0o440 })
+    // Publish the existing bounded root journal with latest progress atomically. Later operations
+    // must not hide the terminal result that a paused worker needs to prove admission is safe.
+    const restoreResults = history
+        .filter(
+            (entry) =>
+                entry.operation === 'restore' && !['queued', 'running'].includes(entry.state),
+        )
+        .slice(-100)
+        .map(({ id, operation: kind, state, phase }) => ({ id, operation: kind, state, phase }))
+    await writePrivateJson(
+        path,
+        { maintenance: operation, restoreResults },
+        { gid: 10002, mode: 0o440 },
+    )
 }
 
 export async function awaitWebQuiescence(id: string, signal?: AbortSignal) {

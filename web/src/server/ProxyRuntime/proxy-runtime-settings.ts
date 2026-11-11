@@ -127,6 +127,7 @@ export async function readProxyHostHttpSettingsMap(
     return (await readProxyHostSettingsMaps(transaction, proxyHostIds)).httpSettings
 }
 
+/** Hydrates HTTP and cache settings from one validated row set; empty input performs no query. */
 export async function readProxyHostSettingsMaps(
     transaction: AuthTransaction,
     proxyHostIds: readonly string[],

@@ -1,17 +1,25 @@
 use crate::runtime::{
-    certificates::{
-        CertificateEnvironment, CertificateError, CertificateIssueRequest, CertificateStore,
-    },
+    ProxyRuntime,
+    certificates::{CertificateEnvironment, CertificateError, CertificateIssueRequest},
     dns::{DnsDelegationBinding, DnsProvider, DnsRecordIntent},
     dns_delegation,
 };
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use tokio::time::{Instant, sleep, timeout_at};
 
+/// Checks the active delegated operation's persisted cancellation request.
+///
+/// Success permits the caller to proceed at this checkpoint; it does not reserve
+/// against a later cancellation or reverse a provider mutation already accepted.
+///
+/// # Errors
+/// Returns `AcmeCancelled` for a requested cancellation, `OperationInProgress` when
+/// there is no current operation, or the certificate-store lookup error.
 pub(super) async fn check_cancelled(
-    store: &CertificateStore,
+    runtime: &Arc<ProxyRuntime>,
     id: &str,
 ) -> Result<(), CertificateError> {
+    let store = &runtime.certificate_store;
     let metadata = store.get(id).await?;
     let operation = metadata
         .current_operation
@@ -22,14 +30,24 @@ pub(super) async fn check_cancelled(
     Ok(())
 }
 
+/// Persists cleanup authority before presenting one delegated DNS proof.
+///
+/// Mutates `intents` to retain ambiguous writes and clears their unconfirmed flag only
+/// for a definitive provider outcome. Provider I/O runs between bounded store updates.
+/// Cancellation is checked before and after presentation; an error after a write does
+/// not imply the write was rolled back.
+///
+/// # Errors
+/// Rejects replay of an identical ambiguous write with `DnsCleanupFailed` and
+/// propagates cancellation, persistence, validation, and provider errors.
 pub(super) async fn present(
-    store: &CertificateStore,
+    runtime: &Arc<ProxyRuntime>,
     id: &str,
     provider: &DnsProvider,
     intents: &mut Vec<DnsRecordIntent>,
     mut intent: DnsRecordIntent,
 ) -> Result<(), CertificateError> {
-    check_cancelled(store, id).await?;
+    check_cancelled(runtime, id).await?;
     if intents.iter().any(|pending| {
         pending.unconfirmed_write
             && pending.value == intent.value
@@ -49,7 +67,7 @@ pub(super) async fn present(
     }
     intent.unconfirmed_write = true;
     intents.push(intent);
-    store.set_pending_dns_records(id, intents.clone()).await?;
+    acme_store!(runtime; [id, intents]; store => store.set_pending_dns_records(&id, intents))?;
     let outcome = provider
         .present_tracked(intents.last().ok_or(CertificateError::DnsProviderInvalid)?)
         .await;
@@ -57,10 +75,10 @@ pub(super) async fn present(
         if let Some(intent) = intents.last_mut() {
             intent.unconfirmed_write = false;
         }
-        store.set_pending_dns_records(id, intents.clone()).await?;
+        acme_store!(runtime; [id, intents]; store => store.set_pending_dns_records(&id, intents))?;
     }
     outcome.map_err(|error| error.error)?;
-    check_cancelled(store, id).await
+    check_cancelled(runtime, id).await
 }
 
 pub(super) async fn bindings(
@@ -93,16 +111,24 @@ pub(super) async fn recheck(
     Ok(())
 }
 
+/// Polls delegated proof visibility for up to sixty seconds.
+///
+/// Checks persisted cancellation between attempts and retries lookup/propagation
+/// failures every two seconds. Success means the supplied records were observed.
+///
+/// # Errors
+/// Returns cancellation or permanent validation errors immediately; at the deadline,
+/// returns the latest lookup/propagation error rather than discarding its meaning.
 pub(super) async fn wait_for_records(
     intents: &[DnsRecordIntent],
     environment: CertificateEnvironment,
-    store: &CertificateStore,
+    runtime: &Arc<ProxyRuntime>,
     id: &str,
 ) -> Result<(), CertificateError> {
     let deadline = Instant::now() + Duration::from_secs(60);
     let mut last = CertificateError::DnsDelegationNotPropagated;
     loop {
-        check_cancelled(store, id).await?;
+        check_cancelled(runtime, id).await?;
         match timeout_at(
             deadline,
             dns_delegation::check_records(intents, environment),

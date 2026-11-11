@@ -31,6 +31,7 @@ import {
     readHostMonitoringHistory,
     readHostMonitoringClaimContexts,
     releaseHostMonitoringClaim,
+    releaseHostMonitoringClaims,
     saveHostMonitoringPolicy,
 } from '@/server/HostMonitoring/host-monitoring.repository.ts'
 import type {
@@ -141,6 +142,67 @@ async function completions(
 }
 
 describe('durable scheduled monitoring repository', () => {
+    integrationTest(
+        'a whole cancelled flight releases in one transaction with independent live fences',
+        async () => {
+            const policies = await Promise.all(Array.from({ length: 64 }, () => fixture()))
+            await db
+                .update(hostCheckPolicies)
+                .set({ nextCheckAt: new Date(0) })
+                .where(
+                    inArray(
+                        hostCheckPolicies.id,
+                        policies.map((policy) => policy.id),
+                    ),
+                )
+            const claims = (
+                await Promise.all(
+                    Array.from({ length: 4 }, () => claimDueHostMonitoringPolicies(16)),
+                )
+            ).flat()
+            expect(claims).toHaveLength(64)
+            const [staleVersion, staleToken, expired] = claims
+            await db
+                .update(hostCheckPolicies)
+                .set({ version: randomUUID() })
+                .where(eq(hostCheckPolicies.id, staleVersion!.policy.id))
+            await db
+                .update(hostCheckPolicies)
+                .set({ leaseToken: randomUUID() })
+                .where(eq(hostCheckPolicies.id, staleToken!.policy.id))
+            await db
+                .update(hostCheckPolicies)
+                .set({ leaseExpiresAt: new Date(0) })
+                .where(eq(hostCheckPolicies.id, expired!.policy.id))
+            expect(await releaseHostMonitoringClaims(claims)).toEqual(
+                claims.map((_, index) => index >= 3),
+            )
+            const currentRows = await db
+                .select()
+                .from(hostCheckPolicies)
+                .where(
+                    inArray(
+                        hostCheckPolicies.id,
+                        claims.map((claimed) => claimed.policy.id),
+                    ),
+                )
+            for (const [index, claimed] of claims.entries()) {
+                const current = currentRows.find((policy) => policy.id === claimed.policy.id)!
+                expect(current.leaseToken === null).toBe(index >= 3)
+                if (index >= 3)
+                    expect(current.nextCheckAt.getTime()).toBeGreaterThan(Date.now() - 1_000)
+            }
+            expect(await releaseHostMonitoringClaims(claims)).toEqual(claims.map(() => false))
+            expect(await releaseHostMonitoringClaims([])).toEqual([])
+            await expect(releaseHostMonitoringClaims([claims[0]!, claims[0]!])).rejects.toThrow(
+                'Invalid monitoring release batch',
+            )
+            await expect(releaseHostMonitoringClaims([...claims, claims[0]!])).rejects.toThrow(
+                'Invalid monitoring release batch',
+            )
+        },
+    )
+
     integrationTest('claims and releases do not wait for the runtime settings lock', async () => {
         const policy = await fixture()
         let release!: () => void
@@ -177,25 +239,21 @@ describe('durable scheduled monitoring repository', () => {
                 Bun.randomUUIDv7(),
             )
             hostIds.push(...ids)
-            await db
-                .insert(proxyHosts)
-                .values(
-                    ids.map((id) => ({
-                        id,
-                        forwardScheme: 'http' as const,
-                        forwardHost: '127.0.0.1',
-                        forwardPort: 8080,
-                    })),
-                )
-            await db
-                .insert(hostCheckPolicies)
-                .values(
-                    ids.map((id) => ({
-                        proxyHostId: id,
-                        domain: `retention-${id}.example.test`,
-                        sampleLimit: 1440,
-                    })),
-                )
+            await db.insert(proxyHosts).values(
+                ids.map((id) => ({
+                    id,
+                    forwardScheme: 'http' as const,
+                    forwardHost: '127.0.0.1',
+                    forwardPort: 8080,
+                })),
+            )
+            await db.insert(hostCheckPolicies).values(
+                ids.map((id) => ({
+                    proxyHostId: id,
+                    domain: `retention-${id}.example.test`,
+                    sampleLimit: 1440,
+                })),
+            )
             await db.execute(sql`
             insert into rentnerproxy.host_check_observations (policy_id, policy_version, checked_at, status, code)
             select p.id, p.version, statement_timestamp() - n * interval '1 minute', 'healthy', 'expected_status'

@@ -23,6 +23,14 @@ struct PendingAccountRegistration {
 }
 
 impl ProxyRuntime {
+    /// Obtains the environment's ACME account under the registration mutex.
+    ///
+    /// Optional trust-root file reads run on the bounded storage worker; account network
+    /// requests remain asynchronous outside that worker.
+    ///
+    /// # Errors
+    /// Returns `AcmeFailed` for directory, trust-root, or transport setup failures and
+    /// propagates account restoration, registration, and persistence errors.
     pub(super) async fn acme_account(
         self: &Arc<Self>,
         id: &str,
@@ -30,10 +38,10 @@ impl ProxyRuntime {
     ) -> Result<Account, CertificateError> {
         let _account_guard = ACCOUNT_REGISTRATION.lock().await;
         let (directory, root) = acme_directory(request.environment)?;
-        let root_pem = root
-            .as_deref()
-            .map(std::fs::read)
-            .transpose()
+        let root_pem = self
+            .storage(move |_| root.as_deref().map(std::fs::read).transpose())
+            .await
+            .map_err(|_| CertificateError::AcmeFailed)?
             .map_err(|_| CertificateError::AcmeFailed)?;
         crate::runtime::tls::ensure_crypto_provider();
         let http = AcmeHttpClient::new(
@@ -52,6 +60,14 @@ impl ProxyRuntime {
         .await
     }
 
+    /// Opens an observed ACME account and returns its identity and directory URL.
+    ///
+    /// When resuming, the saved identity must match before any account network operation.
+    /// Registration is serialized, and local account/root-file I/O uses storage workers.
+    ///
+    /// # Errors
+    /// Returns `StoreUnavailable` for missing, invalid, or mismatched stored credentials;
+    /// propagates account, transport, and persistence failures.
     pub(super) async fn manual_acme_account(
         self: &Arc<Self>,
         id: &str,
@@ -62,19 +78,16 @@ impl ProxyRuntime {
         let _account_guard = ACCOUNT_REGISTRATION.lock().await;
         let (directory, root) = acme_directory(request.environment)?;
         if let Some(expected) = expected_identity {
-            let bytes = self
-                .certificate_store
-                .load_acme_account(request.environment)
-                .await?
+            let bytes = acme_store!(self; [request]; store => store.load_acme_account(request.environment))?
                 .ok_or(CertificateError::StoreUnavailable)?;
             if account_identity(&bytes, &directory)? != expected {
                 return Err(CertificateError::StoreUnavailable);
             }
         }
-        let root_pem = root
-            .as_deref()
-            .map(std::fs::read)
-            .transpose()
+        let root_pem = self
+            .storage(move |_| root.as_deref().map(std::fs::read).transpose())
+            .await
+            .map_err(|_| CertificateError::AcmeFailed)?
             .map_err(|_| CertificateError::AcmeFailed)?;
         crate::runtime::tls::ensure_crypto_provider();
         let http = AcmeHttpClient::new(
@@ -93,25 +106,30 @@ impl ProxyRuntime {
                 Account::builder_with_http(Box::new(http)),
             )
             .await?;
-        let bytes = self
-            .certificate_store
-            .load_acme_account(request.environment)
-            .await?
-            .ok_or(CertificateError::StoreUnavailable)?;
+        let bytes =
+            acme_store!(self; [request]; store => store.load_acme_account(request.environment))?
+                .ok_or(CertificateError::StoreUnavailable)?;
         let identity = account_identity(&bytes, &directory)?;
         Ok((account, identity, directory))
     }
 
+    /// Restores credentials or registers using a durably saved pending account key.
+    ///
+    /// Callers serialize registration. Persisting the key before the network request lets
+    /// a retry reuse the same account identity after an interrupted registration; network
+    /// awaits remain outside the bounded local-store operations.
+    ///
+    /// # Errors
+    /// Returns `StoreUnavailable` for invalid/mismatched stored state or persistence
+    /// failure, and `AcmeFailed` for key generation or ACME account/contact requests.
     async fn acme_account_with_builder(
-        &self,
+        self: &Arc<Self>,
         request: &CertificateIssueRequest,
         directory: String,
         builder: instant_acme::AccountBuilder,
     ) -> Result<Account, CertificateError> {
-        let credentials = self
-            .certificate_store
-            .load_acme_account(request.environment)
-            .await?;
+        let credentials =
+            acme_store!(self; [request]; store => store.load_acme_account(request.environment))?;
 
         let pending = if let Some(credentials) = credentials {
             let stored_directory: AccountDirectory = serde_json::from_slice(&credentials)
@@ -139,9 +157,7 @@ impl ProxyRuntime {
             };
             let bytes =
                 serde_json::to_vec(&pending).map_err(|_| CertificateError::StoreUnavailable)?;
-            self.certificate_store
-                .store_acme_account(request.environment, &bytes)
-                .await?;
+            acme_store!(self; [request, bytes]; store => store.store_acme_account(request.environment, &bytes))?;
             pending
         };
 
@@ -160,9 +176,7 @@ impl ProxyRuntime {
                 .map_err(|_| CertificateError::AcmeFailed)?;
         }
         let bytes = serde_json::to_vec(&stored).map_err(|_| CertificateError::StoreUnavailable)?;
-        self.certificate_store
-            .store_acme_account(request.environment, &bytes)
-            .await?;
+        acme_store!(self; [request, bytes]; store => store.store_acme_account(request.environment, &bytes))?;
         Ok(account)
     }
 }

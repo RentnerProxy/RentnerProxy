@@ -27,6 +27,7 @@ impl Automation {
             .await?
             .ok_or(AutomationError::RetryDeferred)
     }
+    /// Map absent scheduled work to idle and any failed target to failure; propagate admission and shutdown errors to the scheduler.
     pub(in crate::runtime::ddns) async fn tick(
         &self,
         connections: &Store,

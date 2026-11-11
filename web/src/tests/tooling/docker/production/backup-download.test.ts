@@ -33,12 +33,18 @@ function stateArchive() {
     return Buffer.concat([header, Buffer.alloc(1024)])
 }
 
+/**
+ * Builds private v4 artifacts and matching journal metadata for an isolated download scenario.
+ * Tracks external admission acquisitions/releases and removes the fixture after the callback.
+ * Custom timings and dump size exercise timeout and backpressure boundaries without real backups.
+ */
 async function fixture(
     run: (context: {
         root: string
         directory: string
         job: ManagedBackupJob
         download: ReturnType<typeof createBackupDownload>
+        admission: { acquired: number; released: number }
     }) => Promise<void>,
     timings = BACKUP_DOWNLOAD_TIMEOUTS,
     dumpSize = 0,
@@ -118,21 +124,73 @@ async function fixture(
                 nextRunAt: null,
             },
         }
+        const admission = { acquired: 0, released: 0 }
         await run({
             root,
             directory,
             job,
+            admission,
             download: createBackupDownload(
                 async () => structuredClone(status),
                 root,
                 root,
                 timings,
+                async () => {
+                    admission.acquired++
+                    return () => {
+                        admission.released++
+                    }
+                },
             ),
         })
     } finally {
         await rm(root, { recursive: true, force: true })
     }
 }
+
+test.skipIf(!linuxRoot)(
+    'completed root body releases its admission slot before reporting end of stream',
+    /** Checks both local capacity reuse and shared admission release immediately after body completion. */
+    () =>
+        fixture(async ({ download, admission }) => {
+            const response = await download(new Request('http://localhost'), id)
+            expect(response.status).toBe(200)
+            expect(admission).toEqual({ acquired: 1, released: 0 })
+            const bytes = await response.arrayBuffer()
+            expect(bytes.byteLength).toBe(Number(response.headers.get('content-length')))
+            expect(admission).toEqual({ acquired: 1, released: 1 })
+            const next = await download(new Request('http://localhost'), id)
+            expect(next.status).toBe(200)
+            await next.body!.cancel()
+            expect(admission).toEqual({ acquired: 2, released: 2 })
+        }),
+)
+
+test.skipIf(!linuxRoot)(
+    'aborted root body reports cancellation only after releasing its admission slot',
+    /** Checks the same cleanup acknowledgement after request cancellation, before admitting another body. */
+    () =>
+        fixture(
+            async ({ download, admission }) => {
+                const stop = new AbortController()
+                const response = await download(
+                    new Request('http://localhost', { signal: stop.signal }),
+                    id,
+                )
+                expect(response.status).toBe(200)
+                expect(admission).toEqual({ acquired: 1, released: 0 })
+                stop.abort()
+                await expect(response.arrayBuffer()).rejects.toThrow('cancelled')
+                expect(admission).toEqual({ acquired: 1, released: 1 })
+                const next = await download(new Request('http://localhost'), id)
+                expect(next.status).toBe(200)
+                await next.body!.cancel()
+                expect(admission).toEqual({ acquired: 2, released: 2 })
+            },
+            BACKUP_DOWNLOAD_TIMEOUTS,
+            512 * 1024,
+        ),
+)
 
 test.skipIf(!linuxRoot)(
     'unconsumed root snapshot expires at idle and releases its admission slot',

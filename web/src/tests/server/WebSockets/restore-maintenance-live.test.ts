@@ -223,11 +223,11 @@ test('restart workers wait for the matching restore success and a queued shutdow
         import { mock } from 'bun:test'
         const maintenance = ${JSON.stringify(maintenance)}
         let status = { ...maintenance, phase: 'restarting' }
-        mock.module('./server/Backups/restore-maintenance-status.server.ts', () => ({ readRestoreMaintenanceStatus: async () => status }))
+        mock.module('./server/Backups/restore-maintenance-status.server.ts', () => ({ readRestoreMaintenanceObservation: async () => ({ maintenance: status, restoreResults: [] }) }))
         const { startWorkerLifecycle, stopWorkersForRestoreMaintenance } = await import('./server/Foundation/worker-lifecycle.server.ts')
         const originalTimeout = globalThis.setTimeout
         const waits = []
-        globalThis.setTimeout = callback => { waits.push(callback); return 1 }
+        globalThis.setTimeout = (callback, milliseconds, ...args) => { if (milliseconds !== 250) return originalTimeout(callback, milliseconds, ...args); waits.push(callback); return 1 }
         const flush = async () => { for (let index = 0; index < 20; index++) await Promise.resolve() }
         const calls = []
         const initializing = startWorkerLifecycle(async () => ({ start: () => calls.push('start'), stop: async () => { calls.push('stop') } }))

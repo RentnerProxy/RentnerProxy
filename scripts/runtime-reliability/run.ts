@@ -43,7 +43,7 @@ async function verifyProxy(context: ReliabilityContext, result: FixtureResult) {
     }
 }
 /** Bind bounded Docker observations and exact-identity signals to the shared recovery state machine. */
-function recoveryDependencies(context: ReliabilityContext): ComponentRecoveryDependencies {
+export function recoveryDependencies(context: ReliabilityContext): ComponentRecoveryDependencies {
     /** Bracket the census with container identity reads; a stop/start race yields no usable snapshot. */
     const snapshot = async (): Promise<ComponentRecoverySnapshot | undefined> => {
         let state: string

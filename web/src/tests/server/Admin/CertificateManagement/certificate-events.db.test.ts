@@ -1,6 +1,7 @@
 // oxlint-disable no-await-in-loop -- The bounded polling helper intentionally checks progress in order.
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test'
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
+import { getBackgroundDatabaseResourceSnapshot } from '@/server/Foundation/background-database.server.ts'
 
 import {
     auditEvents,
@@ -16,6 +17,7 @@ import {
 } from '@/server/Admin/CertificateManagement/certificate-events.worker.ts'
 import { getAuthDatabase } from '@/server/Auth/Core/database.server.ts'
 import { getDatabaseUrl } from '@/server/env.server.ts'
+import { workerObservability } from '@/server/Foundation/worker-observability.ts'
 
 const enabled = process.env.RENTNERPROXY_DATABASE_INTEGRATION === '1' && getDatabaseUrl() !== null
 const integrationTest = enabled ? test : test.skip
@@ -217,6 +219,61 @@ afterEach(async () => {
 
 describe('certificate event synchronization with PostgreSQL', () => {
     integrationTest(
+        'retention is incremental in the housekeeping partition after the event cursor commits',
+        async () => {
+            await getAuthDatabase().execute(sql`
+            insert into "rentnerproxy"."certificate_event_receipts"
+            (event_id, operation_id, certificate_id, kind, stage, occurred_at, received_at)
+            select gen_random_uuid(), ${OPERATION_ID}::uuid, ${CERTIFICATE_ID}::uuid,
+                'started', 'creating_order', clock_timestamp() - interval '181 days', clock_timestamp() - interval '181 days'
+            from generate_series(1, 1500)
+        `)
+            const before = getBackgroundDatabaseResourceSnapshot().housekeeping!.admitted
+            await synchronizeCertificateEventsOnce()
+            expect(await readCursor()).toBe(CURSOR)
+            expect(await readEventRows()).toHaveLength(1001)
+            await synchronizeCertificateEventsOnce()
+            expect(await readEventRows()).toHaveLength(501)
+            await synchronizeCertificateEventsOnce()
+            expect(await readEventRows()).toHaveLength(1)
+            expect(getBackgroundDatabaseResourceSnapshot().housekeeping!.admitted - before).toBe(3)
+            expect(await readAuditRows()).toHaveLength(1)
+        },
+    )
+    integrationTest(
+        'shutdown waits for an uncancellable event read and prevents its late persistence',
+        async () => {
+            const gate = Promise.withResolvers<void>()
+            const reached = Promise.withResolvers<void>()
+            eventBarrier = {
+                gate: gate.promise,
+                reached: reached.promise,
+                reachedResolve: () => reached.resolve(),
+                release: () => gate.resolve(),
+                calls: 1,
+            }
+            startCertificateEventsSynchronization()
+            await reached.promise
+            let drained = false
+            const stopping = stopCertificateEventsSynchronization().then(() => {
+                drained = true
+            })
+            await Bun.sleep(1)
+            expect(drained).toBe(false)
+            gate.resolve()
+            await stopping
+            expect(await readCursor()).toBeNull()
+            expect(await readEventRows()).toHaveLength(0)
+            expect(await readAuditRows()).toHaveLength(0)
+            eventBarrier = undefined
+            await synchronizeCertificateEventsOnce()
+            expect(await readCursor()).toBe(CURSOR)
+            expect(await readEventRows()).toHaveLength(1)
+            expect(await readAuditRows()).toHaveLength(1)
+        },
+    )
+
+    integrationTest(
         'persists manual DNS pause, cancellation and expiry before advancing later events',
         async () => {
             eventBatch = [
@@ -322,13 +379,31 @@ describe('certificate event synchronization with PostgreSQL', () => {
     integrationTest(
         'runs the background lifecycle without a browser and deduplicates after restart',
         async () => {
+            workerObservability.reset()
             startCertificateEventsSynchronization()
             try {
-                await waitForEventWorker(async () => (await readEventRows()).length === 1)
+                // The row can commit before the loop publishes its next scheduling sample.
+                // Keep the worker running until that sample has actually been observed.
+                await waitForEventWorker(async () => {
+                    if ((await readEventRows()).length !== 1) return false
+                    const progress = workerObservability
+                        .snapshot()
+                        .workers.find((item) => item.id === 'certificate_events')
+                    return (
+                        typeof progress?.nextDueAt === 'number' &&
+                        typeof progress.lastFinishedAt === 'number' &&
+                        progress.nextDueAt > progress.lastFinishedAt
+                    )
+                })
             } finally {
                 await stopCertificateEventsSynchronization()
             }
             expect(eventRequests).toBeGreaterThan(0)
+            const progress = workerObservability
+                .snapshot()
+                .workers.find((item) => item.id === 'certificate_events')!
+            expect(progress.nextDueAt).not.toBeNull()
+            expect(progress.nextDueAt!).toBeGreaterThan(progress.lastFinishedAt!)
 
             const requestsBeforeRestart = eventRequests
             startCertificateEventsSynchronization()

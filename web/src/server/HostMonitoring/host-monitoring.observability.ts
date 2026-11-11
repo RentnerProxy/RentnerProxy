@@ -3,12 +3,13 @@ import '@tanstack/react-start/server-only'
 import { and, eq, sql } from 'drizzle-orm'
 
 import { hostCheckPolicies, hostDomains, proxyHosts } from '@/db/schema.ts'
-import { getAuthDatabase } from '@/server/Auth/Core/database.server.ts'
+import { getBackgroundDatabase } from '@/server/Foundation/background-database.server.ts'
 import { workerObservability } from '@/server/Foundation/worker-observability.ts'
 
+/** Read only enabled, existing policies under a two-second SQL deadline; unavailable queue evidence becomes null rather than zero. */
 export async function sampleHostMonitoringBacklog(): Promise<void> {
     try {
-        const row = await getAuthDatabase().transaction(
+        const row = await getBackgroundDatabase('housekeeping').transaction(
             async (transaction) => {
                 await transaction.execute(sql`set local statement_timeout = '2000ms'`)
                 const [counts] = await transaction

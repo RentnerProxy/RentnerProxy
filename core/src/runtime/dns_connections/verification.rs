@@ -85,25 +85,33 @@ fn provider_error(error: CertificateError) -> Error {
 }
 
 impl Store {
-    fn check_provider(&self, entry: &Entry, zone: &str) -> Result<DnsProvider, Error> {
+    /// Builds a permission-check provider using the stored entry and current key.
+    ///
+    /// Credential failures propagate; provider construction errors are mapped to
+    /// connection verification errors without performing a DNS operation.
+    async fn check_provider(&self, entry: &Entry, zone: &str) -> Result<DnsProvider, Error> {
         let config = match super::resolve_provider(None, Some(entry))? {
             super::ProviderId::Hetzner => DnsProviderConfig::Hetzner {
                 zone_id: zone.to_owned(),
-                api_token: self.decrypt(entry)?,
+                api_token: self.decrypt(entry).await?,
             },
             super::ProviderId::Desec => DnsProviderConfig::Desec {
                 zone_id: zone.to_owned(),
-                api_token: self.decrypt(entry)?,
+                api_token: self.decrypt(entry).await?,
             },
             super::ProviderId::Cloudflare => DnsProviderConfig::Cloudflare {
                 zone_id: zone.to_owned(),
-                api_token: self.decrypt(entry)?,
+                api_token: self.decrypt(entry).await?,
             },
         };
         let endpoint = self.provider_endpoint(config.provider_id())?;
         DnsProvider::for_connection_check(config, &endpoint).map_err(provider_error)
     }
 
+    /// Commits a revision-checked verification outcome and its checked timestamp.
+    ///
+    /// Success records all selected zones as verified; failures clear that list and
+    /// distinguish denied access from other failures. Persistence errors propagate.
     async fn finish_check(
         &self,
         id: &str,
@@ -141,10 +149,14 @@ impl Store {
             error,
         };
         let metadata = entry.metadata.clone();
-        self.commit(&mut state, next)?;
+        self.commit(state, next).await?;
         Ok(metadata)
     }
 
+    /// Commits removal of a completed zone cleanup intent at the expected revision.
+    ///
+    /// A revision conflict preserves the current registry; persistence failures leave
+    /// the cache invalidated for authoritative reload.
     async fn remove_check(&self, id: &str, revision: u32, zone_id: &str) -> Result<(), Error> {
         let mut state = self.lock().await?;
         let registry = Self::registry(&mut state)?;
@@ -158,12 +170,17 @@ impl Store {
         entry
             .pending_checks
             .retain(|check| check.zone_id != zone_id);
-        self.commit(&mut state, next)
+        self.commit(state, next).await
     }
 
+    /// Cleans each persisted DNS intent before removing its registry ownership record.
+    ///
+    /// Stops on provider, revision or storage failure so remaining intents can be
+    /// retried; successful earlier cleanups may already have been committed.
     async fn cleanup_checks(&self, entry: &Entry) -> Result<(), Error> {
         for check in &entry.pending_checks {
-            self.check_provider(entry, &check.zone_id)?
+            self.check_provider(entry, &check.zone_id)
+                .await?
                 .cleanup_intents(std::slice::from_ref(&check.intent))
                 .await
                 .map_err(provider_error)?;
@@ -206,13 +223,19 @@ impl Store {
         }
     }
 
+    /// Checks permitted zones and probes write access with operation-owned TXT records.
+    ///
+    /// Old intents are cleaned first; new intents and cleared verification are persisted
+    /// before provider writes. Cleanup precedes each intent's removal; an intent remains
+    /// recoverable while cleanup or removal is incomplete. A presentation error may be
+    /// returned after successful cleanup has already removed its intent.
     async fn verify_inner(&self, mut entry: Entry) -> Result<(), Error> {
         self.cleanup_checks(&entry).await?;
         let provider = super::resolve_provider(None, Some(&entry))?;
         let permitted = validation::permitted(
             provider,
             &self.provider_endpoint(provider)?,
-            &self.decrypt(&entry)?,
+            &self.decrypt(&entry).await?,
         )
         .await?;
         super::select(
@@ -269,11 +292,11 @@ impl Store {
                 .ok_or(Error::ConnectionNotFound)?;
             current.pending_checks = entry.pending_checks.clone();
             current.metadata.verification = Verification::default();
-            self.commit(&mut state, next)?;
+            self.commit(state, next).await?;
         }
         let mut first_error = None;
         for check in &entry.pending_checks {
-            let provider = self.check_provider(&entry, &check.zone_id)?;
+            let provider = self.check_provider(&entry, &check.zone_id).await?;
             let present = provider
                 .present(&check.intent)
                 .await
@@ -291,6 +314,7 @@ impl Store {
         first_error.map_or(Ok(()), Err)
     }
 
+    /// Rotate at most four pending connection cleanups with thirty-second deadlines; concurrent admission is harmless but cleanup errors return false.
     pub(in crate::runtime) async fn recover_permission_checks(&self) -> bool {
         let Ok(_checks) = self.checks.try_lock() else {
             return true;

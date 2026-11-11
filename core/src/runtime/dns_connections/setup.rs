@@ -44,6 +44,11 @@ impl Store {
             .ok_or(Error::ConnectionNotFound)?;
         snapshot(entry, zone, revision)
     }
+    /// Builds a provider for a verified zone at the requested connection revision.
+    ///
+    /// The registry lock spans revision validation and current-key decryption, but is
+    /// released when the provider is returned. Stale, unverified or unreadable access
+    /// fails before provider construction.
     pub(in crate::runtime) async fn setup_provider(
         &self,
         id: &str,
@@ -58,7 +63,7 @@ impl Store {
             .find(|entry| entry.metadata.id == id)
             .ok_or(Error::ConnectionNotFound)?;
         let snapshot = snapshot(entry, zone, revision)?;
-        let api_token = self.decrypt(entry)?;
+        let api_token = self.decrypt(entry).await?;
         let config = match snapshot.provider {
             ProviderId::Cloudflare => DnsProviderConfig::Cloudflare {
                 zone_id: zone.to_owned(),
