@@ -9,12 +9,15 @@ const admission = createResourceAdmission({
     waitMs: DATABASE_CONNECTION_BUDGET.backgroundWaitMs,
 })
 
-/** Mark worker-owned async work without reserving a SQL connection during network calls or timer waits. */
+/** Mark worker-owned work without reserving SQL during waits; explicit null detaches inherited cancellation for admitted finalization. */
 export function withBackgroundDatabaseContext<T>(
     operation: () => Promise<T>,
-    signal?: AbortSignal,
+    signal?: AbortSignal | null,
 ): Promise<T> {
-    return background.run({ signal: signal ?? background.getStore()?.signal }, operation)
+    return background.run(
+        { signal: signal === null ? undefined : (signal ?? background.getStore()?.signal) },
+        operation,
+    )
 }
 
 /** Acquire only for a real top-level background transaction; foreground SQL and nested savepoints retain their normal behavior. */
