@@ -199,8 +199,47 @@ test('pool saturation evidence rejects queued work without eight active PostgreS
 
 test('SSR rejection is observed while the measured pool promise remains owned', async () => {
     const outcome = { status: 'rejected' as const, reason: new Error('SSR failed') }
-    await expect(measureSsrUnderPoolActivity(Promise.resolve(outcome), async () => true)).resolves.toEqual({
-        held: true,
-        outcome,
-    })
+    let reads = 0
+    await expect(
+        measureSsrUnderPoolActivity(Promise.resolve(outcome), async () => {
+            reads++
+            return false
+        }),
+    ).resolves.toEqual({ held: false, outcome })
+    expect(reads).toBe(1)
+})
+
+test('completed SSR still requires a final live PostgreSQL activity sample', async () => {
+    let reads = 0
+    const result = await measureSsrUnderPoolActivity(
+        Promise.resolve({ status: 'fulfilled' as const, value: 100 }),
+        async () => {
+            reads++
+            return false
+        },
+    )
+    expect(result.held).toBe(false)
+    expect(result.outcome).toEqual({ status: 'fulfilled', value: 100 })
+    expect(reads).toBe(1)
+})
+
+test('pool activity loss aborts the owned SSR sequence and fails its overlap evidence', async () => {
+    const measurement = Promise.withResolvers<{
+        status: 'fulfilled'
+        value: number
+    }>()
+    let reads = 0
+    let aborted = 0
+    const result = await measureSsrUnderPoolActivity(
+        measurement.promise,
+        async () => ++reads === 1,
+        () => {
+            aborted++
+            measurement.resolve({ status: 'fulfilled', value: 100 })
+        },
+    )
+    expect(result.held).toBe(false)
+    expect(result.outcome).toEqual({ status: 'fulfilled', value: 100 })
+    expect(aborted).toBe(1)
+    expect(reads).toBe(3)
 })
