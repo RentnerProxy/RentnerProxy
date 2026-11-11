@@ -6,6 +6,7 @@ import {
     isolationDiagnosticResult,
 } from './isolation.ts'
 import { isolationContract } from './isolation.config.ts'
+import { isolationPoolFaultBudget } from './isolation-faults.ts'
 import type { IsolationRoleMetrics } from './Types/isolation.types.ts'
 import type {
     HostMonitoringClaim,
@@ -211,7 +212,7 @@ export async function runIsolationRole(
         port: 0,
         maxRequestBodySize: 1024,
         /** Serve bounded SSR rows for foreground roles and fixture-marked controls; reject new writes as soon as shutdown starts. */
-        async fetch(request) {
+        async fetch(request, httpServer) {
             const path = new URL(request.url).pathname
             if (path === '/ssr' && role !== 'background' && request.method === 'GET') {
                 const rows = await db
@@ -268,6 +269,7 @@ export async function runIsolationRole(
                 return new Response(null, { status: 204 })
             }
             if (path === '/pool' && request.method === 'POST') {
+                httpServer.timeout(request, isolationPoolFaultBudget.poolServerSeconds)
                 return readIsolationPoolSaturation(
                     () => db.execute('select pg_advisory_xact_lock(1380864088)'),
                     stopping !== null,
