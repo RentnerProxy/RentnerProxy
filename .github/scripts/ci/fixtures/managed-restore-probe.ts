@@ -336,7 +336,8 @@ async function verifyCompletion(fixture: z.infer<typeof recoveryFixtureSchema>) 
             ),
         )
         assert.equal(completed.maintenance?.phase, 'complete')
-        assert.equal(completed.maintenance?.progressPercent, 100)
+        assert.ok(completed.maintenance && !('detailsUnavailable' in completed.maintenance))
+        assert.equal(completed.maintenance.progressPercent, 100)
     } finally {
         reconnected.close()
     }
@@ -510,6 +511,7 @@ async function runManagedWebRestore(interruptRestart: boolean) {
                         (snapshot) =>
                             snapshot.maintenance?.id === operation.id &&
                             snapshot.maintenance.phase === 'database' &&
+                            !('detailsUnavailable' in snapshot.maintenance) &&
                             snapshot.maintenance.progressPercent === 30,
                     )
                 }, 45_000)
@@ -534,9 +536,12 @@ async function runManagedWebRestore(interruptRestart: boolean) {
                         ['queued', 'running'].includes(snapshot.maintenance.state),
                 ),
             )
-            const progress = observer.snapshots
-                .filter((snapshot) => snapshot.maintenance?.id === operation.id)
-                .map((snapshot) => snapshot.maintenance!.progressPercent)
+            const progress = observer.snapshots.flatMap((snapshot) =>
+                snapshot.maintenance?.id === operation.id &&
+                !('detailsUnavailable' in snapshot.maintenance)
+                    ? [snapshot.maintenance.progressPercent]
+                    : [],
+            )
             assert.ok(
                 progress.some((percent) => percent >= 30 && percent < 90),
                 'the self-proxied live connection must deliver replacement progress before restart: ' +
@@ -555,8 +560,9 @@ async function runManagedWebRestore(interruptRestart: boolean) {
                         snapshot.maintenance.state === 'succeeded',
                 ),
             )
+            assert.ok(resumed.maintenance && !('detailsUnavailable' in resumed.maintenance))
             assert.equal(
-                resumed.maintenance?.progressPercent,
+                resumed.maintenance.progressPercent,
                 100,
                 'the same open observer must receive confirmed completion after the final restart',
             )

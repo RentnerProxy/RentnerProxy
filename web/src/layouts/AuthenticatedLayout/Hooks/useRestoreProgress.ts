@@ -5,15 +5,16 @@ import { toast } from '@rentnerkev/toasts'
 import { RESTORE_COMPLETION_VISIBLE_MS } from '@/config/backups.config.ts'
 import useTranslationStore from '@/shared/Language/Hooks/useTranslationStore.ts'
 import { backupRestoreSnapshotSchema } from '@/lib/Backups/validation.ts'
-import type { ManagedBackupMaintenance } from '@/lib/Backups/Types/backups.types.ts'
+import type { RestoreMaintenanceDisplay } from '@/lib/Backups/Types/backups.types.ts'
 import useLiveQuery from '@/shared/Live/Hooks/useLiveQuery.ts'
 
+/** Retain restore blockers through disconnects and retire them only after verified recovery or a safe preflight dismissal. */
 export default function useRestoreProgress(beforeHide?: () => void) {
     const queryClient = useQueryClient()
     const router = useRouter()
     const { t } = useTranslationStore()
-    const [maintenance, setMaintenance] = useState<ManagedBackupMaintenance | null>(null)
-    const current = useRef<ManagedBackupMaintenance | null>(null)
+    const [maintenance, setMaintenance] = useState<RestoreMaintenanceDisplay | null>(null)
+    const current = useRef<RestoreMaintenanceDisplay | null>(null)
     const completing = useRef<string | null>(null)
     const retiredOperations = useRef(new Set<string>())
     const retireOperation = useCallback((id: string) => {
@@ -37,8 +38,17 @@ export default function useRestoreProgress(beforeHide?: () => void) {
             if (!next || next.operation !== 'restore') return
             if (retiredOperations.current.has(next.id)) return
             const previous = current.current
-            if (previous?.id === next.id && next.progressPercent < previous.progressPercent) return
+            const historical = 'detailsUnavailable' in next
+            if (previous?.id === next.id && !('detailsUnavailable' in previous)) {
+                if (historical || next.progressPercent < previous.progressPercent) return
+            }
+            // A fresh server can report completed recovery after this client missed its active stages.
+            // A destructively quiesced server retains its blocker instead of publishing completion.
+            const completedRecovery =
+                previous && 'detailsUnavailable' in previous &&
+                !historical && next.state === 'succeeded' && next.phase === 'complete'
             if (
+                !historical && !completedRecovery &&
                 next.state !== 'queued' &&
                 next.state !== 'running' &&
                 current.current?.id !== next.id
@@ -89,8 +99,10 @@ export default function useRestoreProgress(beforeHide?: () => void) {
     })
     const canDismiss =
         maintenance !== null &&
+        !('detailsUnavailable' in maintenance) &&
         (maintenance.state === 'failed' || maintenance.state === 'interrupted') &&
         ['queued', 'preparing', 'validating'].includes(maintenance.phase)
+    /** Retire only a known non-destructive terminal failure so stale snapshots cannot reopen its screen. */
     function dismiss() {
         if (!canDismiss) return
         retireOperation(maintenance.id)

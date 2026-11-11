@@ -6,14 +6,15 @@ import { sql } from 'drizzle-orm'
 import { z } from 'zod'
 
 import { PERMISSIONS, SYSTEM_ROLES } from '@/config/permissions.config.ts'
-import type { ManagedBackupMaintenance } from '@/lib/Backups/Types/backups.types.ts'
+import type { RestoreMaintenanceDisplay } from '@/lib/Backups/Types/backups.types.ts'
+import { historicalRestoreMaintenanceSchema } from '@/lib/Backups/validation.ts'
 import { createRestoreMaintenanceFence } from './restore-maintenance-fence.ts'
 import { stopWorkersForRestoreMaintenance } from '@/server/Foundation/worker-lifecycle.server.ts'
 import { readRestoreMaintenanceObservation } from './restore-maintenance-status.server.ts'
 import { advanceRestoreAdmission, isDestructiveRestore } from './restore-admission.ts'
 
 const directory = '/run/rentnerproxy/maintenance'
-let lastMaintenance: ManagedBackupMaintenance | null = null
+let lastMaintenance: RestoreMaintenanceDisplay | null = null
 let restartingBootstrapId: string | null = null
 // A receipt for the replacement already in use must not quiesce this process under the old ID.
 // Its unresolved failure still remains in `waiting` and blocks mutation admission.
@@ -128,9 +129,16 @@ async function pollMaintenance(): Promise<void> {
               )
     if (destructive) {
         if (status?.id === destructive.id) lastMaintenance = status
-        else if (lastMaintenance?.id === destructive.id)
+        else if (lastMaintenance?.id === destructive.id && !('detailsUnavailable' in lastMaintenance))
             lastMaintenance = { ...lastMaintenance, ...destructive }
-        else if (!destructivelyQuiesced) lastMaintenance = null
+        else if (!destructivelyQuiesced || lastMaintenance?.id === destructive.id)
+            lastMaintenance = historicalRestoreMaintenanceSchema.parse({
+                id: destructive.id,
+                operation: destructive.operation,
+                state: destructive.state,
+                phase: destructive.phase,
+                detailsUnavailable: true,
+            })
         // ID-only historical receipts never borrow actor/artifact details from a later delete.
         if (!destructivelyQuiesced) {
             destructivelyQuiesced = true
@@ -186,7 +194,8 @@ function tickMaintenance(): void {
     })
 }
 
-export async function getActiveRestoreMaintenance(): Promise<ManagedBackupMaintenance | null> {
+/** Expose the fenced restore's verified details or its explicitly incomplete historical blocker. */
+export async function getActiveRestoreMaintenance(): Promise<RestoreMaintenanceDisplay | null> {
     await poll()
     return fence.isFenced() ? lastMaintenance : null
 }

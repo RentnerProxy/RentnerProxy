@@ -251,6 +251,79 @@ test('APP_ACCESS-only users see the global actor, backup and genuine checkpoint 
     expect(container.querySelector('[data-route-state]')?.closest('[hidden]')).not.toBeNull()
 })
 
+test.each(['failed', 'interrupted'] as const)(
+    'a historical %s restore blocks the page without inventing details or progress',
+    async (state) => {
+        await mount()
+        const historical = { id: running.id, operation: 'restore', state, phase: 'database', detailsUnavailable: true }
+        await deliver(historical)
+        expect(container.querySelector('#restore-progress-title')).not.toBeNull()
+        expect(container.textContent).toContain('Restore failed or service recovery could not be confirmed')
+        expect(container.textContent).toContain('Restoring the database')
+        expect(progress()).toBeNull()
+        expect(container.textContent).not.toContain('Kevin')
+        expect(container.textContent).not.toContain(running.artifactId)
+        expect(container.textContent).not.toContain('0%')
+        expect(container.querySelector('main button')).toBeNull()
+        expect(container.querySelector('[data-route-state]')?.closest('[hidden]')).not.toBeNull()
+        await deliver(null)
+        await deliver({ ...historical, phase: 'validating' })
+        await deliver({ ...historical, actorName: 'Invented operator', progressPercent: 0 })
+        expect(container.querySelector('#restore-progress-title')).not.toBeNull()
+        expect(container.textContent).toContain('Restoring the database')
+        expect(container.textContent).not.toContain('Invented operator')
+        expect(progress()).toBeNull()
+    },
+)
+
+test('genuine full metadata enriches a historical restore and a later ID-only snapshot cannot erase it', async () => {
+    await mount()
+    const historical = { id: running.id, operation: 'restore', state: 'failed', phase: 'database', detailsUnavailable: true }
+    await deliver(historical)
+    expect(container.querySelector('#restore-progress-title')).not.toBeNull()
+    await deliver({ ...running, state: 'failed', error: 'execution_failed' })
+    expect(progress()?.value).toBe(42)
+    expect(container.textContent).toContain('Kevin')
+    await deliver(historical)
+    expect(progress()?.value).toBe(42)
+    expect(container.textContent).toContain(running.artifactId)
+})
+
+test('a genuine later full recovery can retire a historical blocker despite missed intermediate snapshots', async () => {
+    await mount()
+    const historical = { id: running.id, operation: 'restore', state: 'failed', phase: 'database', detailsUnavailable: true }
+    const complete = { ...running, id: uuid(95), state: 'succeeded', phase: 'complete', progressPercent: 100 }
+    const success = spyOn(toast, 'success').mockReturnValue('restore-feedback-fixture')
+    const recovery = Promise.withResolvers<void>()
+    const invalidate = spyOn(router, 'invalidate').mockImplementation(() => recovery.promise)
+    restorers.push(() => { success.mockRestore(); invalidate.mockRestore() })
+    await deliver(historical)
+    expect(container.querySelector('#restore-progress-title')).not.toBeNull()
+    jest.useFakeTimers()
+    try {
+        await deliver(complete)
+        expect(progress()?.value).toBe(100)
+        expect(invalidate).toHaveBeenCalledTimes(1)
+        await deliver(historical)
+        expect(progress()?.value).toBe(100)
+        await act(async () => jest.advanceTimersByTime(RESTORE_COMPLETION_VISIBLE_MS))
+        expect(container.querySelector('#restore-progress-title')).not.toBeNull()
+        await act(async () => recovery.resolve())
+        expect(container.querySelector('#restore-progress-title')).toBeNull()
+        expect(success).toHaveBeenCalledTimes(1)
+        const invalidationsAfterRecovery = invalidate.mock.calls.length
+        await deliver(historical)
+        await deliver(running)
+        await deliver(complete)
+        expect(container.querySelector('#restore-progress-title')).toBeNull()
+        expect(container.querySelector('[data-route-state]')?.closest('[hidden]')).toBeNull()
+        expect(invalidate).toHaveBeenCalledTimes(invalidationsAfterRecovery)
+    } finally {
+        recovery.resolve()
+        jest.useRealTimers()
+    }
+})
+
 test('restore preserves the route, search, scroll and mounted drafts until confirmed cache refresh completes', async () => {
     await mount()
     const originalDocumentScroll = Object.getOwnPropertyDescriptor(window, 'scrollY')
