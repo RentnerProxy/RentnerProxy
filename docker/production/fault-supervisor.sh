@@ -86,27 +86,30 @@ assert_web_restart_allowed() {
 # Prove that a surviving process has no web UID in any credential field.
 # Missing status is safe only after the process directory disappears; unreadable live identities fail closed.
 assert_web_process_stopped() {
-    local status_file=$1 field real effective saved filesystem remainder
+    local status_file=$1 field real effective saved filesystem remainder attempt
     local inspected=false writer=false
-    # A process may disappear after glob expansion. Guard both opening and
-    # reading status; admission still requires proof for every surviving PID.
-    while read -r field real effective saved filesystem remainder; do
-        if [[ $field == State: && ( $real == Z || $real == X ) ]]; then
+    # An opened proc file can lose its task while the numeric path still exists.
+    # Reopen briefly for fresh evidence; elapsed time never substitutes for proof.
+    for ((attempt=1; attempt<=3; attempt++)); do
+        while read -r field real effective saved filesystem remainder; do
+            if [[ $field == State: && ( $real == Z || $real == X ) ]]; then
+                inspected=true
+                break
+            fi
+            [[ $field == Uid: ]] || continue
+            [[ $real =~ ^[0-9]+$ && $effective =~ ^[0-9]+$ && $saved =~ ^[0-9]+$ \
+                && $filesystem =~ ^[0-9]+$ && -z $remainder ]] || break
             inspected=true
+            case " $real $effective $saved $filesystem " in
+                *' 10002 '*) writer=true ;;
+            esac
             break
-        fi
-        [[ $field == Uid: ]] || continue
-        [[ $real =~ ^[0-9]+$ && $effective =~ ^[0-9]+$ && $saved =~ ^[0-9]+$ \
-            && $filesystem =~ ^[0-9]+$ && -z $remainder ]] || break
-        inspected=true
-        case " $real $effective $saved $filesystem " in
-            *' 10002 '*) writer=true ;;
-        esac
-        break
-    done 2>/dev/null < "$status_file" || :
-    $writer && fatal 'a web writer survived isolated recovery'
-    $inspected && return 0
-    [[ ! -d ${status_file%/*} ]] && return 0
+        done 2>/dev/null < "$status_file" || :
+        $writer && fatal 'a web writer survived isolated recovery'
+        $inspected && return 0
+        [[ ! -d ${status_file%/*} ]] && return 0
+        if ((attempt < 3)); then sleep 0.1; fi
+    done
     fatal 'web recovery cannot inspect a surviving process identity'
 }
 
