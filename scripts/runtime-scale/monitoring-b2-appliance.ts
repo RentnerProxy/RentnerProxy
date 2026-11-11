@@ -18,6 +18,7 @@ import {
     monitoringB2PolicyTransaction,
     monitoringB2FixtureDiagnostic,
     validateMonitoringB2Role,
+    openMonitoringB2OutboxForDrain,
 } from './monitoring-b2-fixture-storage.ts'
 import { monitoringB2ControlKey, monitoringB2WebKey } from './monitoring-b2-capabilities.ts'
 import { randomBytes } from 'node:crypto'
@@ -238,6 +239,7 @@ export async function runMonitoringB2Appliance(runId: string) {
         hosts: { hostId: string; policyId: string; domain: string; index: number }[]
         origin: number
         stopped: boolean
+        nativeStartAttempted: boolean
     }
     let current: Window | undefined,
         authority: Awaited<ReturnType<typeof createMonitoringB2Authority>> | undefined
@@ -381,6 +383,7 @@ export async function runMonitoringB2Appliance(runId: string) {
             throw new Error('B2 live owned authority required for native restart')
         if ((await nativeIdentities()).length !== 0)
             throw new Error('B2 untracked native writer prevents restart')
+        current.nativeStartAttempted = true
         native = Bun.spawn(['gosu', 'monitoring-b2', '/opt/rentnerproxy/web/monitoring-b2'], {
             env: {
                 PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
@@ -424,18 +427,19 @@ export async function runMonitoringB2Appliance(runId: string) {
         const window = current
         if (current.design === 'B2') {
             const path = root + '/state/' + current.windowId + '.sqlite'
-            const outbox = new Database(path, { readonly: true, strict: true })
+            const outbox = await openMonitoringB2OutboxForDrain(path, current.nativeStartAttempted)
             try {
                 const deadline = Date.now() + 15000
                 while (
                     Date.now() < deadline &&
+                    outbox &&
                     outbox
                         .query<{ count: number }, []>('SELECT count(*) count FROM b2_outbox')
                         .get()!.count > 0
                 )
                     await Bun.sleep(50)
             } finally {
-                outbox.close()
+                outbox?.close()
             }
         }
         await monitoringB2PolicyTransaction(database, async (transaction) => {
@@ -601,7 +605,13 @@ export async function runMonitoringB2Appliance(runId: string) {
                 index,
             }
         })
-        current = { ...options, hosts: entries, origin: 0, stopped: false }
+        current = {
+            ...options,
+            hosts: entries,
+            origin: 0,
+            stopped: false,
+            nativeStartAttempted: false,
+        }
         for (const domain of baselineDomains)
             if (domain.proxyHostId) aliases.set(domain.domain, domain.proxyHostId)
         visible.clear()

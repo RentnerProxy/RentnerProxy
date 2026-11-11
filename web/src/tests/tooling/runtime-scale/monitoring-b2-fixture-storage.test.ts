@@ -1,7 +1,39 @@
 import { expect, test } from 'bun:test'
 import { randomBytes, randomUUID } from 'node:crypto'
+import { Database } from 'bun:sqlite'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { monitoringB2FixtureDiagnostic } from '../../../../../scripts/runtime-scale/monitoring-b2-fixture-storage.ts'
 import { validateMonitoringB2Role } from '../../../../../scripts/runtime-scale/monitoring-b2-fixture-storage.ts'
+import { openMonitoringB2OutboxForDrain } from '../../../../../scripts/runtime-scale/monitoring-b2-fixture-storage.ts'
+
+test('partial authority bootstrap omits only a never-started absent outbox and never creates or masks missing native state', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'b2-partial-init-'))
+    const path = join(directory, 'outbox.sqlite')
+    try {
+        expect(await openMonitoringB2OutboxForDrain(path, false)).toBeUndefined()
+        await expect(openMonitoringB2OutboxForDrain(path, true)).rejects.toMatchObject({
+            code: 'ENOENT',
+        })
+        const existing = new Database(path)
+        existing.exec('CREATE TABLE b2_outbox (sequence INTEGER); INSERT INTO b2_outbox VALUES (7)')
+        existing.close()
+        for (const started of [false, true]) {
+            const outbox = await openMonitoringB2OutboxForDrain(path, started)
+            try {
+                expect(outbox?.query('SELECT sequence FROM b2_outbox').get()).toEqual({
+                    sequence: 7,
+                })
+                expect(() => outbox?.exec('DELETE FROM b2_outbox')).toThrow()
+            } finally {
+                outbox?.close()
+            }
+        }
+    } finally {
+        await rm(directory, { recursive: true, force: true })
+    }
+})
 
 test('disposable role bootstrap accepts generated credentials and rejects malformed SQL inputs without disclosure', () => {
     const role = 'monitor_b2_role_' + randomUUID().replaceAll('-', '')

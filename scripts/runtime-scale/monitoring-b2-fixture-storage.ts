@@ -1,5 +1,20 @@
 import type { getAuthDatabase } from '../../web/src/server/Auth/Core/database.server.ts'
 import type { AuthTransaction } from '../../web/src/server/Auth/Core/Types/database.types.ts'
+import { Database } from 'bun:sqlite'
+import { lstat } from 'node:fs/promises'
+
+/** Only a missing store before every native launch attempt can omit replay drain. */
+export async function openMonitoringB2OutboxForDrain(path: string, nativeStartAttempted: boolean) {
+    try {
+        const metadata = await lstat(path)
+        if (!metadata.isFile()) throw new Error('B2 native outbox must be an ordinary file')
+    } catch (error) {
+        if (!nativeStartAttempted && (error as { code?: unknown })?.code === 'ENOENT')
+            return undefined
+        throw error
+    }
+    return new Database(path, { readonly: true, strict: true })
+}
 
 /** Direct fixture policy changes use the original production settings/monitoring lock order. */
 export async function monitoringB2PolicyTransaction<T>(
