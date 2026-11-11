@@ -31,7 +31,7 @@ export type ReliabilityCheck = {
 
 export type ReliabilityFailure = {
     stage: 'setup' | 'warmup' | 'cycle' | 'resources' | 'cleanup'
-    category: 'assertion' | 'timeout' | 'command' | 'telemetry' | 'unexpected'
+    category: 'assertion' | 'timeout' | 'command' | 'telemetry' | 'unexpected' | 'cancelled'
 }
 
 export type ReliabilityReportInput = {

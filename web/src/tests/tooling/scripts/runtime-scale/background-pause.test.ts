@@ -1,4 +1,5 @@
 import { expect, spyOn, test } from 'bun:test'
+import { ReliabilityError } from '../../../../../../scripts/runtime-reliability/harness.ts'
 import {
     backgroundPauseGuard,
     backgroundPauseMarker,
@@ -46,6 +47,18 @@ test('each pause has its own run-scoped readiness and resume marker', () => {
     expect(
         markers.every((marker) => /^\/tmp\/background-resume-fixture-[0-9a-f-]{36}$/u.test(marker)),
     ).toBe(true)
+})
+
+test('an aborted scenario is classified separately from retryable command failures', () => {
+    const signal = AbortSignal.abort()
+    try {
+        checkBackgroundCancellation(signal)
+        throw new Error('Expected cancellation')
+    } catch (error) {
+        expect(error).toBeInstanceOf(ReliabilityError)
+        expect((error as ReliabilityError).category).toBe('cancelled')
+    }
+    expect(() => checkBackgroundCancellation(new AbortController().signal)).not.toThrow()
 })
 
 test('normal resume terminates the guard before a later pause can begin', async () => {

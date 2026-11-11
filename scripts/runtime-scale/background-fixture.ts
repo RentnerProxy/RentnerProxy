@@ -11,7 +11,10 @@ import {
     proxyHosts,
     trustedCas,
     accessPolicies,
+    redirectHosts,
 } from '../../web/src/db/schema.ts'
+import type { AuthTransaction } from '../../web/src/server/Auth/Core/Types/database.types.ts'
+import { readProxyRuntimeSnapshot } from '../../web/src/server/ProxyRuntime/proxy-runtime-data.ts'
 import * as repository from '../../web/src/server/HostMonitoring/host-monitoring.repository.ts'
 import { runFixture } from '../runtime-reliability/fixture-core.ts'
 import { executeFixture } from '../runtime-reliability/fixture.ts'
@@ -294,6 +297,174 @@ export async function backgroundFences(context: Pick<FixtureContext, 'database' 
     }
 }
 
+/** Fixture-only inventory setup; the explicit 1000-policy case also owns the traffic routes. */
+export async function prepareBackgroundInventory(
+    context: Pick<FixtureContext, 'command' | 'domain' | 'state' | 'save'> & {
+        database: {
+            transaction<T>(operation: (transaction: AuthTransaction) => Promise<T>): Promise<T>
+        }
+    },
+) {
+    const inventory = backgroundPolicies(options(context))
+    const bindings = await context.database.transaction(async (transaction) => {
+        assert.equal(
+            (
+                await transaction
+                    .select({ id: hostCheckPolicies.id })
+                    .from(hostCheckPolicies)
+                    .limit(1)
+            ).length,
+            0,
+            'No preexisting monitoring policies',
+        )
+        let rebound: { proxyId: string; policyHostId: string } | null = null
+        if (inventory.length === 1000) {
+            const { state, domain, command } = context
+            assert.equal(
+                state.runId,
+                command.runId,
+                'Boundary fixture must match persisted run ownership',
+            )
+            assert.equal(
+                state.domain,
+                domain,
+                'Boundary fixture domain must match persisted ownership',
+            )
+            assert.ok(
+                state.proxyId && state.policyHostId && state.policyId && state.redirectId,
+                'Boundary fixture must be prepared',
+            )
+            assert.notEqual(
+                state.proxyId,
+                state.policyHostId,
+                'Boundary traffic owners must be distinct',
+            )
+            const hosts = await transaction.select().from(proxyHosts).for('update')
+            const redirects = await transaction.select().from(redirectHosts).for('update')
+            const domains = await transaction.select().from(hostDomains).for('update')
+            const [policy] = await transaction
+                .select()
+                .from(accessPolicies)
+                .where(eq(accessPolicies.id, state.policyId))
+                .for('update')
+            assert.equal(
+                hosts.length,
+                2,
+                'Only the two original fixture proxy hosts may be replaced',
+            )
+            assert.equal(redirects.length, 1, 'Only the original fixture redirect may be disabled')
+            assert.equal(domains.length, 3, 'Only the three original fixture domains may exist')
+            assert.ok(
+                policy &&
+                    policy.mode === 'public' &&
+                    policy.name === 'Reliability ' + command.runId,
+                'Boundary control route retains its original public policy',
+            )
+            for (const [hostId, alias, accessPolicyId] of [
+                [state.proxyId, domain, null],
+                [state.policyHostId, 'policy-' + domain, state.policyId],
+            ] as const) {
+                const host = hosts.find((item) => item.id === hostId)
+                assert.ok(
+                    host &&
+                        host.enabled &&
+                        host.forwardScheme === 'http' &&
+                        host.forwardHost === command.upstreamHost &&
+                        host.forwardPort === command.upstreamPort &&
+                        host.certificateId === null &&
+                        !host.forceHttps &&
+                        host.upstreamPool === null &&
+                        host.trustedCaId === null &&
+                        host.upstreamTlsServerName === null &&
+                        host.accessPolicyId === accessPolicyId,
+                    'Only an unchanged owned fixture stub may be replaced',
+                )
+                assert.ok(
+                    domains.some((item) => item.proxyHostId === hostId && item.domain === alias),
+                    'Boundary traffic alias ownership must match',
+                )
+                assert.ok(
+                    !inventory.some((item) => item.id === hostId),
+                    'Boundary inventory identities must be fresh',
+                )
+            }
+            const redirect = redirects[0]!
+            assert.ok(
+                redirect.id === state.redirectId &&
+                    redirect.enabled &&
+                    redirect.destination === 'http://' + domain + '/initial' &&
+                    redirect.statusCode === 302 &&
+                    redirect.preserveRequestUri &&
+                    redirect.certificateId === null &&
+                    domains.some(
+                        (item) =>
+                            item.redirectHostId === redirect.id &&
+                            item.domain === 'redirect-' + domain,
+                    ),
+                'Only the unused original fixture redirect may be disabled',
+            )
+            await transaction
+                .delete(proxyHosts)
+                .where(inArray(proxyHosts.id, [state.proxyId, state.policyHostId]))
+            await transaction
+                .update(redirectHosts)
+                .set({ enabled: false })
+                .where(eq(redirectHosts.id, state.redirectId))
+            rebound = { proxyId: inventory.at(-2)!.id, policyHostId: inventory.at(-1)!.id }
+        }
+        await transaction.insert(proxyHosts).values(
+            inventory.map((item) => ({
+                id: item.id,
+                forwardScheme: 'http' as const,
+                forwardHost: context.command.upstreamHost,
+                forwardPort: context.command.upstreamPort,
+                ...(item.id === rebound?.policyHostId
+                    ? { accessPolicyId: context.state.policyId }
+                    : {}),
+            })),
+        )
+        await transaction.insert(hostDomains).values(
+            inventory.map((item) => ({
+                proxyHostId: item.id,
+                domain: `bg-${item.index}-${item.latency}-${context.domain}`,
+            })),
+        )
+        await transaction.insert(hostCheckPolicies).values(
+            inventory.map((item) => ({
+                proxyHostId: item.id,
+                id: item.id,
+                domain: `bg-${item.index}-${item.latency}-${context.domain}`,
+                enabled: false,
+                intervalSeconds: 60,
+                timeoutMs: 3000,
+                failureThreshold: 1,
+            })),
+        )
+        if (rebound) {
+            await transaction.insert(hostDomains).values([
+                { proxyHostId: rebound.proxyId, domain: context.domain },
+                { proxyHostId: rebound.policyHostId, domain: 'policy-' + context.domain },
+            ])
+            const runtime = await readProxyRuntimeSnapshot(transaction)
+            assert.equal(
+                runtime.proxyHosts.length,
+                1000,
+                'Boundary inventory must fit the actual runtime host limit',
+            )
+            assert.equal(
+                runtime.redirectHosts.length,
+                0,
+                'Boundary redirect must remain outside the routing budget',
+            )
+        }
+        return rebound
+    })
+    if (bindings) {
+        Object.assign(context.state, bindings)
+        await context.save()
+    }
+}
+
 async function execute(context: FixtureContext): Promise<Record<string, unknown>> {
     if (!context.command.phase.startsWith('background-')) return executeFixture(context)
     if (context.command.phase.startsWith('background-contention-')) {
@@ -305,43 +476,7 @@ async function execute(context: FixtureContext): Promise<Record<string, unknown>
     }
     const inventory = backgroundPolicies(options(context))
     if (context.command.phase === 'background-prepare') {
-        assert.equal(
-            (
-                await context.database
-                    .select({ id: hostCheckPolicies.id })
-                    .from(hostCheckPolicies)
-                    .limit(1)
-            ).length,
-            0,
-            'No preexisting monitoring policies',
-        )
-        await context.database.transaction(async (transaction) => {
-            await transaction.insert(proxyHosts).values(
-                inventory.map((item) => ({
-                    id: item.id,
-                    forwardScheme: 'http' as const,
-                    forwardHost: context.command.upstreamHost,
-                    forwardPort: context.command.upstreamPort,
-                })),
-            )
-            await transaction.insert(hostDomains).values(
-                inventory.map((item) => ({
-                    proxyHostId: item.id,
-                    domain: `bg-${item.index}-${item.latency}-${context.domain}`,
-                })),
-            )
-            await transaction.insert(hostCheckPolicies).values(
-                inventory.map((item) => ({
-                    proxyHostId: item.id,
-                    id: item.id,
-                    domain: `bg-${item.index}-${item.latency}-${context.domain}`,
-                    enabled: false,
-                    intervalSeconds: 60,
-                    timeoutMs: 3000,
-                    failureThreshold: 1,
-                })),
-            )
-        })
+        await prepareBackgroundInventory(context)
         await writeFile('/tmp/background-origin-' + context.command.runId, '0', { mode: 0o600 })
     }
     if (context.command.phase === 'background-start') {

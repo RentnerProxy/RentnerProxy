@@ -14,6 +14,7 @@ import assert from 'node:assert/strict'
 import { dockerBuildDiagnostic } from '../smoke/docker-build-diagnostics.ts'
 import { pebbleFailureCategories } from './diagnostics.ts'
 import { randomBytes } from 'node:crypto'
+import { isIPv4 } from 'node:net'
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -33,7 +34,7 @@ import type { FixtureControl, TrafficDiagnostic } from './Types/fixture-transpor
 
 export class ReliabilityError extends Error {
     constructor(
-        readonly category: 'command' | 'timeout' | 'assertion' | 'telemetry',
+        readonly category: 'command' | 'timeout' | 'assertion' | 'telemetry' | 'cancelled',
         label: string,
     ) {
         super(label)
@@ -44,6 +45,41 @@ const pebbleImage =
     'ghcr.io/letsencrypt/pebble:2.10.1@sha256:ddf230642b1a584f519f32e347de1b05a6e4c1f6c35c1863b33effeab5f78199'
 const healthcheck = '/opt/rentnerproxy/web/docker/web/healthcheck.ts'
 const repositoryRoot = resolve(import.meta.dir, '../..')
+
+/** Only the two controlled boundary inventory SANs may join this owned fixture's DNS. */
+export function createFixtureDnsAddressUpdater(domain: string, addresses: Map<string, string>) {
+    assert.match(
+        domain,
+        /^reliability-[a-f0-9]{12}\.example\.com$/u,
+        'Owned DNS fixture domain required',
+    )
+    const registered = new Set<string>()
+    return (address: string, aliases: readonly string[] = []) => {
+        assert.ok(isIPv4(address), 'Owned appliance must have an IPv4 address')
+        assert.ok(aliases.length <= 2, 'At most two boundary DNS aliases are allowed')
+        const next = new Set([...registered, ...aliases])
+        assert.ok(next.size <= 2, 'Boundary DNS registration stays bounded across refreshes')
+        const indexes = new Set<string>()
+        for (const alias of next) {
+            assert.ok(
+                alias.length <= 253 && alias.endsWith('-' + domain),
+                'Boundary DNS alias must use the owned fixture suffix',
+            )
+            const prefix = alias.slice(0, -(domain.length + 1))
+            const match = /^bg-(998|999)-(healthy|slow|timeout|failure)$/u.exec(prefix)
+            assert.ok(match, 'Only controlled boundary inventory domains are allowed')
+            assert.ok(
+                !indexes.has(match[1]!),
+                'Only one latency identity per boundary index is allowed',
+            )
+            indexes.add(match[1]!)
+        }
+        // Validate the whole update before mutating even the original A record.
+        for (const alias of aliases) registered.add(alias)
+        addresses.set(domain, address)
+        for (const alias of registered) addresses.set(alias, address)
+    }
+}
 
 export async function stageReliabilityFixtureSources(fixtureRoot: string): Promise<void> {
     for (const relativePath of [
@@ -124,6 +160,7 @@ export async function createHarness(options: ReliabilityOptions, checks: Reliabi
     if (!process.env.RENTNERPROXY_SMOKE_RUN) process.env.RENTNERPROXY_SMOKE_RUN = 'local-' + runId
     smokeRunScope()
     const prefix = 'rentnerproxy-reliability-' + runId
+    const domain = 'reliability-' + runId + '.example.com'
     const container = prefix + '-app'
     const pebble = prefix + '-pebble'
     const upstream = prefix + '-upstream'
@@ -140,6 +177,7 @@ export async function createHarness(options: ReliabilityOptions, checks: Reliabi
     const ownedImages: string[] = sharedHttp3Image ? [] : [http3Image]
     const docker = (args: string[], config?: CommandOptions) => command(['docker', ...args], config)
     const dns = await startCertificateDnsFixture(randomBytes(16).toString('hex'))
+    const updateDnsAddress = createFixtureDnsAddressUpdater(domain, dns.addresses)
     const traffic = createTrafficObserver()
     let fixtureTlsStarted = false
     let imageIdentity = 'sha256:' + '0'.repeat(64)
@@ -147,7 +185,6 @@ export async function createHarness(options: ReliabilityOptions, checks: Reliabi
     let image = options.image ?? builtImage
     let started = false
     const eventStart = Math.floor(Date.now() / 1000)
-    const domain = 'reliability-' + runId + '.example.com'
     function check(name: ReliabilityCheck['name'], label: string) {
         checks.push({ name, passed: true })
         console.log('PASS ' + label)
@@ -297,15 +334,14 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
             )
         }, 'desired revision did not become active')
     }
-    async function refreshDns() {
+    async function refreshDns(aliases: readonly string[] = []) {
         const address = await docker([
             'inspect',
             '--format',
             '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}',
             container,
         ])
-        assert.match(address, /^\d+\.\d+\.\d+\.\d+$/u)
-        dns.addresses.set(domain, address)
+        updateDnsAddress(address, aliases)
     }
     async function ready() {
         await waitFor(
@@ -709,6 +745,7 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
             traffic.recordFailure({ route, status, hostFetchCode: null })
         },
         startFixtureTls,
+        refreshDns,
         runId,
         container,
         network,

@@ -146,7 +146,7 @@ export function createWorkerObservability(
             if (!protectedStates.has(worker.state) && worker.degradedLanes.length === 0)
                 transition(worker, 'running')
             let finished = false
-            return (outcome) => {
+            return (outcome, finishOptions) => {
                 if (finished || startedGeneration !== generation || !outcomes.has(outcome)) return
                 finished = true
                 const finishedAt = now()
@@ -157,7 +157,10 @@ export function createWorkerObservability(
                 if (outcome === 'failure') worker.lastFailureAt = finishedAt
                 if (outcome === 'failure' && !worker.degradedLanes.includes(lane))
                     worker.degradedLanes.push(lane)
-                if (outcome === 'success' || outcome === 'deferred')
+                if (
+                    (outcome === 'success' || outcome === 'deferred') &&
+                    finishOptions?.recoverLane !== false
+                )
                     worker.degradedLanes = worker.degradedLanes.filter((item) => item !== lane)
                 const elapsed = Math.max(0, finishedAt - startedAt)
                 const boundedBucket = durationBoundsMs.findIndex((bound) => elapsed <= bound)
