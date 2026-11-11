@@ -10,8 +10,7 @@ import type {
 import { workerObservability } from './worker-observability.ts'
 import { startEventLoopObservation } from './event-loop-observation.ts'
 import { readRestoreMaintenanceObservation } from '@/server/Backups/restore-maintenance-status.server.ts'
-
-type RestoreObservation = Awaited<ReturnType<typeof readRestoreMaintenanceObservation>>
+import { advanceRestoreAdmission } from '@/server/Backups/restore-admission.ts'
 
 class WorkerStoppedInstanceError extends Error {
     constructor() {
@@ -53,19 +52,6 @@ export async function drainWorker(pending: Promise<unknown>, timeoutMs = 15_000)
         clearTimeout(timer)
     }
 }
-
-/** Keep writers fenced for queued/running restores and post-validation failures until the matching restore permits admission. */
-const shouldWait = (
-    status:
-        | RestoreObservation['maintenance']
-        | RestoreObservation['restoreResults'][number]
-        | undefined,
-) =>
-    status?.operation === 'restore' &&
-    (status.state === 'queued' ||
-        status.state === 'running' ||
-        ((status.state === 'interrupted' || status.state === 'failed') &&
-            !['queued', 'preparing', 'validating'].includes(status.phase)))
 
 /** Own deduplicated worker registration, bounded retry/drain, and irreversible maintenance/shutdown admission fences. */
 export function createWorkerLifecycleSupervisor() {
@@ -169,38 +155,7 @@ export function createWorkerLifecycleSupervisor() {
             return readiness
         }
         // A retry may replace the worker, but cannot forget a restore whose safe result is unconfirmed.
-        const waiting = new Set<string>()
-        const retainRestore = (restoreId: string) => {
-            // The root journal retains 100 IDs. Exhaustion cannot become admission proof.
-            if (!waiting.has(restoreId) && waiting.size === 100)
-                throw new Error('restore_admission_history_exhausted')
-            waiting.add(restoreId)
-        }
-        /** Root receipts preserve the serialized journal's append order; IDs and wall clocks are not ordering proof. */
-        const observeRestoreSafety = (observation: RestoreObservation) => {
-            const receipts = observation.restoreResults
-            const recovery = receipts.findLastIndex(
-                (receipt) => receipt.state === 'succeeded' && receipt.phase === 'complete',
-            )
-            for (const restoreId of waiting) {
-                const index = receipts.findIndex((receipt) => receipt.id === restoreId)
-                const result =
-                    observation.maintenance?.id === restoreId
-                        ? observation.maintenance
-                        : receipts[index]
-                if (observation.maintenance?.id === restoreId && shouldWait(result)) continue
-                if (
-                    (index >= 0 && index < recovery) ||
-                    (result?.operation === 'restore' &&
-                        !['queued', 'running'].includes(result.state) &&
-                        !shouldWait(result))
-                )
-                    waiting.delete(restoreId)
-            }
-            for (let index = recovery + 1; index < receipts.length; index++)
-                if (shouldWait(receipts[index])) retainRestore(receipts[index]!.id)
-            if (shouldWait(observation.maintenance)) retainRestore(observation.maintenance!.id)
-        }
+        let waiting = new Set<string>()
         const initializing = (async () => {
             if (maintenanceStopped || shutdownRequested || controller.signal.aborted) return
             const attempts = Math.max(1, Math.min(options.maxAttempts ?? 3, 10))
@@ -226,11 +181,11 @@ export function createWorkerLifecycleSupervisor() {
                         worker = await awaitStartup(pendingLoad, ownedLoad)
                     }
                     let observation = await readStatus()
-                    observeRestoreSafety(observation)
+                    waiting = advanceRestoreAdmission(waiting, observation)
                     if (waiting.size > 0) {
                         state('maintenance_paused')
                         while (!controller.signal.aborted) {
-                            observeRestoreSafety(observation)
+                            waiting = advanceRestoreAdmission(waiting, observation)
                             if (waiting.size === 0) break
                             await delay(250)
                             if (!controller.signal.aborted) observation = await readStatus()
