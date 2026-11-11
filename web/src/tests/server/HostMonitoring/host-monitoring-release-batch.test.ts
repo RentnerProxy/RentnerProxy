@@ -90,7 +90,7 @@ test('duplicate policies retain each old/new token result and a failed earlier b
         const first = { beforeCommit, batches, published, values: results.map(result => result.status === 'fulfilled' ? result.value : 'rejected') }
         fail = true; batches = []; tokens = new Map([['a', 'new'], ['b', 'late']])
         const siblings = await Promise.allSettled([claim('a', 'old'), claim('failed', 'live'), claim('a', 'new'), claim('b', 'late')].map(probe.release))
-        console.log(JSON.stringify({ first, second: { batches, published, values: siblings.map(result => result.status === 'fulfilled' ? result.value : result.reason.message) } }))
+        console.log(JSON.stringify({ first, second: { batches, published, values: siblings.map(result => result.status === 'fulfilled' ? result.value : { message: result.reason.message, cause: result.reason.cause.message }) } }))
     `,
         { cwd: new URL('../../..', import.meta.url) },
     )
@@ -107,7 +107,12 @@ test('duplicate policies retain each old/new token result and a failed earlier b
                 ['a:new', 'b:late'],
             ],
             published: 2,
-            values: ['first transaction failed', 'first transaction failed', true, true],
+            values: [
+                { message: 'host_monitoring_cleanup_failed', cause: 'first transaction failed' },
+                { message: 'host_monitoring_cleanup_failed', cause: 'first transaction failed' },
+                true,
+                true,
+            ],
         },
     })
 })
