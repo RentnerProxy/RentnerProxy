@@ -56,6 +56,24 @@ const fixtureContext: HostMonitoringContext = {
     revision: 'sha256:' + 'b'.repeat(64),
 }
 
+/** Retry only typed failures that prove admission never started SQL; bound each logical claimer. */
+async function claimWithAdmissionRetry(): Promise<HostMonitoringClaim[]> {
+    for (let attempt = 1; attempt <= 7; attempt++) {
+        try {
+            // oxlint-disable-next-line no-await-in-loop -- Retry only after this bounded admission attempt settles.
+            return await claimDueHostMonitoringPolicies(16)
+        } catch (error) {
+            if (
+                !(error instanceof ResourceAdmissionError) ||
+                (error.reason !== 'busy' && error.reason !== 'deadline') ||
+                attempt === 7
+            )
+                throw error
+        }
+    }
+    throw new Error('Monitoring claim admission attempt limit exhausted.')
+}
+
 function complete(
     claimed: HostMonitoringClaim,
     outcome: HostMonitoringOutcome,
@@ -357,23 +375,6 @@ describe('durable scheduled monitoring repository', () => {
                     configuredBy: actorId,
                 })),
             )
-            // Retry only typed failures that prove admission never started SQL; bound each logical claimer.
-            const claimWithAdmissionRetry = async (): Promise<HostMonitoringClaim[]> => {
-                for (let attempt = 1; attempt <= 7; attempt++) {
-                    try {
-                        // oxlint-disable-next-line no-await-in-loop -- Retry only after this bounded admission attempt settles.
-                        return await claimDueHostMonitoringPolicies(16)
-                    } catch (error) {
-                        if (
-                            !(error instanceof ResourceAdmissionError) ||
-                            (error.reason !== 'busy' && error.reason !== 'deadline') ||
-                            attempt === 7
-                        )
-                            throw error
-                    }
-                }
-                throw new Error('Monitoring claim admission attempt limit exhausted.')
-            }
             const batches = await Promise.all(
                 Array.from({ length: 6 }, () => claimWithAdmissionRetry()),
             )
