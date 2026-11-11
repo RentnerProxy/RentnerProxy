@@ -78,9 +78,11 @@ export async function applyProxyRuntimeConfiguration(
     return result.ok ? result.value : null
 }
 
+/** Reject oversized desired snapshots before transport, bound the apply deadline, and preserve cancellation plus retryability for recoverable controller failures. */
 export async function applyProxyRuntimeConfigurationResult(
     snapshot: ProxyRuntimeSnapshot,
     timeoutMs = CONTROLLER_APPLY_TIMEOUT_MS,
+    signal?: AbortSignal,
 ): Promise<ProxyRuntimeApplyResult> {
     const body = JSON.stringify(snapshot)
     if (Buffer.byteLength(body) > MAX_RUNTIME_PAYLOAD_BYTES)
@@ -96,6 +98,7 @@ export async function applyProxyRuntimeConfigurationResult(
 
     const response = await controllerRequestResult('/internal/v1/proxy/config', {
         timeoutMs: Math.min(timeoutMs, CONTROLLER_APPLY_TIMEOUT_MS),
+        ...(signal ? { signal } : {}),
         privileged: true,
         confidential: snapshot.proxyHosts.some(
             (host) => host.accessPolicy?.basicAuth !== undefined,

@@ -61,6 +61,8 @@ describe('restore maintenance fence', () => {
             ).status,
         ).toBe(503)
         await fence.enter('restore-id')
+        fence.release()
+        expect(fence.isFenced()).toBe(true)
         expect(calls).toEqual(['quiesce', 'ack'])
         await expect(fence.enter('other-restore')).rejects.toThrow('already entered')
     })
@@ -110,17 +112,19 @@ describe('restore maintenance fence', () => {
             },
         })
         await expect(fence.enter('restore')).rejects.toThrow('worker still running')
+        fence.release()
         expect(acknowledgements).toBe(0)
         expect(fence.authorize(authenticated())).toBe(false)
         expect(fence.isFenced()).toBe(true)
     })
 
-    test('bootstrap completion clears temporary access before allowing the restored application', async () => {
+    test('bootstrap completion releases a temporary preparation fence', async () => {
         const fence = createRestoreMaintenanceFence({
-            quiesce: async () => [{ tokenHash, expiresAt: new Date(Date.now() + 60_000) }],
+            prepare: async () => [{ tokenHash, expiresAt: new Date(Date.now() + 60_000) }],
+            quiesce: async () => [],
             acknowledge: async () => undefined,
         })
-        await fence.enter('restore')
+        await fence.prepare('restore')
         expect(fence.authorize(authenticated())).toBe(true)
         fence.release()
         expect(fence.authorize(authenticated())).toBe(false)

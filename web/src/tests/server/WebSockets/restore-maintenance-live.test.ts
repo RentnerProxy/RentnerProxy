@@ -1,6 +1,11 @@
 import { expect, test } from 'bun:test'
 
 import { runBunScript } from '@/tests/Helpers/runBunScript.ts'
+import {
+    backupRestoreSnapshotSchema,
+    managedBackupMaintenanceSchema,
+    managedRestoreResultSchema,
+} from '@/lib/Backups/validation.ts'
 import { createSubscriptionManager } from '@/server/WebSockets/realtimeSubscriptions.ts'
 import type {
     LiveConnectionData,
@@ -22,7 +27,37 @@ const maintenance = {
     startedAt: 110,
     finishedAt: null,
     error: null,
-}
+} as const
+
+test('historical display receipts are strict and cannot widen persisted maintenance or journal contracts', () => {
+    const historical = {
+        id: maintenance.id,
+        operation: 'restore',
+        state: 'failed',
+        phase: 'database',
+        detailsUnavailable: true,
+    } as const
+    expect(backupRestoreSnapshotSchema.parse({ maintenance: historical })).toEqual({
+        maintenance: historical,
+    })
+    expect(backupRestoreSnapshotSchema.parse({ maintenance })).toEqual({ maintenance })
+    expect(managedBackupMaintenanceSchema.safeParse(historical).success).toBe(false)
+    expect(managedRestoreResultSchema.safeParse(historical).success).toBe(false)
+    for (const invalid of [
+        { ...historical, actorName: 'Invented operator' },
+        { ...historical, artifactId: maintenance.artifactId },
+        { ...historical, progressPercent: 0 },
+        { ...historical, phase: 'validating' },
+        { ...historical, state: 'succeeded', phase: 'complete' },
+        { ...historical, detailsUnavailable: false },
+        { ...historical, id: 'not-a-restore-id' },
+    ])
+        expect(backupRestoreSnapshotSchema.safeParse({ maintenance: invalid }).success).toBe(false)
+    expect(
+        backupRestoreSnapshotSchema.safeParse({ maintenance: historical, privateState: true })
+            .success,
+    ).toBe(false)
+})
 
 test('restore snapshots use application access and disclose only maintenance; fenced reads use only cached authentication', async () => {
     const stdout = await runBunScript(
@@ -30,6 +65,7 @@ test('restore snapshots use application access and disclose only maintenance; fe
         import { mock } from 'bun:test'
         import { AuthDomainError } from './server/Auth/Core/errors.server.ts'
         const maintenance = ${JSON.stringify(maintenance)}
+        let fencedMaintenance = maintenance
         let fenced = false
         let cached = false
         let authorized = true
@@ -53,7 +89,7 @@ test('restore snapshots use application access and disclose only maintenance; fe
         mock.module('./server/Backups/restore-maintenance.server.ts', () => ({
             getActiveRestoreMaintenance: async () => {
                 if (statusError) throw new Error('Malformed root maintenance status')
-                return fenced ? maintenance : null
+                return fenced ? fencedMaintenance : null
             },
             isRestoreMaintenanceFenced: () => fenced,
             authorizeMaintenanceSnapshot: () => { cacheChecks++; return cached },
@@ -100,9 +136,12 @@ test('restore snapshots use application access and disclose only maintenance; fe
         for (const topic of ['app-events', 'foundation', 'backups', 'proxy-hosts', 'certificates', 'dns-connections', 'access-logs', 'audit-logs', 'crowdsec-dashboard', 'forward-auth'])
             suspended.push(await read(topic))
         const afterFence = { normalAuthCalls, controllerReads, ordinaryReads }
+        fencedMaintenance = { id: maintenance.id, operation: 'restore', state: 'failed', phase: 'database', detailsUnavailable: true }
+        const historicalViewer = await read('backup-restore')
+        const afterHistorical = { normalAuthCalls, controllerReads, ordinaryReads }
         statusError = true
         const invalidProgress = await read('backup-restore')
-        console.log(JSON.stringify({ publicViewer, deniedFullStatus, anonymous, readsAfterAnonymous, foreignOrigin, deletion, beforeFence, uncached, cachedViewer, suspended, afterFence, invalidProgress, permissions, cacheChecks }))
+        console.log(JSON.stringify({ publicViewer, deniedFullStatus, anonymous, readsAfterAnonymous, foreignOrigin, deletion, beforeFence, uncached, cachedViewer, suspended, afterFence, historicalViewer, afterHistorical, invalidProgress, permissions, cacheChecks }))
     `,
         { cwd: new URL('../../..', import.meta.url) },
     )
@@ -124,8 +163,19 @@ test('restore snapshots use application access and disclose only maintenance; fe
         expect(JSON.parse(snapshot.body)).toEqual({ maintenanceSuspended: true })
     }
     expect(result.afterFence).toEqual(result.beforeFence)
+    expect(result.historicalViewer.status).toBe(200)
+    expect(backupRestoreSnapshotSchema.parse(JSON.parse(result.historicalViewer.body))).toEqual({
+        maintenance: {
+            id: maintenance.id,
+            operation: 'restore',
+            state: 'failed',
+            phase: 'database',
+            detailsUnavailable: true,
+        },
+    })
+    expect(result.afterHistorical).toEqual(result.beforeFence)
     expect(result.invalidProgress).toMatchObject({ status: 503, body: '' })
-    expect(result.cacheChecks).toBe(12)
+    expect(result.cacheChecks).toBe(13)
 })
 
 test('subscription sampling keeps ordinary data unchanged while sending restore progress and completion', async () => {
@@ -223,11 +273,11 @@ test('restart workers wait for the matching restore success and a queued shutdow
         import { mock } from 'bun:test'
         const maintenance = ${JSON.stringify(maintenance)}
         let status = { ...maintenance, phase: 'restarting' }
-        mock.module('./server/Backups/restore-maintenance-status.server.ts', () => ({ readRestoreMaintenanceStatus: async () => status }))
+        mock.module('./server/Backups/restore-maintenance-status.server.ts', () => ({ readRestoreMaintenanceObservation: async () => ({ maintenance: status, restoreResults: [] }) }))
         const { startWorkerLifecycle, stopWorkersForRestoreMaintenance } = await import('./server/Foundation/worker-lifecycle.server.ts')
         const originalTimeout = globalThis.setTimeout
         const waits = []
-        globalThis.setTimeout = callback => { waits.push(callback); return 1 }
+        globalThis.setTimeout = (callback, milliseconds, ...args) => { if (milliseconds !== 250) return originalTimeout(callback, milliseconds, ...args); waits.push(callback); return 1 }
         const flush = async () => { for (let index = 0; index < 20; index++) await Promise.resolve() }
         const calls = []
         const initializing = startWorkerLifecycle(async () => ({ start: () => calls.push('start'), stop: async () => { calls.push('stop') } }))

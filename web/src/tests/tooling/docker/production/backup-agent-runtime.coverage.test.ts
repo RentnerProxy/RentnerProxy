@@ -128,7 +128,7 @@ describe('owned backup agent runtime', () => {
                         'utf8',
                     ),
                 )
-                expect(progress).toEqual({ maintenance: null })
+                expect(progress).toEqual({ maintenance: null, restoreResults: [] })
             } finally {
                 agent.shutdown()
             }

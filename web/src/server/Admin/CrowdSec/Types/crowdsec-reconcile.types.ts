@@ -7,8 +7,8 @@ export interface CrowdSecReconcileSnapshot {
 export interface CrowdSecReconcileDependencies<T extends CrowdSecReconcileSnapshot> {
     readonly enabled?: boolean
     readonly load: () => Promise<T>
-    readonly apply: (snapshot: T) => Promise<boolean>
-    readonly hasDrift: (snapshot: T) => Promise<boolean>
+    readonly apply: (snapshot: T, signal?: AbortSignal) => Promise<boolean>
+    readonly hasDrift: (snapshot: T, signal?: AbortSignal) => Promise<boolean>
 }
 
 export type CrowdSecReconciler = RuntimeReconciler

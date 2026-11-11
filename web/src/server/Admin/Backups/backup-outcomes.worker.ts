@@ -1,3 +1,4 @@
+import { drainWorker } from '@/server/Foundation/worker-lifecycle.server.ts'
 import type { BackupAuditWorkerDependencies } from './Types/backup-outcomes.types.ts'
 
 export function createBackupAuditWorker(dependencies: BackupAuditWorkerDependencies) {
@@ -39,11 +40,12 @@ export function createBackupAuditWorker(dependencies: BackupAuditWorkerDependenc
     return {
         runOnce,
         start() {
-            if (started) return
+            if (started || stopped) return
             started = true
             stopped = false
             void runOnce().finally(schedule)
         },
+        /** Stop admission and timers, abort ingestion, and await the actual current pass within the five-second drain bound. */
         async stop() {
             started = false
             stopped = true
@@ -51,17 +53,7 @@ export function createBackupAuditWorker(dependencies: BackupAuditWorkerDependenc
             timer = null
             controller?.abort()
             if (!running) return
-            let deadline: ReturnType<typeof setTimeout> | undefined
-            try {
-                await Promise.race([
-                    running,
-                    new Promise<void>((resolve) => {
-                        deadline = setTimeout(resolve, 5_000)
-                    }),
-                ])
-            } finally {
-                clearTimeout(deadline)
-            }
+            await drainWorker(running, 5_000)
         },
     }
 }

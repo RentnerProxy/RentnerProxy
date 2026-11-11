@@ -1,13 +1,14 @@
-import type { ManagedBackupMaintenance } from '@/lib/Backups/Types/backups.types.ts'
+import type { RestoreMaintenanceDisplay } from '@/lib/Backups/Types/backups.types.ts'
 import useTranslationStore from '@/shared/Language/Hooks/useTranslationStore.ts'
 import { buttonClassName } from '@/shared/Buttons/buttonStyles.ts'
 
+/** Render verified restore details or a historical blocker whose metadata and progress are unavailable. */
 export default function RestoreProgress({
     maintenance,
     disconnected,
     onDismiss,
 }: {
-    readonly maintenance: ManagedBackupMaintenance
+    readonly maintenance: RestoreMaintenanceDisplay
     readonly disconnected: boolean
     readonly onDismiss?: (() => void) | undefined
 }) {
@@ -22,24 +23,29 @@ export default function RestoreProgress({
                 <h1 id="restore-progress-title" className="text-3xl font-extrabold">
                     {t('admin.backups.restoreScreen.title')}
                 </h1>
-                <p className="text-ink-soft">
-                    {t('admin.backups.restoreScreen.description', {
-                        backup: maintenance.artifactId,
-                        user:
-                            maintenance.actorName ?? t('admin.backups.restoreScreen.actorUnknown'),
-                    })}
-                </p>
-                <label htmlFor="restore-progress" className="font-extrabold">
-                    {t('admin.backups.restoreScreen.progress', {
-                        percent: maintenance.progressPercent,
-                    })}
-                </label>
-                <progress
-                    id="restore-progress"
-                    max={100}
-                    value={maintenance.progressPercent}
-                    className="h-4 w-full accent-accent"
-                />
+                {'detailsUnavailable' in maintenance ? null : (
+                    <>
+                        <p className="text-ink-soft">
+                            {t('admin.backups.restoreScreen.description', {
+                                backup: maintenance.artifactId,
+                                user:
+                                    maintenance.actorName ??
+                                    t('admin.backups.restoreScreen.actorUnknown'),
+                            })}
+                        </p>
+                        <label htmlFor="restore-progress" className="font-extrabold">
+                            {t('admin.backups.restoreScreen.progress', {
+                                percent: maintenance.progressPercent,
+                            })}
+                        </label>
+                        <progress
+                            id="restore-progress"
+                            max={100}
+                            value={maintenance.progressPercent}
+                            className="h-4 w-full accent-accent"
+                        />
+                    </>
+                )}
                 <output className="text-sm text-ink-soft">
                     {t(`admin.backups.restoreScreen.phases.${maintenance.phase}`)}
                 </output>

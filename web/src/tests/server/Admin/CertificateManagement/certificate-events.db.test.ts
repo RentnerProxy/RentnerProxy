@@ -218,6 +218,39 @@ afterEach(async () => {
 
 describe('certificate event synchronization with PostgreSQL', () => {
     integrationTest(
+        'shutdown waits for an uncancellable event read and prevents its late persistence',
+        async () => {
+            const gate = Promise.withResolvers<void>()
+            const reached = Promise.withResolvers<void>()
+            eventBarrier = {
+                gate: gate.promise,
+                reached: reached.promise,
+                reachedResolve: () => reached.resolve(),
+                release: () => gate.resolve(),
+                calls: 1,
+            }
+            startCertificateEventsSynchronization()
+            await reached.promise
+            let drained = false
+            const stopping = stopCertificateEventsSynchronization().then(() => {
+                drained = true
+            })
+            await Bun.sleep(1)
+            expect(drained).toBe(false)
+            gate.resolve()
+            await stopping
+            expect(await readCursor()).toBeNull()
+            expect(await readEventRows()).toHaveLength(0)
+            expect(await readAuditRows()).toHaveLength(0)
+            eventBarrier = undefined
+            await synchronizeCertificateEventsOnce()
+            expect(await readCursor()).toBe(CURSOR)
+            expect(await readEventRows()).toHaveLength(1)
+            expect(await readAuditRows()).toHaveLength(1)
+        },
+    )
+
+    integrationTest(
         'persists manual DNS pause, cancellation and expiry before advancing later events',
         async () => {
             eventBatch = [

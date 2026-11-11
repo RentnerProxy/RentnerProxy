@@ -1,3 +1,4 @@
+import { drainWorker } from '@/server/Foundation/worker-lifecycle.server.ts'
 import type {
     Cursor,
     FetchedEvents,
@@ -76,9 +77,11 @@ async function readCursor(): Promise<CursorSnapshot> {
     }
 }
 
+/** Fetch a bounded event page set with cancellation between requests while retaining the expected cursor for fenced persistence. */
 async function fetchEventsAndMetadata(
     fetchCursor: Cursor,
     expectedCursor: Cursor,
+    signal?: AbortSignal,
 ): Promise<FetchedEvents> {
     let after = fetchCursor
     let nextCursor = fetchCursor
@@ -87,7 +90,12 @@ async function fetchEventsAndMetadata(
     const events: CertificateEventMetadata[] = []
 
     for (let pageNumber = 0; pageNumber < CERTIFICATE_EVENT_MAX_PAGES_PER_TICK; pageNumber += 1) {
-        const page = await getControllerCertificateEvents(after, CERTIFICATE_EVENT_PAGE_LIMIT)
+        signal?.throwIfAborted()
+        const page = await getControllerCertificateEvents(
+            after,
+            CERTIFICATE_EVENT_PAGE_LIMIT,
+            signal,
+        )
         resetRequired ||= page.resetRequired
         events.push(...page.events)
         nextCursor = page.nextCursor
@@ -200,14 +208,18 @@ async function persistFetchedBatch(batch: FetchedEvents): Promise<boolean> {
     })
 }
 
-export async function synchronizeCertificateEventsOnce(): Promise<boolean> {
+/** Check cancellation before reads, remote fetch, and durable persistence so an aborted batch cannot start a late cursor write. */
+export async function synchronizeCertificateEventsOnce(signal?: AbortSignal): Promise<boolean> {
+    signal?.throwIfAborted()
     const cursor = await readCursor()
-    return persistFetchedBatch(
-        await fetchEventsAndMetadata(cursor.fetchCursor, cursor.expectedCursor),
-    )
+    signal?.throwIfAborted()
+    const batch = await fetchEventsAndMetadata(cursor.fetchCursor, cursor.expectedCursor, signal)
+    signal?.throwIfAborted()
+    return persistFetchedBatch(batch)
 }
 
 let stopped = false
+let controller = new AbortController()
 let worker: Promise<void> | null = null
 let wakeResolver: (() => void) | null = null
 let retryTimer: ReturnType<typeof setTimeout> | null = null
@@ -234,7 +246,7 @@ async function waitForWakeOrDelay(milliseconds: number): Promise<void> {
     if (wakeResolver !== null) wakeResolver = null
 }
 
-/** Count event progress only for committed changes and retain bounded wakeable retry timing when synchronization fails. */
+/** Observe committed event changes with owned cancellation and bounded wakeable retry timing when synchronization fails. */
 async function runWorker(): Promise<void> {
     let retryDelay = CERTIFICATE_EVENT_INITIAL_RETRY_DELAY_MS
     // oxlint-disable-next-line no-unmodified-loop-condition -- stopCertificateEventsSynchronization changes this lifecycle flag.
@@ -242,8 +254,8 @@ async function runWorker(): Promise<void> {
         try {
             await observeWorkerOperation(
                 'certificate_events',
-                synchronizeCertificateEventsOnce,
-                undefined,
+                () => synchronizeCertificateEventsOnce(controller.signal),
+                controller.signal,
                 (committed) => (committed ? 'success' : 'deferred'),
             )
             if (stopped) break
@@ -263,18 +275,22 @@ async function runWorker(): Promise<void> {
     }
 }
 
+/** Start one synchronization loop with a fresh controller only after the previous loop has fully exited. */
 export function startCertificateEventsSynchronization(): void {
     if (worker !== null) return
     stopped = false
+    controller = new AbortController()
     worker = runWorker().finally(() => {
         worker = null
     })
 }
 
+/** Abort remote work, cancel retry waits, wake the loop, and require its actual bounded drain before returning. */
 export async function stopCertificateEventsSynchronization(): Promise<void> {
     stopped = true
+    controller.abort()
     if (retryTimer !== null) clearTimeout(retryTimer)
     retryTimer = null
     wake()
-    if (worker !== null) await worker
+    if (worker !== null) await drainWorker(worker)
 }

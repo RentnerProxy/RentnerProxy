@@ -1,3 +1,4 @@
+import { drainWorker, settleWorkerTasks } from '@/server/Foundation/worker-lifecycle.server.ts'
 // oxlint-disable no-await-in-loop -- Durable admission is serialized; transports run outside the claim transaction.
 import { NOTIFICATION_LIMITS as limits } from '@/config/notifications.config.ts'
 import type { NotificationDeliveryResult } from '@/lib/Notifications/Types/notifications.types.ts'
@@ -7,6 +8,7 @@ import type {
     NotificationWorkerDependencies,
 } from './Types/notification-worker.types.ts'
 
+/** Own collection and delivery for one worker lifetime; stop fences admission and retains drain ownership through late claims and durable acknowledgements. */
 export function createNotificationWorker(dependencies: NotificationWorkerDependencies) {
     let collectionTimer: ReturnType<typeof setTimeout> | null = null
     let deliveryTimer: ReturnType<typeof setTimeout> | null = null
@@ -18,6 +20,7 @@ export function createNotificationWorker(dependencies: NotificationWorkerDepende
     let controller = new AbortController()
     const active = new Set<Promise<void>>()
     let unsubscribe: (() => void) | undefined
+    let stopping: Promise<void> | null = null
     let started = false
     let stopped = false
     const unavailable = new Set<'collection' | 'delivery'>()
@@ -171,8 +174,9 @@ export function createNotificationWorker(dependencies: NotificationWorkerDepende
         wake() {
             scheduleDelivery(0)
         },
+        /** Admit collection and delivery once with a fresh controller; a permanently stopped or draining instance cannot restart. */
         start() {
-            if (started) return
+            if (started || stopped || stopping) return
             started = true
             stopped = false
             controller = new AbortController()
@@ -180,7 +184,9 @@ export function createNotificationWorker(dependencies: NotificationWorkerDepende
             void collectOnce()
             void dispatch()
         },
-        async stop() {
+        /** Fence all timers and admission, then settle late claims, active transports, and durable acknowledgements before confirming quiescence. */
+        stop(): Promise<void> {
+            if (stopping) return stopping
             stopped = true
             started = false
             unsubscribe?.()
@@ -191,8 +197,19 @@ export function createNotificationWorker(dependencies: NotificationWorkerDepende
             deliveryTimer = null
             controller.abort()
             // Drain late claims, cancelled transports and their durable acknowledgements before restore.
-            await Promise.all([collecting, dispatching, running])
-            await Promise.all(active)
+            stopping = drainWorker(
+                (async () => {
+                    const admission = settleWorkerTasks([collecting, dispatching, running])
+                    const admitted = await Promise.allSettled([admission])
+                    await settleWorkerTasks([
+                        ...active,
+                        ...admitted.map((result) =>
+                            result.status === 'rejected' ? Promise.reject(result.reason) : null,
+                        ),
+                    ])
+                })(),
+            )
+            return stopping
         },
     }
 }

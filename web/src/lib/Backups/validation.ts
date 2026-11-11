@@ -49,8 +49,30 @@ export const managedBackupMaintenanceSchema = z.strictObject({
         .enum(['execution_failed', 'recovery_failed', 'artifact_invalid', 'interrupted'])
         .nullable(),
 })
+/** Public admission evidence from the bounded root maintenance journal; no actor or artifact data. */
+export const managedRestoreResultSchema = managedBackupMaintenanceSchema
+    .pick({ id: true, operation: true, state: true, phase: true })
+    .extend({
+        operation: z.literal('restore'),
+        state: z.enum(['succeeded', 'failed', 'interrupted']),
+    })
+
+/** Display-only fallback for an unsafe historical receipt, without invented maintenance details. */
+export const historicalRestoreMaintenanceSchema = managedRestoreResultSchema.extend({
+    state: z.enum(['failed', 'interrupted']),
+    phase: managedBackupMaintenanceSchema.shape.phase.exclude([
+        'queued',
+        'preparing',
+        'validating',
+    ]),
+    detailsUnavailable: z.literal(true),
+})
+export const restoreMaintenanceDisplaySchema = z.union([
+    managedBackupMaintenanceSchema,
+    historicalRestoreMaintenanceSchema,
+])
 export const backupRestoreSnapshotSchema = z.strictObject({
-    maintenance: managedBackupMaintenanceSchema.nullable(),
+    maintenance: restoreMaintenanceDisplaySchema.nullable(),
 })
 export const managedBackupConfigurationUpdateSchema = managedBackupStartSchema.extend({
     expectedRevision: z.number().int().nonnegative().safe(),

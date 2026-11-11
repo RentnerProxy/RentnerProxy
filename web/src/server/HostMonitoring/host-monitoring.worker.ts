@@ -1,3 +1,5 @@
+import { drainWorker, settleWorkerTasks } from '@/server/Foundation/worker-lifecycle.server.ts'
+import { WorkerDrainTimeoutError } from '@/server/Foundation/Types/worker-lifecycle.types.ts'
 import { HOST_MONITORING_LIMITS } from '@/config/host-monitoring.config.ts'
 import type { HostMonitoringWorkerDependencies } from './Types/host-monitoring-worker.types.ts'
 import { HostMonitoringCleanupError } from './Types/host-monitoring-worker.types.ts'
@@ -195,14 +197,33 @@ export function createHostMonitoringWorker<Claim>(
             cancelTimer = null
             controller.abort()
             stopping = (async () => {
-                const admitted = await Promise.allSettled([admission, pruning])
-                const probes = await Promise.allSettled(running)
-                for (const result of [...admitted, ...probes])
-                    if (result.status === 'rejected') cleanupFailure ??= { reason: result.reason }
-                if (cleanupFailure) throw cleanupFailure.reason
-            })().then(() => {
-                stopping = null
-            })
+                await drainWorker(
+                    (async () => {
+                        const admitted = await Promise.allSettled([admission, pruning])
+                        await settleWorkerTasks([
+                            ...running,
+                            ...admitted.map((result) =>
+                                result.status === 'rejected' ? Promise.reject(result.reason) : null,
+                            ),
+                        ])
+                        if (cleanupFailure) throw cleanupFailure.reason
+                    })(),
+                )
+            })().then(
+                () => {
+                    stopping = null
+                },
+                (error: unknown) => {
+                    if (error instanceof WorkerDrainTimeoutError)
+                        void error.drained.then(
+                            () => {
+                                stopping = null
+                            },
+                            () => undefined,
+                        )
+                    throw error
+                },
+            )
             return stopping
         },
     }

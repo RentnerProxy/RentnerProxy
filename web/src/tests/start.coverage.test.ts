@@ -2,6 +2,7 @@ import { expect, mock, spyOn, test } from 'bun:test'
 
 type Worker = { start: () => unknown; stop: () => unknown }
 const workers: unknown[] = []
+const workersById = new Map<string, Worker>()
 const loaders: Promise<unknown>[] = []
 const validate = mock(() => {})
 const realtime = mock(() => {})
@@ -17,7 +18,11 @@ const applyHeaders = mock((_response: Response, _headers: Headers) => secured)
 const responseHeaders = mock((_headers: Headers) => {})
 const protocol = mock((_options: unknown) => 'https')
 const reconcileProxy = mock(() => {})
-const discovery = { start: mock(() => {}), stop: mock(() => {}) }
+const discoveryFlight = Promise.withResolvers<void>()
+const discovery = {
+    start: mock(() => discoveryFlight.promise),
+    stop: mock(() => discoveryFlight.promise),
+}
 const reconcileCrowdsec = mock(() => {})
 const certificateStart = mock(() => {})
 const certificateStop = mock(() => {})
@@ -59,9 +64,10 @@ mock.module('@/server/WebSockets/realtimeValkey.service.ts', () => ({
     startRealtimeValkey: realtime,
 }))
 mock.module('@/server/Foundation/worker-lifecycle.server.ts', () => ({
-    startWorkerLifecycle: (loader: () => Promise<unknown>) => {
+    startWorkerLifecycle: (loader: () => Promise<unknown>, id: string) => {
         const result = loader().then((worker) => {
             workers.push(worker)
+            workersById.set(id, worker as Worker)
             return worker
         })
         loaders.push(result)
@@ -113,15 +119,20 @@ test('server bootstrap validates production, binds every worker and coalesces te
         expect(validate).toHaveBeenCalledTimes(1)
         expect(realtime).toHaveBeenCalledTimes(1)
         expect(workers).toHaveLength(9)
-        for (const worker of [
-            reconcileProxy,
-            discovery,
-            reconcileCrowdsec,
-            backup,
-            notification,
-            monitor,
-        ])
+        for (const worker of [reconcileProxy, reconcileCrowdsec, backup, notification, monitor])
             expect(workers).toContain(worker)
+        const discoveryLifecycle = workersById.get('docker_discovery')!
+        expect(discoveryLifecycle.start()).toBeUndefined()
+        expect(discovery.start).toHaveBeenCalledTimes(1)
+        let discoveryDrained = false
+        const drainingDiscovery = Promise.resolve(discoveryLifecycle.stop()).then(() => {
+            discoveryDrained = true
+        })
+        await Bun.sleep(1)
+        expect(discoveryDrained).toBe(false)
+        discoveryFlight.resolve()
+        await drainingDiscovery
+        expect(discoveryDrained).toBe(true)
         expect(workers).toContainEqual({ start: certificateStart, stop: certificateStop })
         expect(workers).toContainEqual({ start: jobsStart, stop: jobsStop })
         cleanup = workers.find(
@@ -129,6 +140,7 @@ test('server bootstrap validates production, binds every worker and coalesces te
                 typeof worker === 'object' &&
                 worker !== null &&
                 'start' in worker &&
+                worker !== discoveryLifecycle &&
                 ![discovery, backup, notification, monitor].includes(worker as typeof discovery) &&
                 (worker as Worker).start !== certificateStart &&
                 (worker as Worker).start !== jobsStart,
@@ -142,10 +154,8 @@ test('server bootstrap validates production, binds every worker and coalesces te
         tick()
         expect(prune).toHaveBeenCalledTimes(1)
         releasePrune?.()
-        await Promise.resolve()
-        await Promise.resolve()
-        await Promise.resolve()
-        await Promise.resolve()
+        // Let the operation and its observation/finally handlers fully settle.
+        await new Promise<void>((resolve) => setImmediate(resolve))
         tick()
         expect(prune).toHaveBeenCalledTimes(2)
         releasePrune?.()
