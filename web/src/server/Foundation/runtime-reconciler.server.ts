@@ -151,6 +151,7 @@ export function createRuntimeReconciler<T>(
     function enqueue(): void {
         requested += 1
         if (!worker && !stopped) {
+            // The shared worker owns cancellation independently of the scope that first wakes it.
             worker = withBackgroundDatabaseContext(runWorker, controller.signal).finally(() => {
                 worker = null
             })
