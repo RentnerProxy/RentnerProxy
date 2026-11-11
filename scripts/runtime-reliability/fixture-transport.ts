@@ -5,13 +5,47 @@ export function startFixtureServers(ports: FixturePorts) {
     let upstreamFailed = false
     let authMode: 'allow' | 'deny' | 'unavailable' = 'allow'
     let tls: ReturnType<typeof Bun.serve> | undefined
+    const backgroundReceipts: {
+        index: number
+        latency: string
+        startedAt: number
+        finishedAt: number | null
+    }[] = []
+    let receiptsOverflowed = false
     const backend = (name: string, port: number) =>
         Bun.serve({
             hostname: '0.0.0.0',
             port,
             idleTimeout: fixtureTransport.idleTimeout,
-            fetch(request) {
+            async fetch(request) {
                 if (upstreamFailed) return new Response(null, { status: 503 })
+                const background = /^bg-(\d{1,3})-(healthy|slow|timeout|failure)-/u.exec(
+                    request.headers.get('host') ?? '',
+                )
+                if (request.method === 'HEAD' && background) {
+                    const receipt = {
+                        index: Number(background[1]),
+                        latency: background[2]!,
+                        startedAt: Date.now(),
+                        finishedAt: null as number | null,
+                    }
+                    if (backgroundReceipts.length < 10000) backgroundReceipts.push(receipt)
+                    else receiptsOverflowed = true
+                    const delay =
+                        receipt.latency === 'timeout' ? 4000 : receipt.latency === 'slow' ? 800 : 10
+                    await new Promise<void>((resolve) => {
+                        const finish = () => {
+                            clearTimeout(timer)
+                            request.signal.removeEventListener('abort', finish)
+                            resolve()
+                        }
+                        const timer = setTimeout(finish, delay)
+                        request.signal.addEventListener('abort', finish, { once: true })
+                        if (request.signal.aborted) finish()
+                    })
+                    receipt.finishedAt = Date.now()
+                    return new Response(null, { status: receipt.latency === 'failure' ? 503 : 200 })
+                }
                 return Response.json({
                     backend: name,
                     user: request.headers.get('Remote-User'),
@@ -39,6 +73,14 @@ export function startFixtureServers(ports: FixturePorts) {
         hostname: '127.0.0.1',
         port: ports.controlPort,
         async fetch(request) {
+            if (
+                request.method === 'GET' &&
+                new URL(request.url).pathname === '/background-receipts'
+            )
+                return Response.json({
+                    overflowed: receiptsOverflowed,
+                    receipts: backgroundReceipts,
+                })
             if (request.method === 'GET') return new Response(null, { status: 200 })
             if (request.method !== 'POST') return new Response(null, { status: 405 })
             let input: unknown

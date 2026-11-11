@@ -14,6 +14,42 @@ async function workflow(): Promise<string> {
     return readFile(workflowPath, 'utf8')
 }
 
+test('bounded background regressions reuse exact AMD64 and ARM64 images without enabling capacity or release profiles', async () => {
+    for (const [path, job] of [
+        ['.github/workflows/production-smokes.yml', 'runtime-reliability'],
+        ['.github/workflows/arm64-appliance.yml', 'native-arm64'],
+    ] as const) {
+        // oxlint-disable-next-line no-await-in-loop -- Each provider job is checked against its own image handoff.
+        const document = Bun.YAML.parse(await repositoryFile(path)) as {
+            jobs: Record<
+                string,
+                { steps: { run?: string; uses?: string; with?: Record<string, unknown> }[] }
+            >
+        }
+        const steps = document.jobs[job]!.steps
+        const commands = steps.flatMap((step) =>
+            step.run?.includes('background-run.ts') ? [step.run] : [],
+        )
+        expect(commands).toHaveLength(1)
+        expect(commands[0]).toContain('--policies 100 --duration-seconds 120')
+        expect(commands[0]).toContain(
+            '--image "rentnerproxy-smoke-${RENTNERPROXY_SMOKE_RUN}:appliance"',
+        )
+        expect(commands[0]).not.toContain('--extended-recovery')
+        expect(commands[0]).not.toContain('--profile long')
+        expect(steps.some((step) => step.run?.includes('"capacity":"insufficient"'))).toBe(true)
+        expect(
+            steps
+                .filter((step) => step.uses?.startsWith('actions/upload-artifact@'))
+                .some(
+                    (step) =>
+                        String(step.with?.path).includes('background') &&
+                        step.with?.['if-no-files-found'] === 'error',
+                ),
+        ).toBe(true)
+    }
+})
+
 function externalActionReferences(source: string): readonly string[] {
     return [...source.matchAll(/^\s*uses:\s+([^\s]+)(?:\s+#.*)?$/gmu)].map((match) => match[1]!)
 }
