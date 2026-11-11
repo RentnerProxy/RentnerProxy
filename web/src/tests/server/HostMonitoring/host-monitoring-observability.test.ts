@@ -14,6 +14,7 @@ test('stored busy results defer admission without claiming success or hiding act
             claimDueHostMonitoringPolicies: async () => [],
             completeHostMonitoringClaims: async items => items.map(() => ({ status: 'fulfilled', value: true })),
             readHostMonitoringClaimContexts: async () => [],
+            readNextHostMonitoringAdmissionAt: async () => null,
             releaseHostMonitoringClaim: async () => {}, pruneHostMonitoringHistory: async () => {},
         }))
         mock.module('./server/HostMonitoring/host-monitoring.batch.ts', () => ({
@@ -24,7 +25,9 @@ test('stored busy results defer admission without claiming success or hiding act
         }))
         mock.module('./server/HostMonitoring/host-monitoring.observability.ts', () => ({ sampleHostMonitoringBacklog: async () => {} }))
         mock.module('./server/Controller/domain-diagnostics.server.ts', () => ({ inspectControllerDomain: async () => {} }))
-        mock.module('./server/WebSockets/applicationChanges.ts', () => ({ publishApplicationChange() {} }))
+        mock.module('./server/WebSockets/applicationChanges.ts', () => ({
+            publishApplicationChange() {}, subscribeToApplicationChanges: () => () => {},
+        }))
         const { workerObservability } = await import('./server/Foundation/worker-observability.ts')
         await import('./server/HostMonitoring/host-monitoring.worker.server.ts')
         workerObservability.reset()
