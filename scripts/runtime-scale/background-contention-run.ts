@@ -15,12 +15,43 @@ import { recoveryDependencies } from '../runtime-reliability/run.ts'
 import { recoverReliabilityComponent } from '../runtime-reliability/component-recovery.ts'
 import type { BackgroundOptions } from './Types/background.types.ts'
 
+/** Stop always runs; diagnostics never replace the original workload or stop failure. */
+export async function withContentionCleanup<T>(
+    operation: () => Promise<T>,
+    stop: () => Promise<unknown>,
+    report: (category: 'contention-stop-failed') => void,
+): Promise<T> {
+    const outcome = await Promise.resolve()
+        .then(operation)
+        .then(
+            (value) => ({ status: 'fulfilled' as const, value }),
+            (reason: unknown) => ({ status: 'rejected' as const, reason }),
+        )
+    let stopFailed = false
+    let stopFailure: unknown
+    try {
+        await stop()
+    } catch (error) {
+        stopFailed = true
+        stopFailure = error
+        try {
+            report('contention-stop-failed')
+        } catch {
+            /* Best-effort diagnostics cannot mask either failure. */
+        }
+    }
+    if (outcome.status === 'rejected') throw outcome.reason
+    if (stopFailed) throw stopFailure
+    return outcome.value
+}
+
 export async function runContentionWindow(
     harness: Awaited<ReturnType<typeof createHarness>>,
     options: BackgroundOptions,
     sampleResources: () => Promise<void>,
     started: () => void,
     signal: AbortSignal,
+    reportCleanupFailure?: (category: 'contention-stop-failed') => void,
 ) {
     const context = harness.context
     const extra = {
@@ -84,7 +115,7 @@ export async function runContentionWindow(
     const samples: ContentionSample[] = []
     let proxyErrors = 0
     let snapshot
-    try {
+    const workload = async () => {
         await context.docker([
             'exec',
             '--detach',
@@ -202,7 +233,15 @@ export async function runContentionWindow(
             managementMs: samples.map((item) => item.managementMs),
             proxyErrors,
         }
-    } finally {
-        if (seeded) await context.fixture('background-contention-stop', extra)
     }
+    return withContentionCleanup(
+        workload,
+        async () => {
+            if (seeded) await context.fixture('background-contention-stop', extra)
+        },
+        (category) => {
+            reportCleanupFailure?.(category)
+            console.error('Contention cleanup failure: ' + category)
+        },
+    )
 }

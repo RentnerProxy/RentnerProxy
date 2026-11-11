@@ -51,7 +51,7 @@ export function startBackgroundDockerEngine(
         controller.enqueue(
             new TextEncoder().encode(batch.map((item) => JSON.stringify(item)).join('\n') + '\n'),
         )
-        if (streams <= 3) controller.close()
+        if (emitted < events.length) controller.close()
     }
     const server = Bun.serve({
         hostname: '127.0.0.1',
@@ -61,9 +61,11 @@ export function startBackgroundDockerEngine(
             if (request.method !== 'GET') return new Response(null, { status: 403 })
             if (path === '/v1.47/events') {
                 streams++
+                let own: ReadableStreamDefaultController<Uint8Array> | undefined
                 return new Response(
-                    new ReadableStream({
+                    new ReadableStream<Uint8Array>({
                         start(controller) {
+                            own = controller
                             if (armed) send(controller)
                             else {
                                 controller.enqueue(new TextEncoder().encode('\n'))
@@ -71,7 +73,7 @@ export function startBackgroundDockerEngine(
                             }
                         },
                         cancel() {
-                            waiting.clear()
+                            if (own) waiting.delete(own)
                         },
                     }),
                     { headers: { 'content-type': 'application/json' } },
@@ -97,6 +99,7 @@ export function startBackgroundDockerEngine(
         server,
         ids: inventory.map((item) => item.Id),
         events,
+        waitingStreams: () => waiting.size,
         arm() {
             armed = true
             for (const controller of waiting) send(controller)

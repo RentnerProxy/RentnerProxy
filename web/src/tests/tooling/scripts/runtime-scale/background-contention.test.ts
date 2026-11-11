@@ -224,6 +224,44 @@ test('controlled Docker events wait for the overlap barrier and change only deta
     }
 })
 
+test('cancelling one paused Docker stream preserves the other stream for the arm barrier', async () => {
+    const engine = startBackgroundDockerEngine(419, { initiallyPaused: true })
+    try {
+        const url = `http://127.0.0.1:${engine.server.port}/v1.47/events`
+        const cancelled = (await fetch(url)).body!.getReader()
+        await cancelled.read()
+        const survivor = (await fetch(url)).body!.getReader()
+        await survivor.read()
+        expect(engine.waitingStreams()).toBe(2)
+        await cancelled.cancel()
+        const deadline = performance.now() + 1000
+        while (engine.waitingStreams() !== 1 && performance.now() < deadline) {
+            // oxlint-disable-next-line no-await-in-loop -- Wait for the actual server-side cancel acknowledgment before arming.
+            await Bun.sleep(1)
+        }
+        expect(engine.waitingStreams()).toBe(1)
+        engine.arm()
+        const burst = await survivor.read()
+        expect(new TextDecoder().decode(burst.value).trim().split('\n')).toHaveLength(64)
+        expect(engine.stats()).toMatchObject({ streams: 2, emitted: 64 })
+        expect(engine.waitingStreams()).toBe(0)
+        await survivor.cancel()
+        for (let index = 0; index < 2; index++) {
+            // oxlint-disable-next-line no-await-in-loop -- Each positive event batch must finish before the next reconnect.
+            const response = await fetch(url)
+            // oxlint-disable-next-line no-await-in-loop -- These first three batches close; only the final batch retains its stream.
+            expect((await response.text()).trim().split('\n')).toHaveLength(64)
+        }
+        const final = (await fetch(url)).body!.getReader()
+        const remaining = await final.read()
+        expect(new TextDecoder().decode(remaining.value).trim().split('\n')).toHaveLength(64)
+        expect(engine.stats()).toMatchObject({ streams: 5, emitted: 256 })
+        await final.cancel()
+    } finally {
+        engine.stop()
+    }
+})
+
 test('actual private TLS SMTP AUTH and webhook receivers retain slow in-flight work and allowlisted receipt counts', async () => {
     const receiver = await startBackgroundNotificationReceivers({ delayMs: 300 })
     const transport = createTransport({

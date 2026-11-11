@@ -220,6 +220,7 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
         reason: 'Explicit --extended-recovery true required for certificate interruption, active-work restore and audit replay',
     }
     let failure: string | undefined
+    const cleanupFailures: 'contention-stop-failed'[] = []
     let failureContext:
         | (ReturnType<typeof backgroundFailureDiagnostic> & {
               stage: string
@@ -289,6 +290,9 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
                     origin = performance.now()
                 },
                 abort.signal,
+                (category) => {
+                    cleanupFailures.push(category)
+                },
             )
             snapshot = result.snapshot
             contention = result.report
@@ -551,6 +555,7 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
             reason: 'A bounded first-cadence regression cannot establish sustained production capacity',
         },
         ...(failure ? { failure, failureContext } : {}),
+        ...(cleanupFailures.length ? { cleanupFailures } : {}),
     }
     const path = resolve(
         options.reportPath ?? join(import.meta.dir, '../../tmp/runtime-background/report.json'),

@@ -41,7 +41,7 @@ export async function getBackgroundProxyRuntimeSnapshotService(
 
 export const reconcileProxyConfigurationService = createProxyReconciler({
     enabled: isProxyRuntimeReconciliationEnabled(),
-    loadSnapshot: getBackgroundProxyRuntimeSnapshotService,
+    loadSnapshot: () => getBackgroundProxyRuntimeSnapshotService(),
     applySnapshot: applyProxyRuntimeConfigurationResult,
     checkDrift: async (signal) => {
         const [snapshot, runtime] = await Promise.all([
