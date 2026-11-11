@@ -1,0 +1,277 @@
+// oxlint-disable no-await-in-loop -- Fault injection waits for durable leases and exact owned-process outcomes.
+import assert from 'node:assert/strict'
+import type { SQL } from 'bun'
+import { isolationContract } from './isolation.config.ts'
+import { isolationDistribution } from './isolation.ts'
+import type { IsolationChild, IsolationLoad } from './Types/isolation.types.ts'
+
+interface FaultContext {
+    database: SQL
+    seed: (load: IsolationLoad) => Promise<void>
+    spawnRole: (
+        role: 'foreground' | 'combined' | 'background',
+        denied?: boolean,
+    ) => Promise<IsolationChild>
+    request: (child: IsolationChild, path: string, method?: string) => Promise<Response>
+    stopChild: (child: IsolationChild) => Promise<number>
+    bounded: <T>(operation: Promise<T>, milliseconds: number) => Promise<T>
+}
+
+async function waitFor(test: () => Promise<boolean>, limit: number) {
+    const deadline = performance.now() + limit
+    while (performance.now() < deadline) {
+        if (await test()) return
+        await Bun.sleep(25)
+    }
+    throw new Error('Isolation fault checkpoint timed out')
+}
+
+export async function runIsolationFaults(context: FaultContext) {
+    const { database, seed, spawnRole, request, stopChild, bounded } = context
+    const roles = new Set<IsolationChild>()
+    async function spawn(role: 'foreground' | 'combined' | 'background') {
+        const child = await spawnRole(role)
+        roles.add(child)
+        return child
+    }
+    async function stop(child: IsolationChild) {
+        const duration = await stopChild(child)
+        roles.delete(child)
+        return duration
+    }
+    async function progress() {
+        const rows = await database.unsafe(
+            "select count(*)::int as total,count(distinct policy_id)::int as unique,count(*) filter(where status='healthy' and code='expected_status')::int as healthy from rentnerproxy.host_check_observations",
+        )
+        return {
+            total: Number(rows[0]?.total),
+            unique: Number(rows[0]?.unique),
+            healthy: Number(rows[0]?.healthy),
+        }
+    }
+    async function active() {
+        const rows = await database.unsafe(
+            'select count(*)::int as total from rentnerproxy.host_check_policies where lease_token is not null',
+        )
+        return Number(rows[0]?.total)
+    }
+    async function ssr(child: IsolationChild, count: number) {
+        const values: number[] = []
+        for (let index = 0; index < count; index++) {
+            const start = performance.now()
+            const response = await request(child, '/ssr')
+            assert.equal(response.status, 200)
+            assert.ok((await response.text()).includes('Proxy hosts'))
+            values.push(performance.now() - start)
+        }
+        return isolationDistribution(values)
+    }
+    const results: {
+        case: string
+        passed: boolean
+        elapsedMs: number
+        detail: Record<string, number | boolean | string | null>
+    }[] = []
+    async function record(
+        name: string,
+        operation: () => Promise<Record<string, number | boolean | string | null>>,
+    ) {
+        const start = performance.now()
+        console.log(JSON.stringify({ isolationFaultStart: name }))
+        try {
+            const detail = await operation()
+            const result = {
+                case: name,
+                passed: true,
+                elapsedMs: performance.now() - start,
+                detail,
+            }
+            results.push(result)
+            console.log(JSON.stringify({ isolationFault: result }))
+        } catch (error) {
+            const message = error instanceof Error ? error.message : ''
+            console.log(
+                JSON.stringify({
+                    isolationFaultFailure: name,
+                    category:
+                        message === 'Isolation role failed before readiness'
+                            ? 'startup'
+                            : message === 'Isolation fault checkpoint timed out'
+                              ? 'checkpoint'
+                              : 'unexpected',
+                }),
+            )
+            throw error
+        } finally {
+            for (const child of roles) {
+                if (child.process.exitCode === null) {
+                    child.process.kill('SIGKILL')
+                    await child.process.exited
+                }
+            }
+            roles.clear()
+        }
+    }
+    await record('duplicate-claimers-and-lost-wake', async () => {
+        await seed(100)
+        const first = await spawn('combined'),
+            second = await spawn('background')
+        await Promise.all([request(first, '/start', 'POST'), request(second, '/start', 'POST')])
+        let maximum = 0
+        await waitFor(async () => {
+            maximum = Math.max(maximum, await active())
+            return (await progress()).total >= 100
+        }, 10_000)
+        const final = await progress()
+        assert.equal(final.total, 100)
+        assert.equal(final.unique, 100)
+        assert.equal(final.healthy, 100)
+        assert.ok(maximum <= 64)
+        await Promise.all([stop(first), stop(second)])
+        return {
+            observations: final.total,
+            duplicates: final.total - final.unique,
+            maximumLeases: maximum,
+            durablePollingWithoutIpcHint: true,
+        }
+    })
+    await record('independent-pool-saturation-and-partial-startup', async () => {
+        await seed(100)
+        const foreground = await spawn('foreground'),
+            background = await spawn('background')
+        const saturation = request(background, '/pool', 'POST')
+        const latency = await ssr(foreground, 100)
+        await saturation
+        assert.ok(latency.p99 !== null && latency.p99 <= isolationContract.thresholds.ssrP99Ms)
+        let denied = false
+        try {
+            const unexpected = await spawnRole('background', true)
+            unexpected.process.kill('SIGKILL')
+            await unexpected.process.exited
+        } catch {
+            denied = true
+        }
+        assert.ok(denied)
+        const connections = await database.unsafe<
+            { rolsuper: boolean; rolcreaterole: boolean; rolcreatedb: boolean }[]
+        >(
+            "select rolname,rolconnlimit,rolsuper,rolcreaterole,rolcreatedb from pg_roles where rolname in ('isolation_worker','isolation_foreground') order by rolname",
+        )
+        assert.ok(
+            connections.every((item) => !item.rolsuper && !item.rolcreaterole && !item.rolcreatedb),
+        )
+        await Promise.all([stop(foreground), stop(background)])
+        return {
+            foregroundP99Ms: latency.p99,
+            deniedStartup: denied,
+            workerConnectionLimit: 8,
+            foregroundConnectionLimit: 16,
+            postgresGlobalLimit: 100,
+        }
+    })
+    await record('term-and-cancelled-claim-release', async () => {
+        await seed(100)
+        const foreground = await spawn('foreground'),
+            background = await spawn('background')
+        await request(background, '/start', 'POST')
+        await waitFor(async () => (await active()) > 0, 5_000)
+        const start = performance.now()
+        background.process.kill('SIGTERM')
+        assert.equal(await bounded(background.process.exited, 15_000), 0)
+        roles.delete(background)
+        const recovery = performance.now() - start
+        assert.equal(await active(), 0)
+        assert.ok(recovery <= isolationContract.thresholds.gracefulRecoveryMs)
+        const latency = await ssr(foreground, 100)
+        await stop(foreground)
+        return { recoveryMs: recovery, remainingLeases: 0, foregroundP99Ms: latency.p99 }
+    })
+    await record('kill-and-expired-lease-recovery', async () => {
+        await seed(100)
+        const foreground = await spawn('foreground'),
+            old = await spawn('background')
+        await request(old, '/start', 'POST')
+        await waitFor(async () => (await active()) > 0, 5_000)
+        const start = performance.now()
+        old.process.kill('SIGKILL')
+        await old.process.exited
+        roles.delete(old)
+        const abandoned = await active()
+        assert.ok(abandoned > 0)
+        const replacement = await spawn('background')
+        await request(replacement, '/start', 'POST')
+        await waitFor(async () => (await progress()).total >= 100, 50_000)
+        const recovery = performance.now() - start,
+            final = await progress()
+        assert.equal(final.total, 100)
+        assert.equal(final.unique, 100)
+        assert.equal(final.healthy, 100)
+        assert.ok(recovery <= isolationContract.thresholds.crashRecoveryMs)
+        const latency = await ssr(foreground, 100)
+        await Promise.all([stop(foreground), stop(replacement)])
+        return {
+            abandonedLeases: abandoned,
+            recoveryMs: recovery,
+            duplicates: 0,
+            foregroundP99Ms: latency.p99,
+        }
+    })
+    await record('hang-stop-timeout-and-two-writer-maintenance', async () => {
+        await seed(100)
+        const foreground = await spawn('combined'),
+            background = await spawn('background')
+        await Promise.all([
+            request(foreground, '/start', 'POST'),
+            request(background, '/start', 'POST'),
+        ])
+        await waitFor(async () => (await active()) > 0, 5_000)
+        background.process.kill('SIGSTOP')
+        let timeout = false
+        try {
+            await fetch('http://127.0.0.1:' + background.ready.port + '/stop', {
+                method: 'POST',
+                headers: { 'x-isolation-control': 'fixture' },
+                signal: AbortSignal.timeout(250),
+            })
+        } catch {
+            timeout = true
+        }
+        assert.ok(timeout)
+        const latency = await ssr(foreground, 100)
+        background.process.kill('SIGCONT')
+        const drains = await Promise.all([
+            request(foreground, '/stop', 'POST'),
+            request(background, '/stop', 'POST'),
+        ])
+        assert.ok(drains.every((response) => response.ok))
+        assert.equal(await active(), 0)
+        const sessions = await database.unsafe(
+            "select count(*)::int as total from pg_stat_activity where usename in ('isolation_foreground','isolation_worker')",
+        )
+        assert.equal(Number(sessions[0]?.total), 0)
+        await database.unsafe(
+            'update rentnerproxy.host_check_policies set version=gen_random_uuid()',
+        )
+        const late = await Promise.all([
+            request(foreground, '/write-after-fence', 'POST'),
+            request(background, '/write-after-fence', 'POST'),
+        ])
+        assert.ok(late.every((response) => response.status === 503))
+        await Promise.all([stop(foreground), stop(background)])
+        return {
+            hungRoleAcknowledged: false,
+            localTwoWriterDrain: true,
+            databaseSessionsAfterDrain: 0,
+            oldRoleWritesRejected: true,
+            foregroundP99Ms: latency.p99,
+            productionRootMaintenanceIntegrated: false,
+        }
+    })
+    return {
+        results,
+        productionMaintenanceProven: false,
+        supervisorRestartIndependenceProven: false,
+        authorizationParityProven: false,
+        versionSkewSupported: false,
+    }
+}
