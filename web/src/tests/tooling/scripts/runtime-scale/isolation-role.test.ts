@@ -1,7 +1,11 @@
 import { expect, test } from 'bun:test'
 import { runBunScript } from '@/tests/Helpers/runBunScript.ts'
 import { readIsolationPoolSaturation } from '../../../../../../scripts/runtime-scale/isolation-role.ts'
-import { assertIsolationPoolSaturation } from '../../../../../../scripts/runtime-scale/isolation-faults.ts'
+import {
+    assertIsolationPoolSaturation,
+    hasCompleteIsolationPoolActivity,
+    measureSsrUnderPoolActivity,
+} from '../../../../../../scripts/runtime-scale/isolation-faults.ts'
 
 test('role imports remain inert and reject an unflagged identity before database imports', async () => {
     const output = await runBunScript(`
@@ -185,4 +189,18 @@ test('the fault caller requires successful status and exact complete saturation 
         Response.json({ requested: 0, succeeded: 0, failed: 0 }),
         Response.json({ settled: 8 }),
     ].map(response => expect(assertIsolationPoolSaturation(response)).rejects.toThrow()))
+})
+
+test('pool saturation evidence rejects queued work without eight active PostgreSQL worker PIDs', () => {
+    expect(hasCompleteIsolationPoolActivity({ active: 8, pids: 8 })).toBe(true)
+    expect(hasCompleteIsolationPoolActivity({ active: 0, pids: 0 })).toBe(false)
+    expect(hasCompleteIsolationPoolActivity({ active: 8, pids: 7 })).toBe(false)
+})
+
+test('SSR rejection is observed while the measured pool promise remains owned', async () => {
+    const outcome = { status: 'rejected' as const, reason: new Error('SSR failed') }
+    await expect(measureSsrUnderPoolActivity(Promise.resolve(outcome), async () => true)).resolves.toEqual({
+        held: true,
+        outcome,
+    })
 })

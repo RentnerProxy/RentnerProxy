@@ -19,6 +19,9 @@ interface FaultContext {
     snapshotPath: string
 }
 
+type Settled<T> = { status: 'fulfilled'; value: T } | { status: 'rejected'; reason: unknown }
+const isolationPoolBarrierKey = 1_380_864_088
+
 /** A completed HTTP request is not proof that every requested saturation query succeeded. */
 export async function assertIsolationPoolSaturation(response: Response): Promise<void> {
     if (response.status !== 200) {
@@ -30,6 +33,41 @@ export async function assertIsolationPoolSaturation(response: Response): Promise
         succeeded: isolationContract.workerConnections,
         failed: 0,
     })
+}
+
+/** Accept saturation only when PostgreSQL reports eight distinct active worker backends for the exact blocked fixture query. */
+export function hasCompleteIsolationPoolActivity(activity: {
+    active: number | string
+    pids: number | string
+}) {
+    return (
+        Number(activity.active) === isolationContract.workerConnections &&
+        Number(activity.pids) === isolationContract.workerConnections
+    )
+}
+
+/** Observe only the dedicated worker role and exact advisory-lock statement issued by the private pool fault. */
+async function activeIsolationPoolQueries(database: SQL) {
+    const rows = await database.unsafe<{ active: number; pids: number }[]>(
+        "select count(*)::int as active,count(distinct pid)::int as pids from pg_stat_activity where usename='isolation_worker' and datname=current_database() and state='active' and wait_event_type='Lock' and query='select pg_advisory_xact_lock(1380864088)'",
+    )
+    return hasCompleteIsolationPoolActivity(rows[0] ?? { active: 0, pids: 0 })
+}
+
+/** Sample actual PostgreSQL activity while SSR runs; each loop iteration races measurement completion against the next observation tick. */
+export async function measureSsrUnderPoolActivity<T>(
+    measurement: Promise<Settled<T>>,
+    readActivity: () => Promise<boolean>,
+) {
+    let held = true
+    while (true) {
+        const next = await Promise.race([
+            measurement.then((outcome) => ({ done: true as const, outcome })),
+            Bun.sleep(25).then(() => ({ done: false as const })),
+        ])
+        if (next.done) return { held, outcome: next.outcome }
+        held = (await readActivity()) && held
+    }
 }
 
 /** Poll a durable checkpoint every 25 milliseconds until its deadline; propagate checkpoint failures and reject an unmet deadline. */
@@ -162,29 +200,69 @@ export async function runIsolationFaults(context: FaultContext) {
         await seed(100)
         const foreground = await spawn('foreground'),
             background = await spawn('background')
-        const saturation = request(background, '/pool', 'POST')
-        await waitFor(async () => {
-            const status = await request(background, '/pool-status')
-            assert.equal(status.status, 200)
-            const value = (await status.json()) as { active: number; peak: number }
-            return (
-                value.active === isolationContract.workerConnections &&
-                value.peak === isolationContract.workerConnections
+        const barrierReady = Promise.withResolvers<void>()
+        const releaseBarrier = Promise.withResolvers<void>()
+        const barrier = database
+            .transaction(async (transaction) => {
+                await transaction.unsafe(
+                    'select pg_advisory_xact_lock(' + isolationPoolBarrierKey + ')',
+                )
+                barrierReady.resolve()
+                await releaseBarrier.promise
+            })
+            .then(
+                () => ({ status: 'fulfilled' as const }),
+                (reason: unknown) => ({ status: 'rejected' as const, reason }),
             )
-        }, 5000)
-        let measuring = true
-        const latencyPromise = ssr(foreground, 100).finally(() => (measuring = false))
-        let saturationHeldThroughSsr = true
-        while (measuring) {
-            const status = await request(background, '/pool-status')
-            assert.equal(status.status, 200)
-            const value = (await status.json()) as { active: number }
-            saturationHeldThroughSsr &&= value.active === isolationContract.workerConnections
-            await Bun.sleep(25)
+        await Promise.race([
+            barrierReady.promise,
+            barrier.then((outcome) => {
+                throw outcome.status === 'rejected'
+                    ? outcome.reason
+                    : new Error('Isolation saturation barrier ended before release')
+            }),
+        ])
+        const saturation = request(background, '/pool', 'POST').then(
+            (response) => ({ status: 'fulfilled' as const, response }),
+            (reason: unknown) => ({ status: 'rejected' as const, reason }),
+        )
+        let latency: ReturnType<typeof isolationDistribution> | undefined
+        let latencyPromise: Promise<Settled<ReturnType<typeof isolationDistribution>>> | undefined
+        let scenarioFailure: unknown
+        let saturationHeldThroughSsr = false
+        try {
+            await waitFor(() => activeIsolationPoolQueries(database), 5000)
+            latencyPromise = ssr(foreground, 100).then(
+                (value) => ({ status: 'fulfilled' as const, value }),
+                (reason: unknown) => ({ status: 'rejected' as const, reason }),
+            )
+            const measured = await measureSsrUnderPoolActivity(
+                latencyPromise,
+                () => activeIsolationPoolQueries(database),
+            )
+            if (measured.outcome.status === 'rejected') throw measured.outcome.reason
+            latency = measured.outcome.value
+            saturationHeldThroughSsr = measured.held
+            assert.ok(
+                saturationHeldThroughSsr,
+                'All eight PostgreSQL worker backends remained active for the complete SSR series',
+            )
+        } catch (error) {
+            scenarioFailure = error
+        } finally {
+            releaseBarrier.resolve()
         }
-        const latency = await latencyPromise
-        assert.ok(saturationHeldThroughSsr, 'All worker SQL remained active for the complete SSR series')
-        await assertIsolationPoolSaturation(await saturation)
+        const [barrierResult, saturationResult, latencyResult] = await Promise.all([
+            barrier,
+            saturation,
+            latencyPromise ?? Promise.resolve(undefined),
+        ])
+        if (scenarioFailure) throw scenarioFailure
+        if (barrierResult.status === 'rejected') throw barrierResult.reason
+        if (saturationResult.status === 'rejected') throw saturationResult.reason
+        await assertIsolationPoolSaturation(saturationResult.response)
+        if (latencyResult?.status === 'rejected') throw latencyResult.reason
+        assert.ok(latency)
         assert.ok(latency.p99 !== null && latency.p99 <= isolationContract.thresholds.ssrP99Ms)
         let denied = false
         try {
