@@ -23,14 +23,17 @@ test.each(['resolve', 'reject'] as const)(
         const entered = Promise.withResolvers<void>()
         const state = connection()
         const work: Promise<unknown>[] = []
-        let cancellations = 0, settled = false
-        const response = new Response(new ReadableStream<Uint8Array>({
-            cancel() {
-                cancellations++
-                entered.resolve()
-                return cleanup.promise
-            },
-        }))
+        let cancellations = 0,
+            settled = false
+        const response = new Response(
+            new ReadableStream<Uint8Array>({
+                cancel() {
+                    cancellations++
+                    entered.resolve()
+                    return cleanup.promise
+                },
+            }),
+        )
         Object.defineProperty(response, 'ok', {
             get() {
                 state.handshakeAbortController!.abort(new Error('abort before body ownership'))
@@ -38,16 +41,25 @@ test.each(['resolve', 'reject'] as const)(
             },
         })
         try {
-            expect(await readLiveHandshake(
-                state, '/api/live-snapshot', 1000, 100, () => response,
-                (pending) => work.push(pending),
-            )).toBe(503)
+            expect(
+                await readLiveHandshake(
+                    state,
+                    '/api/live-snapshot',
+                    1000,
+                    100,
+                    () => response,
+                    (pending) => work.push(pending),
+                ),
+            ).toBe(503)
             await entered.promise
-            const drain = Promise.allSettled(work).then(() => { settled = true })
+            const drain = Promise.allSettled(work).then(() => {
+                settled = true
+            })
             await Bun.sleep(0)
             expect(settled).toBe(false)
             expect(cancellations).toBe(1)
-            if (outcome === 'reject') cleanup.reject(new Error('ignored upstream cancellation failure'))
+            if (outcome === 'reject')
+                cleanup.reject(new Error('ignored upstream cancellation failure'))
             else cleanup.resolve()
             await drain
             expect(settled).toBe(true)
