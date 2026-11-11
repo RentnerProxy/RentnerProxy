@@ -7,6 +7,7 @@ import { DATABASE_CONNECTION_BUDGET } from '../../web/src/config/database.config
 import { backgroundDistribution } from './background.ts'
 import { readBackgroundResourceReport } from '../../web/src/lib/RuntimeDiagnostics/backgroundResourceReport.ts'
 import { readBunWorkerReport } from '../../web/src/lib/RuntimeDiagnostics/backgroundWorkerReport.ts'
+import { supportProbeDiagnosticSchema } from './background-contention-web.ts'
 
 const count = z.number().int().nonnegative()
 export const contentionStateSchema = z.strictObject({
@@ -54,6 +55,7 @@ export const contentionNativeSchema = z.object({
 export const contentionWebSchema = z.strictObject({
     source: z.enum(['authenticated actual web support RPC', 'unavailable']),
     rpcMs: z.number().nonnegative().optional(),
+    diagnostic: supportProbeDiagnosticSchema.optional(),
     resources: z.unknown().transform(readBackgroundResourceReport),
     bun: z.unknown().transform(readBunWorkerReport),
 })
@@ -227,6 +229,9 @@ export function buildContentionReport(
                 'Fixture child performs private snapshot/auth reads and one pg_stat_activity observer query; total connection counts include it',
         },
         webProcessMetrics: {
+            probeFailures: samples.flatMap((item) =>
+                item.web?.diagnostic ? [item.web.diagnostic] : [],
+            ),
             singletonAdmissionCounters: sqlMaximum,
             eventLoopLag: eventLoops.length
                 ? {
