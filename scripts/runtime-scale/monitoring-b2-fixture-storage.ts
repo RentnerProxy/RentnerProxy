@@ -3,6 +3,32 @@ import type { AuthTransaction } from '../../web/src/server/Auth/Core/Types/datab
 import { Database } from 'bun:sqlite'
 import { lstat } from 'node:fs/promises'
 
+/** Join the owned process and both streams before its caller may drop ownership or spawn again. */
+export async function joinMonitoringB2NativeOwner(
+    owner: { kill: (signal: NodeJS.Signals) => void },
+    settled: Promise<number>,
+    purpose: 'maintenance' | 'replacement',
+    deadlineMs = 15000,
+) {
+    owner.kill('SIGINT')
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+        const deadline = new Promise<null>((resolve) => {
+            timer = setTimeout(() => resolve(null), deadlineMs)
+        })
+        const exit = await Promise.race([settled, deadline])
+        if (exit === null) {
+            owner.kill('SIGKILL')
+            await settled
+            throw new Error('B2 native drain exceeded deadline')
+        }
+        if (exit !== 0 && purpose === 'maintenance')
+            throw new Error('B2 native worker failed closed')
+    } finally {
+        clearTimeout(timer)
+    }
+}
+
 /** Only a missing store before every native launch attempt can omit replay drain. */
 export async function openMonitoringB2OutboxForDrain(path: string, nativeStartAttempted: boolean) {
     try {

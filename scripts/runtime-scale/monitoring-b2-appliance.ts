@@ -19,6 +19,7 @@ import {
     monitoringB2FixtureDiagnostic,
     validateMonitoringB2Role,
     openMonitoringB2OutboxForDrain,
+    joinMonitoringB2NativeOwner,
 } from './monitoring-b2-fixture-storage.ts'
 import { monitoringB2ControlKey, monitoringB2WebKey } from './monitoring-b2-capabilities.ts'
 import { randomBytes } from 'node:crypto'
@@ -338,18 +339,11 @@ export async function runMonitoringB2Appliance(runId: string) {
         },
     })
     /** Request native drain and join its child; a forced kill or nonzero exit cannot prove a clean drain. */
-    async function stopNative() {
+    async function stopNative(purpose: 'maintenance' | 'replacement' = 'maintenance') {
         if (!native || !nativeExit) return
-        native.kill('SIGINT')
-        const exit = await Promise.race([nativeExit, Bun.sleep(15000).then(() => null)])
-        if (exit === null) {
-            native.kill('SIGKILL')
-            await nativeExit
-            throw new Error('B2 native drain exceeded deadline')
-        }
+        await joinMonitoringB2NativeOwner(native, nativeExit, purpose)
         native = undefined
         nativeExit = undefined
-        if (exit !== 0) throw new Error('B2 native worker failed closed')
     }
     /** Suspend/resume only the identified fixture controller, with a bounded automatic resume fallback. */
     async function controllerAvailable(enabled: boolean) {
@@ -378,7 +372,7 @@ export async function runMonitoringB2Appliance(runId: string) {
     }
     /** Start one isolated native owner with restricted SQL/probe capabilities after checking for orphan writers. */
     async function restartNative() {
-        await stopNative()
+        await stopNative('replacement')
         if (!authority || current?.design !== 'B2' || quiesced)
             throw new Error('B2 live owned authority required for native restart')
         if ((await nativeIdentities()).length !== 0)
