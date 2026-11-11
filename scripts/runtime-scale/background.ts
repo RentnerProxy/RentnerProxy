@@ -47,6 +47,7 @@ export function parseBackgroundOptions(args: string[]): BackgroundOptions {
                 '--image',
                 '--report',
                 '--extended-recovery',
+                '--contention',
             ].includes(flag) ||
             flags.has(flag) ||
             !value ||
@@ -59,11 +60,13 @@ export function parseBackgroundOptions(args: string[]): BackgroundOptions {
     const pattern = flags.get('--pattern') ?? 'simultaneous'
     const profile = flags.get('--profile') ?? 'mixed'
     const extendedRecovery = flags.get('--extended-recovery') ?? 'false'
+    const contention = flags.get('--contention') ?? 'false'
     if (
         !['100', '500', '1000'].includes(policies) ||
         !['simultaneous', 'staggered'].includes(pattern) ||
         !['mixed', 'healthy', 'slow', 'timeout'].includes(profile) ||
-        !['true', 'false'].includes(extendedRecovery)
+        !['true', 'false'].includes(extendedRecovery) ||
+        !['true', 'false'].includes(contention)
     )
         throw new Error('Background workload outside fixed bounds')
     const inherited = parseReliabilityOptions(
@@ -86,6 +89,7 @@ export function parseBackgroundOptions(args: string[]): BackgroundOptions {
         ...(inherited.image ? { image: inherited.image } : {}),
         ...(inherited.reportPath ? { reportPath: inherited.reportPath } : {}),
         ...(extendedRecovery === 'true' ? { extendedRecovery: true as const } : {}),
+        ...(contention === 'true' ? { contention: true as const } : {}),
     }
 }
 

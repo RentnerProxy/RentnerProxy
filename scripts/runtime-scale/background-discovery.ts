@@ -3,7 +3,10 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { createSeededRandom } from '../runtime-reliability/control.ts'
 
-export function startBackgroundDockerEngine(seed: number) {
+export function startBackgroundDockerEngine(
+    seed: number,
+    options: { port?: number; initiallyPaused?: boolean; mutateDetachedInventory?: boolean } = {},
+) {
     const random = createSeededRandom(seed)
     const inventory = Array.from({ length: 8 }, (_, index) => ({
         Id: createHash('sha256').update(`docker:${seed}:${index}`).digest('hex'),
@@ -35,26 +38,40 @@ export function startBackgroundDockerEngine(seed: number) {
         emitted = 0,
         lists = 0,
         inspections = 0
+    let armed = !options.initiallyPaused
+    const waiting = new Set<ReadableStreamDefaultController<Uint8Array>>()
+    const send = (controller: ReadableStreamDefaultController<Uint8Array>) => {
+        const batch = events.slice(emitted, emitted + 64)
+        emitted += batch.length
+        if (options.mutateDetachedInventory)
+            for (const item of inventory)
+                item.Config.Labels['rentnerproxy.port'] = String(
+                    9000 + (Math.floor(emitted / 64) % 2),
+                )
+        controller.enqueue(
+            new TextEncoder().encode(batch.map((item) => JSON.stringify(item)).join('\n') + '\n'),
+        )
+        if (streams <= 3) controller.close()
+    }
     const server = Bun.serve({
         hostname: '127.0.0.1',
-        port: 0,
+        port: options.port ?? 0,
         fetch(request) {
             const path = new URL(request.url).pathname
             if (request.method !== 'GET') return new Response(null, { status: 403 })
             if (path === '/v1.47/events') {
                 streams++
-                const batch = events.slice(emitted, emitted + 64)
-                emitted += batch.length
-                const close = streams <= 3
                 return new Response(
                     new ReadableStream({
                         start(controller) {
-                            controller.enqueue(
-                                new TextEncoder().encode(
-                                    batch.map((item) => JSON.stringify(item)).join('\n') + '\n',
-                                ),
-                            )
-                            if (close) controller.close()
+                            if (armed) send(controller)
+                            else {
+                                controller.enqueue(new TextEncoder().encode('\n'))
+                                waiting.add(controller)
+                            }
+                        },
+                        cancel() {
+                            waiting.clear()
                         },
                     }),
                     { headers: { 'content-type': 'application/json' } },
@@ -80,6 +97,11 @@ export function startBackgroundDockerEngine(seed: number) {
         server,
         ids: inventory.map((item) => item.Id),
         events,
+        arm() {
+            armed = true
+            for (const controller of waiting) send(controller)
+            waiting.clear()
+        },
         stats: () => ({ streams, emitted, lists, inspections, inventoryCount: inventory.length }),
         stop: () => server.stop(true),
     }

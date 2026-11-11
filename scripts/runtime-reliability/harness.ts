@@ -23,6 +23,7 @@ import { sharedSmokeImage } from '../smoke/images.ts'
 import { smokeCompose, smokeDockerArguments, smokeRunScope } from '../smoke/resources.ts'
 import type { ReliabilityCheck, ReliabilityOptions, ResourceSample } from './Types/control.types.ts'
 import { fixtureTransport } from './fixture-transport.config.ts'
+import { TLS_TEST_CA } from '../../web/src/tests/server/Notifications/Types/tls-test.types.ts'
 import {
     caddyTransportErrors,
     createTrafficObserver,
@@ -554,6 +555,10 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
         return evidence
     }
     async function writeCompose() {
+        if (options.backgroundContention)
+            await writeFile(join(temp, 'background-contention-ca.pem'), TLS_TEST_CA, {
+                mode: 0o644,
+            })
         const config = {
             services: {
                 rentnerproxy: {
@@ -573,18 +578,32 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
                         RENTNERPROXY_PROXY_PUBLIC_HTTPS_PORT: '8443',
                         RENTNERPROXY_ACME_TEST_DIRECTORY_URL: 'https://pebble:14000/dir',
                         RENTNERPROXY_ACME_TEST_ROOT_CERT: '/test/pebble.minica.pem',
-                        SMTP_HOST: '127.0.0.1',
+                        SMTP_HOST: options.backgroundContention
+                            ? 'notification-tls.invalid'
+                            : '127.0.0.1',
                         SMTP_PORT: '2525',
-                        SMTP_SECURE: 'false',
+                        SMTP_SECURE: options.backgroundContention ? 'true' : 'false',
                         SMTP_FROM: 'reliability@example.invalid',
                         SMTP_USER: 'reliability',
                         SMTP_PASSWORD: 'fixture-only',
+                        ...(options.backgroundContention
+                            ? { NODE_EXTRA_CA_CERTS: '/test/background-contention-ca.pem' }
+                            : {}),
                     },
                     volumes: [
                         volume + ':/var/lib/rentnerproxy',
                         join(temp, 'pebble.minica.pem') + ':/test/pebble.minica.pem:ro',
+                        ...(options.backgroundContention
+                            ? [
+                                  join(temp, 'background-contention-ca.pem') +
+                                      ':/test/background-contention-ca.pem:ro',
+                              ]
+                            : []),
                     ],
                     networks: ['fixture'],
+                    ...(options.backgroundContention
+                        ? { extra_hosts: ['notification-tls.invalid:127.0.0.1'] }
+                        : {}),
                 },
             },
             volumes: { [volume]: { name: volume, external: true } },

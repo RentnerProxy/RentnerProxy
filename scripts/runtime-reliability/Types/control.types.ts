@@ -7,6 +7,7 @@ export type ReliabilityOptions = {
     seed: number
     image?: string
     reportPath?: string
+    backgroundContention?: true
 }
 
 export type ResourceSample = {

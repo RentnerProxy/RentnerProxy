@@ -9,27 +9,38 @@ import {
 } from '../../web/src/tests/server/Notifications/Types/tls-test.types.ts'
 import type { NotificationMailClient } from '../../web/src/server/Mail/Types/notification-mail.types.ts'
 
-export async function startBackgroundNotificationReceivers() {
+export async function startBackgroundNotificationReceivers(
+    options: { smtpPort?: number; webhookPort?: number; delayMs?: number } = {},
+) {
     const accepted = new Set<string>()
     const receiverAttempts = new Map<string, number>()
     const receiverIdentity = new Map<string, string>()
     const slowPayloadIds = new Set<string>()
-    const record = (id: string) => {
+    const kinds = { email: new Set<string>(), webhook: new Set<string>() }
+    let activeWebhooks = 0
+    const record = (id: string, kind: keyof typeof kinds) => {
         const stable = receiverIdentity.get(id) ?? id
         accepted.add(stable)
         receiverAttempts.set(stable, (receiverAttempts.get(stable) ?? 0) + 1)
+        kinds[kind].add(stable)
     }
     const webhook = Bun.serve({
         hostname: '127.0.0.1',
-        port: 0,
+        port: options.webhookPort ?? 0,
         async fetch(request) {
+            if (request.method !== 'POST') return new Response(null, { status: 405 })
             const input: unknown = await request.json()
             assert.ok(
                 input && typeof input === 'object' && 'id' in input && typeof input.id === 'string',
             )
-            await Bun.sleep(slowPayloadIds.has(input.id) ? 500 : 15)
-            record(input.id)
-            return new Response(null, { status: 204 })
+            activeWebhooks++
+            try {
+                await Bun.sleep(options.delayMs ?? (slowPayloadIds.has(input.id) ? 500 : 15))
+                record(input.id, 'webhook')
+                return new Response(null, { status: 204 })
+            } finally {
+                activeWebhooks--
+            }
         },
     })
     const sockets = new Set<Socket>()
@@ -58,18 +69,22 @@ export async function startBackgroundNotificationReceivers() {
                         /^Message-ID:[ \t\r\n]*<([a-f0-9]{64})@notifications\.rentnerproxy>/imu.exec(
                             body,
                         )?.[1]
-                    if (messageId) record(messageId)
                     const delay =
-                        messageId &&
+                        options.delayMs ??
+                        (messageId &&
                         slowPayloadIds.has(receiverIdentity.get(messageId) ?? messageId)
                             ? 500
-                            : 30
+                            : 30)
                     setTimeout(() => {
-                        if (!socket.destroyed) socket.write('250 accepted\r\n')
+                        if (!socket.destroyed) {
+                            if (messageId) record(messageId, 'email')
+                            socket.write('250 accepted\r\n')
+                        }
                     }, delay)
                     continue
                 }
-                if (/^EHLO|^HELO/iu.test(line)) socket.write('250 fixture\r\n')
+                if (/^EHLO|^HELO/iu.test(line)) socket.write('250-fixture\r\n250 AUTH PLAIN\r\n')
+                else if (/^AUTH PLAIN(?: |$)/iu.test(line)) socket.write('235 authenticated\r\n')
                 else if (/^MAIL FROM/iu.test(line)) {
                     reject = false
                     body = ''
@@ -91,7 +106,7 @@ export async function startBackgroundNotificationReceivers() {
     })
     await new Promise<void>((resolve, reject) => {
         smtp.once('error', reject)
-        smtp.listen(0, '127.0.0.1', resolve)
+        smtp.listen(options.smtpPort ?? 0, '127.0.0.1', resolve)
     })
     const address = smtp.address()
     assert.ok(address && typeof address === 'object')
@@ -102,6 +117,14 @@ export async function startBackgroundNotificationReceivers() {
         receiverAttempts,
         receiverIdentity,
         slowPayloadIds,
+        stats: () => ({
+            accepted: accepted.size,
+            emailAccepted: kinds.email.size,
+            webhookAccepted: kinds.webhook.size,
+            attempts: [...receiverAttempts.values()].reduce((sum, count) => sum + count, 0),
+            activeWebhooks,
+            smtpConnections: sockets.size,
+        }),
         createMailClient(): NotificationMailClient {
             const transport = createTransport({
                 host: '127.0.0.1',
@@ -118,7 +141,7 @@ export async function startBackgroundNotificationReceivers() {
             })
             return {
                 from: 'fixture@fixture.invalid',
-                sendMail: (options) => transport.sendMail(options),
+                sendMail: (message) => transport.sendMail(message),
                 close: () => transport.close(),
             }
         },

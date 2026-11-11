@@ -14,6 +14,7 @@ import {
     backgroundSlo,
     parseBackgroundOptions,
 } from './background.ts'
+import { runContentionWindow } from './background-contention-run.ts'
 import { exerciseExtendedBackgroundRecovery } from './background-extended.ts'
 import { backgroundPolicies } from './background.ts'
 import { backgroundReceiptsSchema, backgroundSnapshotSchema } from './background.validation.ts'
@@ -47,6 +48,9 @@ async function installFixture(context: ReliabilityContext) {
         'scripts/runtime-scale/background-network.ts',
         'scripts/runtime-scale/background-discovery.ts',
         'scripts/runtime-scale/background-recovery.ts',
+        'scripts/runtime-scale/background-contention-fixture.ts',
+        'scripts/runtime-scale/background-contention-receiver.ts',
+        'scripts/runtime-scale/background-contention-web.ts',
         'scripts/runtime-scale/background.ts',
         'scripts/runtime-scale/background.validation.ts',
         'scripts/runtime-reliability/control.ts',
@@ -71,6 +75,38 @@ async function installFixture(context: ReliabilityContext) {
         'cp',
         bundle,
         context.container + ':/opt/rentnerproxy/web/reliability-fixture.js',
+    ])
+    const receiver = join(context.temp, 'background-contention-receiver.js')
+    await context.command([
+        process.execPath,
+        '--no-env-file',
+        'build',
+        join(source, 'scripts/runtime-scale/background-contention-receiver.ts'),
+        '--tsconfig-override=' + join(source, 'tsconfig.json'),
+        '--target=bun',
+        '--packages=external',
+        '--outfile=' + receiver,
+    ])
+    await context.docker([
+        'cp',
+        receiver,
+        context.container + ':/opt/rentnerproxy/web/background-contention-receiver.js',
+    ])
+    const probe = join(context.temp, 'background-contention-web.js')
+    await context.command([
+        process.execPath,
+        '--no-env-file',
+        'build',
+        join(source, 'scripts/runtime-scale/background-contention-web.ts'),
+        '--tsconfig-override=' + join(source, 'tsconfig.json'),
+        '--target=bun',
+        '--packages=external',
+        '--outfile=' + probe,
+    ])
+    await context.docker([
+        'cp',
+        probe,
+        context.container + ':/opt/rentnerproxy/web/background-contention-web.js',
     ])
 }
 
@@ -149,6 +185,7 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
             iterations: 1,
             concurrency: 2,
             captureResources: true,
+            ...(options.contention ? { backgroundContention: true as const } : {}),
             seed: options.seed,
             ...(options.image ? { image: options.image } : {}),
         },
@@ -171,6 +208,7 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
     process.once('SIGINT', interrupt)
     process.once('SIGTERM', interrupt)
     let snapshot: BackgroundSnapshot | undefined
+    let contention: Awaited<ReturnType<typeof runContentionWindow>>['report'] | undefined
     let monitoring: ReturnType<typeof backgroundMonitoringReport> | undefined
     let fences: unknown
     let notifications: unknown
@@ -231,54 +269,71 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
         await context.synced(await context.fixture('prepare'))
         await context.synced(await context.fixture('background-prepare', extra))
         origin = performance.now()
-        snapshot = backgroundSnapshotSchema.parse(
-            (await context.fixture('background-start', extra)).background,
-        )
-        while (performance.now() - origin < options.durationSeconds * 1000) {
-            if (abort.signal.aborted)
-                throw new ReliabilityError('command', 'background scenario cancelled')
-            const responses = await Promise.allSettled([
-                (async () => {
-                    const start = performance.now()
-                    const response = await context.http()
-                    proxyMs.push(performance.now() - start)
-                    assert.equal(response.status, 200)
-                    assert.equal(response.body.backend, 'a')
-                })(),
-                (async () => {
-                    const start = performance.now()
-                    const response = await context.docker(
-                        [
-                            'exec',
-                            context.container,
-                            'bun',
-                            '--no-env-file',
-                            '-e',
-                            "const r=await fetch('http://127.0.0.1:3000/login',{signal:AbortSignal.timeout(3000),redirect:'manual'});await r.body?.cancel();if(r.status!==200)process.exit(1)",
-                        ],
-                        { timeoutMs: 5000 },
-                    )
-                    assert.equal(response, '')
-                    ssrMs.push(performance.now() - start)
-                })(),
-                (async () => {
-                    snapshot = backgroundSnapshotSchema.parse(
-                        (await context.fixture('background-read', extra)).background,
-                    )
-                    managementMs.push(snapshot.managementReadMs)
-                })(),
-                sample('continuous'),
-            ])
-            if (responses[0]!.status === 'rejected') proxyFailures++
-            const rejected = responses.find((response) => response.status === 'rejected')
-            if (rejected?.status === 'rejected') throw rejected.reason
-            assert.ok(snapshot)
-            if (
-                snapshot.observations.length >= options.policies &&
-                performance.now() - origin >= 35000
+        if (options.contention) {
+            const result = await runContentionWindow(
+                harness,
+                options,
+                () => sample('continuous'),
+                () => {
+                    origin = performance.now()
+                },
+                abort.signal,
             )
-                break
-            await Bun.sleep(500)
+            snapshot = result.snapshot
+            contention = result.report
+            proxyMs.push(...result.proxyMs)
+            managementMs.push(...result.managementMs)
+            proxyFailures += result.proxyErrors
+        } else {
+            snapshot = backgroundSnapshotSchema.parse(
+                (await context.fixture('background-start', extra)).background,
+            )
+            while (performance.now() - origin < options.durationSeconds * 1000) {
+                if (abort.signal.aborted)
+                    throw new ReliabilityError('command', 'background scenario cancelled')
+                const responses = await Promise.allSettled([
+                    (async () => {
+                        const start = performance.now()
+                        const response = await context.http()
+                        proxyMs.push(performance.now() - start)
+                        assert.equal(response.status, 200)
+                        assert.equal(response.body.backend, 'a')
+                    })(),
+                    (async () => {
+                        const start = performance.now()
+                        const response = await context.docker(
+                            [
+                                'exec',
+                                context.container,
+                                'bun',
+                                '--no-env-file',
+                                '-e',
+                                "const r=await fetch('http://127.0.0.1:3000/login',{signal:AbortSignal.timeout(3000),redirect:'manual'});await r.body?.cancel();if(r.status!==200)process.exit(1)",
+                            ],
+                            { timeoutMs: 5000 },
+                        )
+                        assert.equal(response, '')
+                        ssrMs.push(performance.now() - start)
+                    })(),
+                    (async () => {
+                        snapshot = backgroundSnapshotSchema.parse(
+                            (await context.fixture('background-read', extra)).background,
+                        )
+                        managementMs.push(snapshot.managementReadMs)
+                    })(),
+                    sample('continuous'),
+                ])
+                if (responses[0]!.status === 'rejected') proxyFailures++
+                const rejected = responses.find((response) => response.status === 'rejected')
+                if (rejected?.status === 'rejected') throw rejected.reason
+                assert.ok(snapshot)
+                if (
+                    snapshot.observations.length >= options.policies &&
+                    performance.now() - origin >= 35000
+                )
+                    break
+                await Bun.sleep(500)
+            }
         }
         elapsedMs = performance.now() - origin
         assert.ok(snapshot)
@@ -369,23 +424,35 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
     }
     const resourceEvidence = backgroundResourceEvidence(resources)
     const interactive = {
-        management: backgroundDistribution(managementMs),
-        ssr: backgroundDistribution(ssrMs),
+        management: {
+            ...backgroundDistribution(managementMs),
+            measuredIn: options.contention
+                ? 'actual authenticated management SSR/auth HTTP read in the web process'
+                : 'authorized host-list service in the fixture child',
+        },
+        ssr: options.contention ? null : backgroundDistribution(ssrMs),
+        ssrEvidence: options.contention
+            ? 'Same operation as interactive.management; no second independent series'
+            : 'Separate public login SSR request',
         proxy: backgroundDistribution(proxyMs),
         proxyFailures,
     }
     const passed =
         !failure &&
         monitoring?.status === 'met' &&
+        (!options.contention || contention?.status === 'met') &&
         !receiptsOverflowed &&
         resourceEvidence.status !== 'unmet' &&
         proxyFailures === 0 &&
         interactive.management.p99 !== null &&
-        interactive.management.p99 <= backgroundSlo.managementReadP99Ms &&
+        interactive.management.p99 <=
+            (options.contention ? 1000 : backgroundSlo.managementReadP99Ms) &&
         interactive.proxy.p99 !== null &&
         interactive.proxy.p99 <= backgroundSlo.proxyP99Ms &&
-        interactive.ssr.p99 !== null &&
-        interactive.ssr.p99 <= backgroundSlo.ssrP99Ms &&
+        (options.contention ||
+            (interactive.ssr?.p99 !== null &&
+                interactive.ssr?.p99 !== undefined &&
+                interactive.ssr.p99 <= backgroundSlo.ssrP99Ms)) &&
         recovery.every((item) => item.passed)
     const report = {
         version: 1,
@@ -402,6 +469,7 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
         extendedRecoverySelected: options.extendedRecovery === true,
         slo: backgroundSlo,
         monitoring,
+        ...(contention ? { contention } : {}),
         interactive,
         fences,
         notifications,
