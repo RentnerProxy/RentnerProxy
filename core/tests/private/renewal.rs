@@ -77,6 +77,15 @@ async fn scheduler_first_tick_preserves_candidate_backoff_and_can_be_cancelled()
     assert!(!task.is_finished());
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
+    // Cancelling the scheduler drops its waiter, not the admitted candidate or storage job.
+    // With the only producer joined, this fixture owns the sole runtime Arc after all work settles.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while Arc::strong_count(&runtime) != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("cancelled scheduler's owned candidate and storage work must finish");
     assert_eq!(runtime.certificate_store.get(ID).await.unwrap(), before);
     assert_eq!(
         runtime
