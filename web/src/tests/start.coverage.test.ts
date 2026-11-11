@@ -142,10 +142,8 @@ test('server bootstrap validates production, binds every worker and coalesces te
         tick()
         expect(prune).toHaveBeenCalledTimes(1)
         releasePrune?.()
-        await Promise.resolve()
-        await Promise.resolve()
-        await Promise.resolve()
-        await Promise.resolve()
+        // Let the operation and its observation/finally handlers fully settle.
+        await new Promise<void>((resolve) => setImmediate(resolve))
         tick()
         expect(prune).toHaveBeenCalledTimes(2)
         releasePrune?.()
