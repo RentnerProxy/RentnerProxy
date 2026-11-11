@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { SESSION_COOKIE_NAME, OPAQUE_TOKEN_PATTERN } from '@/config/auth.config.ts'
 import { LIVE_SNAPSHOT_PATH } from '@/config/realtime.config.ts'
 
+/** Fence application requests during restore preparation and acknowledge destructive entry only after pending requests and writers quiesce. */
 export function createRestoreMaintenanceFence(dependencies: {
     prepare?: () => Promise<ReadonlyArray<{ tokenHash: string; expiresAt: Date }>>
     quiesce: () => Promise<ReadonlyArray<{ tokenHash: string; expiresAt: Date }>>
@@ -88,6 +89,7 @@ export function createRestoreMaintenanceFence(dependencies: {
         }
     }
 
+    /** Release only a temporary preparation fence; destructive maintenance stays latched for the process lifetime. */
     function release(): void {
         if (destructive) return
         operationId = null

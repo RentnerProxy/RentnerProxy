@@ -77,6 +77,7 @@ async function readCursor(): Promise<CursorSnapshot> {
     }
 }
 
+/** Fetch a bounded event page set with cancellation between requests while retaining the expected cursor for fenced persistence. */
 async function fetchEventsAndMetadata(
     fetchCursor: Cursor,
     expectedCursor: Cursor,
@@ -207,6 +208,7 @@ async function persistFetchedBatch(batch: FetchedEvents): Promise<boolean> {
     })
 }
 
+/** Check cancellation before reads, remote fetch, and durable persistence so an aborted batch cannot start a late cursor write. */
 export async function synchronizeCertificateEventsOnce(signal?: AbortSignal): Promise<boolean> {
     signal?.throwIfAborted()
     const cursor = await readCursor()
@@ -244,6 +246,7 @@ async function waitForWakeOrDelay(milliseconds: number): Promise<void> {
     if (wakeResolver !== null) wakeResolver = null
 }
 
+/** Observe committed event batches with the owned cancellation signal and use bounded wakeable retry delay only while active. */
 async function runWorker(): Promise<void> {
     let retryDelay = CERTIFICATE_EVENT_INITIAL_RETRY_DELAY_MS
     // oxlint-disable-next-line no-unmodified-loop-condition -- stopCertificateEventsSynchronization changes this lifecycle flag.
@@ -269,6 +272,7 @@ async function runWorker(): Promise<void> {
     }
 }
 
+/** Start one synchronization loop with a fresh controller only after the previous loop has fully exited. */
 export function startCertificateEventsSynchronization(): void {
     if (worker !== null) return
     stopped = false
@@ -278,6 +282,7 @@ export function startCertificateEventsSynchronization(): void {
     })
 }
 
+/** Abort remote work, cancel retry waits, wake the loop, and require its actual bounded drain before returning. */
 export async function stopCertificateEventsSynchronization(): Promise<void> {
     stopped = true
     controller.abort()

@@ -173,6 +173,7 @@ export function createNotificationWorker(dependencies: NotificationWorkerDepende
         wake() {
             scheduleDelivery(0)
         },
+        /** Admit collection and delivery once with a fresh controller; a permanently stopped or draining instance cannot restart. */
         start() {
             if (started || stopped || stopping) return
             started = true
@@ -182,6 +183,7 @@ export function createNotificationWorker(dependencies: NotificationWorkerDepende
             void collectOnce()
             void dispatch()
         },
+        /** Fence all timers and admission, then settle late claims, active transports, and durable acknowledgements before confirming quiescence. */
         stop(): Promise<void> {
             if (stopping) return stopping
             stopped = true

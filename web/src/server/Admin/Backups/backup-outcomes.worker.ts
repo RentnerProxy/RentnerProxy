@@ -45,6 +45,7 @@ export function createBackupAuditWorker(dependencies: BackupAuditWorkerDependenc
             stopped = false
             void runOnce().finally(schedule)
         },
+        /** Stop admission and timers, abort ingestion, and await the actual current pass within the five-second drain bound. */
         async stop() {
             started = false
             stopped = true

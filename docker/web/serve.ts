@@ -42,6 +42,7 @@ const server = Bun.serve({
 
 let shuttingDown = false
 
+/** Coalesce termination, settle HTTP and worker drains, and exit nonzero on any failed drain or the forced shutdown deadline. */
 async function shutdown(): Promise<void> {
     if (shuttingDown) return
     shuttingDown = true
