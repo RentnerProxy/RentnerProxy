@@ -1,3 +1,4 @@
+use super::acme::acme_store;
 use super::background::{Outcome, Worker};
 use super::{CertificateMetadata, MAX_CANDIDATE_ACTIVATIONS_PER_TICK, ProxyRuntime, certificates};
 use std::{
@@ -8,6 +9,7 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::time::interval;
 
 const MAX_ACME_STARTS_PER_TICK: usize = 4;
+static PERMISSION_RECOVERY: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
 /// Distinguish admitted work from idle/busy admission; only actual certificate errors degrade the scan.
 fn certificate_work_outcome<T>(
@@ -44,22 +46,31 @@ impl ProxyRuntime {
                 }
                 let pass = runtime.background.begin(Worker::Renewal);
                 let candidates = runtime.retry_certificate_candidates().await;
-                let expiry = runtime.certificate_store.expire_manual_dns_orders().await;
+                if runtime.stopping.load(Ordering::SeqCst) {
+                    pass.finish(Outcome::Cancelled);
+                    break;
+                }
+                let expiry = acme_store!(runtime; []; store => store.expire_manual_dns_orders());
                 let manual = runtime.recover_manual_dns().await;
                 let cleanup = runtime.recover_dns_cleanup().await;
-                let checks_runtime = Arc::clone(&runtime);
-                tokio::spawn(async move {
-                    let pass = checks_runtime.background.begin(Worker::Orders);
-                    let succeeded = checks_runtime
-                        .dns_connections
-                        .recover_permission_checks()
-                        .await;
-                    pass.finish(if succeeded {
-                        Outcome::Idle
-                    } else {
-                        Outcome::Failure
-                    });
-                });
+                if let Ok(permit) = PERMISSION_RECOVERY.try_acquire() {
+                    let checks_runtime = Arc::clone(&runtime);
+                    runtime
+                        .background_jobs
+                        .spawn("dns_permission_recovery", async move {
+                            let _permit = permit;
+                            let pass = checks_runtime.background.begin(Worker::Orders);
+                            let succeeded = checks_runtime
+                                .dns_connections
+                                .recover_permission_checks()
+                                .await;
+                            pass.finish(if succeeded {
+                                Outcome::Idle
+                            } else {
+                                Outcome::Failure
+                            });
+                        });
+                }
                 let renewal = runtime
                     .renew_due_certificates(challenges.clone(), cursor)
                     .await;
