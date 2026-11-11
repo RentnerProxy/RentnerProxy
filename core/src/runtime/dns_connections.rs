@@ -154,7 +154,7 @@ impl Store {
     ///
     /// Uses a supplied token when present; otherwise decrypts the stored credential with
     /// the current key. Before returning a successful result for a stored connection,
-    /// its revision is rechecked after the provider request so stale results conflict.
+    /// its ID and revision are rechecked after the provider request.
     pub(crate) async fn test(&self, request: TestRequest) -> Result<TestResult, Error> {
         if let Some(id) = &request.connection_id {
             validation::id(id)?;
