@@ -30,10 +30,10 @@ impl ProxyRuntime {
     ) -> Result<Account, CertificateError> {
         let _account_guard = ACCOUNT_REGISTRATION.lock().await;
         let (directory, root) = acme_directory(request.environment)?;
-        let root_pem = root
-            .as_deref()
-            .map(std::fs::read)
-            .transpose()
+        let root_pem = self
+            .storage(move |_| root.as_deref().map(std::fs::read).transpose())
+            .await
+            .map_err(|_| CertificateError::AcmeFailed)?
             .map_err(|_| CertificateError::AcmeFailed)?;
         crate::runtime::tls::ensure_crypto_provider();
         let http = AcmeHttpClient::new(
@@ -62,19 +62,16 @@ impl ProxyRuntime {
         let _account_guard = ACCOUNT_REGISTRATION.lock().await;
         let (directory, root) = acme_directory(request.environment)?;
         if let Some(expected) = expected_identity {
-            let bytes = self
-                .certificate_store
-                .load_acme_account(request.environment)
-                .await?
+            let bytes = acme_store!(self; [request]; store => store.load_acme_account(request.environment))?
                 .ok_or(CertificateError::StoreUnavailable)?;
             if account_identity(&bytes, &directory)? != expected {
                 return Err(CertificateError::StoreUnavailable);
             }
         }
-        let root_pem = root
-            .as_deref()
-            .map(std::fs::read)
-            .transpose()
+        let root_pem = self
+            .storage(move |_| root.as_deref().map(std::fs::read).transpose())
+            .await
+            .map_err(|_| CertificateError::AcmeFailed)?
             .map_err(|_| CertificateError::AcmeFailed)?;
         crate::runtime::tls::ensure_crypto_provider();
         let http = AcmeHttpClient::new(
@@ -93,25 +90,21 @@ impl ProxyRuntime {
                 Account::builder_with_http(Box::new(http)),
             )
             .await?;
-        let bytes = self
-            .certificate_store
-            .load_acme_account(request.environment)
-            .await?
-            .ok_or(CertificateError::StoreUnavailable)?;
+        let bytes =
+            acme_store!(self; [request]; store => store.load_acme_account(request.environment))?
+                .ok_or(CertificateError::StoreUnavailable)?;
         let identity = account_identity(&bytes, &directory)?;
         Ok((account, identity, directory))
     }
 
     async fn acme_account_with_builder(
-        &self,
+        self: &Arc<Self>,
         request: &CertificateIssueRequest,
         directory: String,
         builder: instant_acme::AccountBuilder,
     ) -> Result<Account, CertificateError> {
-        let credentials = self
-            .certificate_store
-            .load_acme_account(request.environment)
-            .await?;
+        let credentials =
+            acme_store!(self; [request]; store => store.load_acme_account(request.environment))?;
 
         let pending = if let Some(credentials) = credentials {
             let stored_directory: AccountDirectory = serde_json::from_slice(&credentials)
@@ -139,9 +132,7 @@ impl ProxyRuntime {
             };
             let bytes =
                 serde_json::to_vec(&pending).map_err(|_| CertificateError::StoreUnavailable)?;
-            self.certificate_store
-                .store_acme_account(request.environment, &bytes)
-                .await?;
+            acme_store!(self; [request, bytes]; store => store.store_acme_account(request.environment, &bytes))?;
             pending
         };
 
@@ -160,9 +151,7 @@ impl ProxyRuntime {
                 .map_err(|_| CertificateError::AcmeFailed)?;
         }
         let bytes = serde_json::to_vec(&stored).map_err(|_| CertificateError::StoreUnavailable)?;
-        self.certificate_store
-            .store_acme_account(request.environment, &bytes)
-            .await?;
+        acme_store!(self; [request, bytes]; store => store.store_acme_account(request.environment, &bytes))?;
         Ok(account)
     }
 }

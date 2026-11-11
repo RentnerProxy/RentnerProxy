@@ -66,7 +66,10 @@ export interface WorkerObservability {
     eventLoopDelay: (milliseconds: number) => void
     count: (id: BackgroundWorkerId, event: WorkerCountEvent) => void
     state: (id: BackgroundWorkerId, state: BackgroundWorkerState) => void
-    begin: (id: BackgroundWorkerId, lane?: BackgroundWorkerLane) => (outcome: WorkerOutcome) => void
+    begin: (
+        id: BackgroundWorkerId,
+        lane?: BackgroundWorkerLane,
+    ) => (outcome: WorkerOutcome, options?: { recoverLane?: boolean }) => void
     sample: (id: BackgroundWorkerId, sample: WorkerSample) => void
     snapshot: () => WorkerObservabilitySnapshot
     reset: () => void

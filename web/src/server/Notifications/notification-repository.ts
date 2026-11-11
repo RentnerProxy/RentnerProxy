@@ -37,6 +37,7 @@ import {
 import { nextNotificationDeliveryAt } from './notification-scheduling.ts'
 import { workerObservability } from '@/server/Foundation/worker-observability.ts'
 
+/** Read scheduling and pending counts in one read-only snapshot; disabled/restored queues expose unavailable evidence rather than a false empty queue. */
 export async function readNextNotificationDeliveryAt(): Promise<number | null> {
     const sample = await getAuthDatabase().transaction(
         async (transaction) => {

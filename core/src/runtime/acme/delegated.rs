@@ -1,17 +1,17 @@
 use crate::runtime::{
-    certificates::{
-        CertificateEnvironment, CertificateError, CertificateIssueRequest, CertificateStore,
-    },
+    ProxyRuntime,
+    certificates::{CertificateEnvironment, CertificateError, CertificateIssueRequest},
     dns::{DnsDelegationBinding, DnsProvider, DnsRecordIntent},
     dns_delegation,
 };
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use tokio::time::{Instant, sleep, timeout_at};
 
 pub(super) async fn check_cancelled(
-    store: &CertificateStore,
+    runtime: &Arc<ProxyRuntime>,
     id: &str,
 ) -> Result<(), CertificateError> {
+    let store = &runtime.certificate_store;
     let metadata = store.get(id).await?;
     let operation = metadata
         .current_operation
@@ -23,13 +23,13 @@ pub(super) async fn check_cancelled(
 }
 
 pub(super) async fn present(
-    store: &CertificateStore,
+    runtime: &Arc<ProxyRuntime>,
     id: &str,
     provider: &DnsProvider,
     intents: &mut Vec<DnsRecordIntent>,
     mut intent: DnsRecordIntent,
 ) -> Result<(), CertificateError> {
-    check_cancelled(store, id).await?;
+    check_cancelled(runtime, id).await?;
     if intents.iter().any(|pending| {
         pending.unconfirmed_write
             && pending.value == intent.value
@@ -49,7 +49,7 @@ pub(super) async fn present(
     }
     intent.unconfirmed_write = true;
     intents.push(intent);
-    store.set_pending_dns_records(id, intents.clone()).await?;
+    acme_store!(runtime; [id, intents]; store => store.set_pending_dns_records(&id, intents))?;
     let outcome = provider
         .present_tracked(intents.last().ok_or(CertificateError::DnsProviderInvalid)?)
         .await;
@@ -57,10 +57,10 @@ pub(super) async fn present(
         if let Some(intent) = intents.last_mut() {
             intent.unconfirmed_write = false;
         }
-        store.set_pending_dns_records(id, intents.clone()).await?;
+        acme_store!(runtime; [id, intents]; store => store.set_pending_dns_records(&id, intents))?;
     }
     outcome.map_err(|error| error.error)?;
-    check_cancelled(store, id).await
+    check_cancelled(runtime, id).await
 }
 
 pub(super) async fn bindings(
@@ -96,13 +96,13 @@ pub(super) async fn recheck(
 pub(super) async fn wait_for_records(
     intents: &[DnsRecordIntent],
     environment: CertificateEnvironment,
-    store: &CertificateStore,
+    runtime: &Arc<ProxyRuntime>,
     id: &str,
 ) -> Result<(), CertificateError> {
     let deadline = Instant::now() + Duration::from_secs(60);
     let mut last = CertificateError::DnsDelegationNotPropagated;
     loop {
-        check_cancelled(store, id).await?;
+        check_cancelled(runtime, id).await?;
         match timeout_at(
             deadline,
             dns_delegation::check_records(intents, environment),
