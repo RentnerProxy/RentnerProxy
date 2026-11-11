@@ -130,6 +130,13 @@ test('failure diagnostics export only static source frames and a declared owner 
     expect(JSON.stringify(backgroundFailureDiagnostic(error))).not.toContain('private')
     expect(backgroundFailureDiagnostic(new Error('password=never-export'))).toEqual({ frames: [] })
     expect(backgroundFailureDiagnostic('token=never-export')).toEqual({ frames: [] })
+    const extended = new Error('password=never-export')
+    extended.stack =
+        'private-token\n at stage (/private/background-extended.ts:64:9)\n at replay (C:\\private\\background-recovery.ts:90:5)\n at fake (/private/not-background-extended.ts:1:1)\n at fake (/private/background-extended.tsx:1:1)'
+    expect(backgroundFailureDiagnostic(extended)).toEqual({
+        frames: ['background-extended.ts:64:9', 'background-recovery.ts:90:5'],
+    })
+    expect(JSON.stringify(backgroundFailureDiagnostic(extended))).not.toContain('private')
 })
 
 describe('bounded seeded background workload', () => {

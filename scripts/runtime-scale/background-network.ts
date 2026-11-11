@@ -1,3 +1,4 @@
+/** Hold a real loopback HEAD in flight while mutating its context, then always release the barrier and stop the owned server. */
 export async function withInFlightBackgroundHead(operation: () => Promise<void>) {
     const entered = Promise.withResolvers<void>()
     const release = Promise.withResolvers<void>()

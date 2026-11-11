@@ -31,6 +31,7 @@ import {
     TLS_TEST_CERTIFICATE,
 } from '../../web/src/tests/server/Notifications/Types/tls-test.types.ts'
 
+/** Project validated fixture command fields into the fixed background workload without reading process-global configuration. */
 function options(context: Pick<FixtureContext, 'command'>): BackgroundOptions {
     return {
         policies: context.command.policyCount,
@@ -41,6 +42,7 @@ function options(context: Pick<FixtureContext, 'command'>): BackgroundOptions {
     }
 }
 
+/** Measure an authorized management read and return validated durable policy/observation evidence for the seeded fixture IDs. */
 async function snapshot(context: FixtureContext) {
     const started = performance.now()
     await context.authorized(context.hosts.getProxyHostsService)
@@ -88,6 +90,7 @@ async function snapshot(context: FixtureContext) {
     })
 }
 
+/** Mutate one owned in-flight claim across stale-context faults and verify durable write fences, restoring temporary host configuration afterward. */
 export async function backgroundFences(context: Pick<FixtureContext, 'database' | 'command'>) {
     const inventory = backgroundPolicies(options(context))
     const hostId = inventory[0]!.id
@@ -464,6 +467,7 @@ export async function prepareBackgroundInventory(
     }
 }
 
+/** Dispatch validated background fixture phases; use the existing fixture executor for phases outside this workload. */
 async function execute(context: FixtureContext): Promise<Record<string, unknown>> {
     if (!context.command.phase.startsWith('background-')) return executeFixture(context)
     const inventory = backgroundPolicies(options(context))

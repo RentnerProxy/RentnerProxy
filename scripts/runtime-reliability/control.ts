@@ -192,6 +192,7 @@ export function analyzeResources(samples: ResourceSample[], concurrency: number)
     }
 }
 
+/** Validate bounded progress and fixed failure categories before deriving pass status; interrupted or cancelled evidence cannot produce a successful report. */
 export function buildReliabilityReport(input: ReliabilityReportInput) {
     if (
         !/^[a-f0-9]{40}$/.test(input.targetSha) ||

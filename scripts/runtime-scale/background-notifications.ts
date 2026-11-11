@@ -19,6 +19,7 @@ import type { StoredNotificationConfiguration } from '../../web/src/server/Notif
 import { backgroundDistribution, backgroundSlo } from './background.ts'
 import type { NotificationDeliveryResult } from '../../web/src/lib/Notifications/Types/notifications.types.ts'
 
+/** Produce deterministic per-seed notification identities with a private sequence independent from global random state. */
 function idFactory(seed: number) {
     let sequence = 0
     return () => {
@@ -29,6 +30,7 @@ function idFactory(seed: number) {
     }
 }
 
+/** Exercise real delivery transports and durable lease faults only against unused fixture settings; restore settings, clock, and receivers afterward. */
 export async function runBackgroundNotifications(
     context: Pick<FixtureContext, 'database' | 'command'>,
 ) {

@@ -9,11 +9,13 @@ import {
 } from '../../web/src/tests/server/Notifications/Types/tls-test.types.ts'
 import type { NotificationMailClient } from '../../web/src/server/Mail/Types/notification-mail.types.ts'
 
+/** Own loopback webhook and TLS SMTP receivers with payload-identity deduplication; return explicit client and server cleanup handles. */
 export async function startBackgroundNotificationReceivers() {
     const accepted = new Set<string>()
     const receiverAttempts = new Map<string, number>()
     const receiverIdentity = new Map<string, string>()
     const slowPayloadIds = new Set<string>()
+    /** Normalize transport message IDs to stable payload IDs while counting every receiver attempt separately from unique accepted effects. */
     const record = (id: string) => {
         const stable = receiverIdentity.get(id) ?? id
         accepted.add(stable)
@@ -22,6 +24,7 @@ export async function startBackgroundNotificationReceivers() {
     const webhook = Bun.serve({
         hostname: '127.0.0.1',
         port: 0,
+        /** Require a payload identity, apply the controlled receiver delay, and record acceptance before returning success. */
         async fetch(request) {
             const input: unknown = await request.json()
             assert.ok(
@@ -102,6 +105,7 @@ export async function startBackgroundNotificationReceivers() {
         receiverAttempts,
         receiverIdentity,
         slowPayloadIds,
+        /** Create an isolated TLS client that trusts only the fixture CA and uses bounded transport timeouts; the caller must close it. */
         createMailClient(): NotificationMailClient {
             const transport = createTransport({
                 host: '127.0.0.1',
@@ -122,6 +126,7 @@ export async function startBackgroundNotificationReceivers() {
                 close: () => transport.close(),
             }
         },
+        /** Stop webhook admission, destroy active SMTP sockets, and await SMTP listener closure. */
         async close() {
             webhook.stop(true)
             for (const socket of sockets) socket.destroy()
