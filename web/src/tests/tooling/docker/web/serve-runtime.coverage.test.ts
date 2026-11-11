@@ -21,7 +21,7 @@ afterEach(async () => {
     )
 })
 
-async function fixture(port: number, application = true) {
+async function fixture(port: number, application = true, drainFailure = false) {
     const directory = await mkdtemp(prefix)
     fixtures.push(directory)
     const code = join(directory, 'code')
@@ -38,7 +38,7 @@ async function fixture(port: number, application = true) {
         join(code, 'web/dist/server/server.js'),
         `
         import {writeFile} from 'node:fs/promises'
-        process.on('rentnerproxy:shutdown',pending=>pending.push(writeFile(${JSON.stringify(marker)},'completed')))
+        process.on('rentnerproxy:shutdown',pending=>pending.push(writeFile(${JSON.stringify(marker)},'completed').then(()=>{if(${drainFailure})throw new Error('worker drain failed')})))
         export default ${application ? `{fetch(request){return Response.json({path:new URL(request.url).pathname,ip:request.ip??null})}}` : '{}'}
     `,
     )
@@ -130,4 +130,38 @@ test.each([
         const context = await fixture(port, application)
         expect(await context.child.exited).toBe(1)
     },
+)
+
+test.skipIf(process.platform !== 'linux')(
+    'web launcher reports a failed worker drain as unsuccessful shutdown',
+    async () => {
+        const reservation = Bun.serve({
+            hostname: '127.0.0.1',
+            port: 0,
+            fetch: () => new Response(),
+        })
+        const port = reservation.port!
+        await reservation.stop(true)
+        const context = await fixture(port, true, true)
+        try {
+            const deadline = Date.now() + 5_000
+            while (true) {
+                try {
+                    if ((await fetch('http://127.0.0.1:' + port + '/ready')).ok) break
+                } catch {}
+                if (Date.now() > deadline) throw new Error('Owned web fixture readiness timed out.')
+                await Bun.sleep(20)
+            }
+            context.child.kill('SIGTERM')
+            expect(await context.child.exited).toBe(1)
+            expect(await readFile(context.marker, 'utf8')).toBe('completed')
+            expect(await new Response(context.child.stderr).text()).toContain(
+                'shutdown did not drain',
+            )
+        } finally {
+            if (context.child.exitCode === null) context.child.kill('SIGKILL')
+            await context.child.exited
+        }
+    },
+    10_000,
 )

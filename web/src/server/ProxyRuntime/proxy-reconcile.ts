@@ -15,10 +15,11 @@ export function createProxyReconciler(
             enabled: dependencies.enabled !== false,
             load: dependencies.loadSnapshot,
             revision: (snapshot) => snapshot.revision,
-            apply: async (snapshot) => {
+            apply: async (snapshot, signal) => {
                 const applied = await dependencies.applySnapshot(
                     snapshot,
                     CONTROLLER_APPLY_TIMEOUT_MS,
+                    signal,
                 )
                 if (applied === null) return false
                 if ('ok' in applied) {

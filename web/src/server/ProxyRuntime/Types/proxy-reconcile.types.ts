@@ -9,10 +9,11 @@ import type { RuntimeReconciler } from '@/server/Foundation/Types/runtime-reconc
 export interface ReconcileDependencies {
     readonly enabled?: boolean
     readonly loadSnapshot: () => Promise<ProxyRuntimeSnapshot>
-    readonly checkDrift?: () => Promise<boolean>
+    readonly checkDrift?: (signal?: AbortSignal) => Promise<boolean>
     readonly applySnapshot: (
         snapshot: ProxyRuntimeSnapshot,
         timeoutMs: number,
+        signal?: AbortSignal,
     ) => Promise<ProxyRuntimeApplyResponse | ProxyRuntimeApplyResult | null>
 }
 

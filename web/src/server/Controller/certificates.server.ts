@@ -95,10 +95,12 @@ export async function getControllerCertificateEvents(
 
 export async function getControllerCertificate(
     certificateId: string,
+    signal?: AbortSignal,
 ): Promise<ControllerCertificateMetadata> {
     return parseMetadata(
         await controllerRequest(certificatePath(certificateId), {
             privileged: true,
+            ...(signal ? { signal } : {}),
             timeoutMs: 2_000,
             responseLimit: RESPONSE_LIMIT,
             acceptErrorResponse: true,
@@ -136,6 +138,7 @@ export async function importControllerCertificate(
 export async function issueControllerCertificate(
     certificateId: string,
     input: RequestCertificateInput,
+    signal?: AbortSignal,
 ): Promise<ControllerCertificateMetadata> {
     const body = JSON.stringify({
         domains: input.domains,
@@ -149,6 +152,7 @@ export async function issueControllerCertificate(
     return parseMetadata(
         await controllerRequest(`${certificatePath(certificateId)}/issue`, {
             privileged: true,
+            ...(signal ? { signal } : {}),
             confidential: input.dnsProvider !== undefined,
             timeoutMs: 5_000,
             method: 'POST',
@@ -162,10 +166,12 @@ export async function issueControllerCertificate(
 
 export async function renewControllerCertificate(
     certificateId: string,
+    signal?: AbortSignal,
 ): Promise<ControllerCertificateMetadata> {
     return parseMetadata(
         await controllerRequest(`${certificatePath(certificateId)}/renew`, {
             privileged: true,
+            ...(signal ? { signal } : {}),
             timeoutMs: 5_000,
             method: 'POST',
             body: '{}',
