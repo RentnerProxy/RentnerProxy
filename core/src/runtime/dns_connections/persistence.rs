@@ -4,6 +4,10 @@ use std::{collections::BTreeSet, path::Path, sync::Arc};
 use tokio::sync::OwnedMutexGuard;
 
 impl Store {
+    /// Acquires the registry guard, loading and validating disk state when uncached.
+    ///
+    /// A blocking load owns the guard until it finishes even if the async waiter is
+    /// cancelled. Read, validation and worker failures return `StoreUnavailable`.
     pub(super) async fn lock(&self) -> Result<OwnedMutexGuard<Option<Registry>>, Error> {
         let mut state = Arc::clone(&self.state).lock_owned().await;
         if state.is_some() {
@@ -23,11 +27,16 @@ impl Store {
         .await
         .map_err(|_| Error::StoreUnavailable)?
     }
+    /// Borrows the cached registry from its owned guard or reports unavailable state.
     pub(super) fn registry(
         state: &mut OwnedMutexGuard<Option<Registry>>,
     ) -> Result<&mut Registry, Error> {
         state.as_mut().ok_or(Error::StoreUnavailable)
     }
+    /// Loads a size-bounded registry and validates metadata, uniqueness and encrypted secret envelopes.
+    ///
+    /// A missing file yields an empty version-one registry. Malformed, unsupported
+    /// or oversized data and other filesystem failures return `StoreUnavailable`.
     fn load(path: &Path) -> Result<Registry, Error> {
         let dir = state_dir(path).map_err(|_| Error::StoreUnavailable)?;
         let bytes = match dir.read_file(FILE, MAX_BYTES) {
@@ -61,6 +70,10 @@ impl Store {
         }
         Ok(registry)
     }
+    /// Serializes a size-bounded registry and atomically replaces its file.
+    ///
+    /// Returns `StoreUnavailable` on serialization or filesystem failure. Replacement
+    /// may already have succeeded when a later durability step reports an error.
     fn persist(path: &Path, registry: &Registry) -> Result<(), Error> {
         let bytes = serde_json::to_vec(registry).map_err(|_| Error::StoreUnavailable)?;
         if bytes.len() > MAX_BYTES {
@@ -71,6 +84,11 @@ impl Store {
             .map_err(|_| Error::StoreUnavailable)?;
         Ok(())
     }
+    /// Transfers the registry guard to a blocking worker for persistence and publication.
+    ///
+    /// The worker clears the cache before writing and publishes only after success,
+    /// retaining the guard even if its async waiter is cancelled. An ambiguous write
+    /// error leaves the cache empty so the next operation reloads authoritative disk state.
     pub(super) async fn commit(
         &self,
         mut state: OwnedMutexGuard<Option<Registry>>,

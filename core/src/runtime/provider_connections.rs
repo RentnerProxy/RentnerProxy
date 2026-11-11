@@ -32,6 +32,11 @@ pub(super) fn certificate_error(error: dns_connections::Error) -> CertificateErr
 impl ProxyRuntime {
     // Callers hold Store::bindings across reference reservation and certificate
     // persistence. A reconciliation cannot prune another request's reservation.
+    /// Reconciles certificate connection usage through the serialized storage worker.
+    ///
+    /// Callers must hold the binding lock across reconciliation and the associated
+    /// mutation, since admitted storage work can outlive its waiter. Worker failures
+    /// become `StoreUnavailable`; reconciliation errors propagate.
     pub(crate) async fn reconcile_provider_connections(
         self: &Arc<Self>,
     ) -> Result<(), dns_connections::Error> {
@@ -42,6 +47,11 @@ impl ProxyRuntime {
         .map_err(|_| dns_connections::Error::StoreUnavailable)?
     }
 
+    /// Adopts matching verified connections for idle certificates and reconciles references.
+    ///
+    /// Reserves usage before adoption, then rereads certificate configurations before
+    /// pruning. Callers retain the binding lock so another reservation cannot be pruned;
+    /// unavailable storage stops reconciliation while ineligible adoptions are skipped.
     async fn reconcile_provider_connections_inner(&self) -> Result<(), dns_connections::Error> {
         let configurations = self
             .certificate_store
@@ -89,6 +99,11 @@ impl ProxyRuntime {
             .await
     }
 
+    /// Validates and reserves connection usage through storage admission.
+    ///
+    /// The caller holds the binding lock through reservation and certificate persistence.
+    /// Admitted storage work survives a dropped waiter; worker failures become
+    /// `StoreUnavailable` and validation errors remain certificate errors.
     pub(super) async fn reserve_certificate_connection(
         self: &Arc<Self>,
         id: &str,
@@ -105,6 +120,11 @@ impl ProxyRuntime {
         .map_err(|_| CertificateError::StoreUnavailable)?
     }
 
+    /// Validates a referenced connection and reserves verified DNS-01 usage.
+    ///
+    /// Inline credentials need no reservation. Non-delegated requests must keep all
+    /// domains within the selected zone, and the resolved provider must match. Callers
+    /// hold the binding lock through the later certificate persistence.
     async fn reserve_certificate_connection_inner(
         &self,
         id: &str,

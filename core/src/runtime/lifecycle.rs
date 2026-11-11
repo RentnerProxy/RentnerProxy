@@ -443,6 +443,10 @@ impl ProxyRuntime {
     }
 
     /// Stops workers and the engine within the caller's single shutdown deadline.
+    ///
+    /// Background jobs share a phase capped at three seconds; overdue async jobs
+    /// are aborted, but blocking I/O already started by them may continue. The
+    /// remaining deadline bounds apply-lock draining and engine shutdown.
     pub(crate) async fn shutdown_until(&self, deadline: Instant) {
         self.begin_shutdown();
         // Background workers share a short phase, leaving the rest of the one

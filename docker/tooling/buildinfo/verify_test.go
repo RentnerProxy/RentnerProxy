@@ -9,6 +9,8 @@ import (
 	"testing"
 )
 
+// fixture returns an otherwise-valid build record for the selected binary so a
+// test can isolate the compiler, dependency or build-setting policy it mutates.
 func fixture(profile string) *debug.BuildInfo {
 	info := &debug.BuildInfo{GoVersion: "go1.27.3"}
 	if profile == "caddy" {
@@ -36,6 +38,8 @@ func fixture(profile string) *debug.BuildInfo {
 	return info
 }
 
+// TestCompilerPolicy verifies that each binary accepts its own pinned compiler
+// and rejects the other profile's compiler rather than sharing one global pin.
 func TestCompilerPolicy(t *testing.T) {
 	for _, tc := range []struct {
 		profile string
@@ -64,14 +68,7 @@ func TestPolicies(t *testing.T) {
 				t.Fatal(err)
 			}
 			cases := map[string]func(*debug.BuildInfo){
-				"compiler": func(i *debug.BuildInfo) { i.GoVersion = "go1.27.1" },
-				"other profile compiler": func(i *debug.BuildInfo) {
-					if profile == "caddy" {
-						i.GoVersion = "go1.27.3"
-					} else {
-						i.GoVersion = "go1.27.4"
-					}
-				},
+				"compiler":             func(i *debug.BuildInfo) { i.GoVersion = "go1.27.1" },
 				"missing dependency":   func(i *debug.BuildInfo) { i.Deps = i.Deps[1:] },
 				"duplicate dependency": func(i *debug.BuildInfo) { i.Deps = append(i.Deps, i.Deps[0]) },
 				"missing CGO":          func(i *debug.BuildInfo) { i.Settings = i.Settings[1:] },

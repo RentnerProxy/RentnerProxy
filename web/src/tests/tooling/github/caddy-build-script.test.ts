@@ -10,6 +10,7 @@ const root = resolve(import.meta.dir, '../../../../..')
 // Absolute builder paths belong exclusively to an opted-in disposable container.
 test.skipIf(process.env.RENTNERPROXY_CADDY_BUILD_FIXTURE !== '1' || process.platform !== 'linux')(
     'shared Caddy build enforces upstream pins, compiler, binary and required modules',
+    /** Exercises selected failure gates with disposable stubs and checks the successful build's command ordering. */
     async () => {
         const owned = [
             '/opt/rentnerproxy-responsecache',

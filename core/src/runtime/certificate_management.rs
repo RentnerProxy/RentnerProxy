@@ -22,6 +22,10 @@ impl ProxyRuntime {
         self.certificate_store.events(after, limit).await
     }
 
+    /// Records cancellation for the specified delegated DNS operation via storage admission.
+    ///
+    /// Once admitted, the storage worker retains ownership if its waiter is dropped.
+    /// Worker failures become `StoreUnavailable`; certificate-store errors propagate.
     pub(crate) async fn cancel_delegated_dns(
         self: &Arc<Self>,
         id: &str,
@@ -39,6 +43,10 @@ impl ProxyRuntime {
         .map_err(|_| CertificateError::StoreUnavailable)?
     }
 
+    /// Cancels a manual DNS order through the serialized storage worker.
+    ///
+    /// The owned action survives caller cancellation after admission. Worker failures
+    /// become `StoreUnavailable`; order validation errors remain certificate errors.
     pub(crate) async fn cancel_manual_dns(
         self: &Arc<Self>,
         id: &str,
@@ -132,6 +140,11 @@ impl ProxyRuntime {
         self.certificate_store.get(staged.id()).await
     }
 
+    /// Admits candidate preparation and activation as one tracked background job.
+    ///
+    /// Shutdown or exhausted job slots return `OperationInProgress`. After admission,
+    /// dropping the caller leaves preparation and publication owned by the job;
+    /// loss of its result becomes `StoreUnavailable`.
     pub(crate) async fn retry_certificate_candidate(
         self: &Arc<Self>,
         id: &str,
@@ -161,6 +174,11 @@ impl ProxyRuntime {
             .unwrap_or(Err(CertificateError::StoreUnavailable))
     }
 
+    /// Prepares a candidate under storage admission and applies it when eligible.
+    ///
+    /// Returns `None` when the store has no candidate ready for this retry. The
+    /// caller must retain ownership across preparation and activation; shutdown
+    /// rejects preparation and storage-worker failures become `StoreUnavailable`.
     pub(super) async fn retry_certificate_candidate_inner(
         self: &Arc<Self>,
         id: &str,
@@ -187,6 +205,10 @@ impl ProxyRuntime {
             .map(Some)
     }
 
+    /// Runs certificate deletion in an owned task that survives caller cancellation.
+    ///
+    /// A join failure is reported and returned as `StoreUnavailable`. Usage checks
+    /// and deletion stay together inside the task while it holds the apply lock.
     pub(crate) async fn delete_certificate(
         self: &Arc<Self>,
         id: &str,
@@ -201,6 +223,10 @@ impl ProxyRuntime {
             })
     }
 
+    /// Holds the apply lock across live and cached usage checks and storage deletion.
+    ///
+    /// Lock timeout or an unavailable engine conservatively prevents deletion as in-use.
+    /// Storage-worker failures become `StoreUnavailable`; store deletion errors propagate.
     async fn delete_certificate_inner(self: &Arc<Self>, id: &str) -> Result<(), CertificateError> {
         let _guard = timeout(self.settings.lock_wait, self.apply_lock.lock())
             .await
