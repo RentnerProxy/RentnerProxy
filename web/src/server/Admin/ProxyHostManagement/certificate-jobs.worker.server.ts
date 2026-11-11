@@ -1,3 +1,4 @@
+import { drainWorker } from '@/server/Foundation/worker-lifecycle.server.ts'
 import '@tanstack/react-start/server-only'
 
 import { eq } from 'drizzle-orm'
@@ -76,6 +77,7 @@ async function saveJobCertificateMetadata(
 async function issueJobCertificate(
     job: CertificateJobRow,
     controller: typeof certificateJobController,
+    signal?: AbortSignal,
 ): Promise<ControllerCertificateMetadata | null> {
     const dispatch = await withCertificateJobClaim(job, async (transaction, current) => {
         await validateCertificateJobContext(transaction, current)
@@ -97,27 +99,29 @@ async function issueJobCertificate(
             .where(eq(certificateJobs.id, current.id))
         return { request, certificateId: current.certificateId }
     })
-    return dispatch ? controller.issue(dispatch.certificateId, dispatch.request) : null
+    signal?.throwIfAborted()
+    return dispatch ? controller.issue(dispatch.certificateId, dispatch.request, signal) : null
 }
 
 async function loadOrIssueJobCertificate(
     job: CertificateJobRow,
     controller: typeof certificateJobController,
+    signal?: AbortSignal,
 ): Promise<ControllerCertificateMetadata | null> {
     if (!job.certificateId) throw new CertificateJobDomainError('certificate_deleted')
     let metadata: ControllerCertificateMetadata
     try {
-        metadata = await controller.get(job.certificateId)
+        metadata = await controller.get(job.certificateId, signal)
     } catch (error) {
         if (!(error instanceof CertificateDomainError) || error.code !== 'certificate_not_found')
             throw error
         if (job.controllerOperationId || job.assignedRevision)
             throw new CertificateJobDomainError('certificate_not_found')
-        return issueJobCertificate(job, controller)
+        return issueJobCertificate(job, controller, signal)
     }
     if (metadata.currentOperation?.dnsMode === 'manual' && metadata.operation !== 'idle')
         return metadata
-    if (metadata.candidate && job.retryRequested) return controller.renew(job.certificateId)
+    if (metadata.candidate && job.retryRequested) return controller.renew(job.certificateId, signal)
     if (
         metadata.status !== 'valid' &&
         metadata.operation === 'idle' &&
@@ -125,7 +129,7 @@ async function loadOrIssueJobCertificate(
         job.retryRequested &&
         (metadata.currentOperation?.id ?? null) === job.controllerOperationId
     ) {
-        return issueJobCertificate(job, controller)
+        return issueJobCertificate(job, controller, signal)
     }
     return metadata
 }
@@ -134,6 +138,7 @@ async function processCertificateJob(
     job: CertificateJobRow,
     controller = certificateJobController,
     runtime = certificateJobRuntime,
+    signal?: AbortSignal,
 ): Promise<WorkerOutcome> {
     try {
         const ready = await withCertificateJobClaim(job, async (transaction, current) => {
@@ -141,7 +146,9 @@ async function processCertificateJob(
             return true
         })
         if (!ready) return 'deferred'
-        const metadata = await loadOrIssueJobCertificate(job, controller)
+        signal?.throwIfAborted()
+        const metadata = await loadOrIssueJobCertificate(job, controller, signal)
+        signal?.throwIfAborted()
         if (!metadata) return 'deferred'
         const manualState = getCertificateJobManualDnsState(metadata)
         if (
@@ -150,6 +157,7 @@ async function processCertificateJob(
             (manualState === 'not_manual' || manualState === 'complete')
         ) {
             if (!(await bindIssuedJobCertificate(job, metadata))) return 'deferred'
+            signal?.throwIfAborted()
             if (await confirmJobRuntime(job, runtime)) return 'success'
             await releaseCertificateJob(job, {
                 stage: 'applying',
@@ -165,6 +173,10 @@ async function processCertificateJob(
         )
         return manualState === 'failed' || metadata.status === 'failed' ? 'failure' : 'deferred'
     } catch (error) {
+        if (signal?.aborted) {
+            await releaseCertificateJob(job, {})
+            return 'cancelled'
+        }
         if (error instanceof CertificateJobDomainError) {
             await releaseCertificateJob(job, {
                 stage: 'needs_attention',
@@ -192,37 +204,67 @@ async function processCertificateJob(
 export async function runCertificateJobsOnce(
     controller = certificateJobController,
     runtime = certificateJobRuntime,
+    signal?: AbortSignal,
 ): Promise<WorkerOutcome> {
-    const jobs = await Promise.all(Array.from({ length: 4 }, () => claimCertificateJob()))
-    const outcomes = await Promise.all(
-        jobs
-            .filter((job): job is CertificateJobRow => job !== null)
-            .map((job) => processCertificateJob(job, controller, runtime)),
+    if (signal?.aborted) return 'cancelled'
+    const claims = await Promise.allSettled(Array.from({ length: 4 }, () => claimCertificateJob()))
+    const results = await Promise.allSettled(
+        claims.map(async (claim): Promise<WorkerOutcome> => {
+            if (claim.status === 'rejected') throw claim.reason
+            const job = claim.value
+            if (!job) return 'deferred'
+            if (signal?.aborted) {
+                await releaseCertificateJob(job, {})
+                return 'cancelled'
+            }
+            return processCertificateJob(job, controller, runtime, signal)
+        }),
     )
-    return outcomes.includes('failure')
+    const failed = results.find((result) => result.status === 'rejected')
+    if (failed?.status === 'rejected') throw failed.reason
+    const outcomes = new Set(
+        results.flatMap((result) => (result.status === 'fulfilled' ? [result.value] : [])),
+    )
+    return outcomes.has('failure')
         ? 'failure'
-        : outcomes.includes('success')
-          ? 'success'
-          : 'deferred'
+        : outcomes.has('cancelled')
+          ? 'cancelled'
+          : outcomes.has('success')
+            ? 'success'
+            : 'deferred'
 }
 
 let timer: ReturnType<typeof setTimeout> | null = null
 let running: Promise<void> | null = null
 let stopped = true
+let controller = new AbortController()
+let unavailable = false
 
 export function startCertificateJobWorker(): void {
-    if (!stopped) return
+    if (!stopped || running) return
     stopped = false
+    controller = new AbortController()
     const tick = () => {
         if (stopped) return
         running = observeWorkerOperation(
             'certificate_jobs',
-            runCertificateJobsOnce,
-            undefined,
+            () =>
+                runCertificateJobsOnce(
+                    certificateJobController,
+                    certificateJobRuntime,
+                    controller.signal,
+                ),
+            controller.signal,
             (outcome) => outcome,
         )
-            .then(() => undefined)
-            .catch(() => undefined)
+            .then(() => {
+                unavailable = false
+            })
+            .catch(() => {
+                if (!unavailable && !controller.signal.aborted)
+                    console.warn('[certificates] job worker unavailable')
+                unavailable = true
+            })
             .finally(() => {
                 running = null
                 if (!stopped) {
@@ -236,9 +278,10 @@ export function startCertificateJobWorker(): void {
 
 export async function stopCertificateJobWorker(): Promise<void> {
     stopped = true
+    controller.abort()
     if (timer) clearTimeout(timer)
     timer = null
-    await running
+    await drainWorker(Promise.resolve(running))
 }
 
 workerObservability.sample('certificate_jobs', { concurrency: 4 })

@@ -109,9 +109,18 @@ const startNpmImportTempCleanup = createServerOnlyFn(async () => {
         const { pruneStaleNpmImports } = await import('@/server/Admin/NpmImport/npm-temp.ts')
         let timer: ReturnType<typeof setInterval> | null = null
         let running: Promise<void> | null = null
+        let stopped = false
+        let unavailable = false
         const prune = () => {
+            if (stopped) return
             running ??= observeWorkerOperation('npm_import_cleanup', pruneStaleNpmImports)
-                .catch(() => undefined)
+                .then(() => {
+                    unavailable = false
+                })
+                .catch(() => {
+                    if (!unavailable) console.warn('[npm-import] temporary cleanup unavailable')
+                    unavailable = true
+                })
                 .then(() => undefined)
                 .finally(() => {
                     running = null
@@ -119,11 +128,13 @@ const startNpmImportTempCleanup = createServerOnlyFn(async () => {
         }
         return {
             start() {
+                if (stopped || timer) return
                 prune()
                 timer = setInterval(prune, 60 * 60 * 1_000)
                 timer.unref()
             },
             async stop() {
+                stopped = true
                 if (timer !== null) clearInterval(timer)
                 timer = null
                 await running

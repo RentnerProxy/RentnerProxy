@@ -3,6 +3,7 @@ import '@tanstack/react-start/server-only'
 
 import type { ProxyRuntimeMutationStatus } from '@/lib/ProxyRuntime/Types/proxy-runtime.types.ts'
 import { workerObservability } from './worker-observability.ts'
+import { drainWorker, settleWorkerTasks } from './worker-lifecycle.server.ts'
 import type {
     RuntimeReconcileDependencies,
     RuntimeReconcileOptions,
@@ -22,6 +23,9 @@ export function createRuntimeReconciler<T>(
     let completed = 0
     let worker: Promise<void> | null = null
     let stopped = false
+    let started = false
+    const controller = new AbortController()
+    let driftFlight: Promise<void> | null = null
     let driftTimer: ReturnType<typeof setInterval> | null = null
     let wakeResolver: (() => void) | null = null
     let publicFlight: Promise<ProxyRuntimeMutationStatus> | null = null
@@ -72,14 +76,14 @@ export function createRuntimeReconciler<T>(
             const target = requested
             const finish = options.workerId ? workerObservability.begin(options.workerId) : () => {}
             try {
-                const snapshot = await dependencies.load()
+                const snapshot = await dependencies.load(controller.signal)
                 if (stopped) break
                 if (rejectedRevision === dependencies.revision(snapshot)) {
                     completed = target
                     resolveWaiters('pending')
                     continue
                 }
-                const applied = await dependencies.apply(snapshot)
+                const applied = await dependencies.apply(snapshot, controller.signal)
                 if (stopped) break
                 if (typeof applied !== 'boolean') {
                     finish('failure')
@@ -106,7 +110,7 @@ export function createRuntimeReconciler<T>(
                 }
                 if (!applied) throw new Error('apply_failed')
                 rejectedRevision = null
-                const latest = await dependencies.load()
+                const latest = await dependencies.load(controller.signal)
                 if (stopped) break
                 if (
                     target !== requested ||
@@ -118,7 +122,7 @@ export function createRuntimeReconciler<T>(
                 finish('success')
                 resolveWaiters('applied')
             } catch {
-                finish('failure')
+                finish(stopped ? 'cancelled' : 'failure')
                 if (stopped) break
                 resolveWaiters('pending')
                 console.warn(`[${options.name}] reconcile unavailable`)
@@ -166,7 +170,8 @@ export function createRuntimeReconciler<T>(
     }
 
     function start(): void {
-        if (stopped || dependencies.enabled === false) return
+        if (started || stopped || dependencies.enabled === false) return
+        started = true
         enqueue()
         if (driftTimer === null) {
             driftTimer = setInterval(() => void checkDrift(), DRIFT_CHECK_INTERVAL_MS)
@@ -174,17 +179,27 @@ export function createRuntimeReconciler<T>(
         }
     }
 
-    async function checkDrift(): Promise<void> {
+    function checkDrift(): Promise<void> {
         const drift = dependencies.drift
-        if (!drift || stopped || dependencies.enabled === false) return
+        if (!drift || stopped || dependencies.enabled === false) return Promise.resolve()
+        if (driftFlight) return driftFlight
+        driftFlight = observeDrift(drift).finally(() => {
+            driftFlight = null
+        })
+        return driftFlight
+    }
+
+    async function observeDrift(
+        drift: NonNullable<RuntimeReconcileDependencies<T>['drift']>,
+    ): Promise<void> {
         try {
             let hasDrift: boolean
             if ('check' in drift) {
-                hasDrift = await drift.check()
+                hasDrift = await drift.check(controller.signal)
             } else {
-                const snapshot = await dependencies.load()
+                const snapshot = await dependencies.load(controller.signal)
                 if (stopped) return
-                hasDrift = await drift.matches(snapshot)
+                hasDrift = await drift.matches(snapshot, controller.signal)
             }
             if (!stopped && hasDrift) enqueue()
         } catch {
@@ -194,21 +209,15 @@ export function createRuntimeReconciler<T>(
 
     async function stop(): Promise<void> {
         stopped = true
+        controller.abort()
         if (driftTimer !== null) clearInterval(driftTimer)
         driftTimer = null
         resolveWaiters('pending')
         wake()
-        if (worker) {
-            let timer: ReturnType<typeof setTimeout> | undefined
-            await Promise.race([
-                worker,
-                new Promise<void>((resolve) => {
-                    timer = setTimeout(resolve, options.stopTimeoutMs)
-                    timer.unref?.()
-                }),
-            ])
-            if (timer !== undefined) clearTimeout(timer)
-        }
+        await drainWorker(
+            settleWorkerTasks([worker, driftFlight]),
+            Math.min(options.stopTimeoutMs, 15_000),
+        )
     }
 
     return Object.assign(reconcile, { checkDrift, start, stop })

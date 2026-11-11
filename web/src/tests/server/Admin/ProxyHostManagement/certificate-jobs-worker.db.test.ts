@@ -374,6 +374,39 @@ afterAll(() => {
 })
 
 describe('certificate job worker with PostgreSQL', () => {
+    integrationTest(
+        'cancellation after native issuance releases the lease and reconciles without issuing twice',
+        async () => {
+            const fixture = await createJob(await createUser())
+            const controller = createController()
+            const runtime = createRuntime()
+            const cancellation = new AbortController()
+            runtime.setAvailable(true)
+            await makeDue(fixture.id)
+            await runCertificateJobsOnce(
+                {
+                    ...controller.controller,
+                    issue: async (id, request) => {
+                        const result = await controller.controller.issue(id, request)
+                        cancellation.abort()
+                        return result
+                    },
+                },
+                runtime.runtime,
+                cancellation.signal,
+            )
+            expect(controller.issueCalls()).toBe(1)
+            expect(await readJob(fixture.id)).toMatchObject({ stage: 'issuing', leaseToken: null })
+            expect((await readHost(fixture.hostId))?.certificateId).toBeNull()
+            expect(runtime.reconcileCalls()).toBe(0)
+
+            await makeDue(fixture.id)
+            await runCertificateJobsOnce(controller.controller, runtime.runtime)
+            expect(controller.issueCalls()).toBe(1)
+            expectCompletedJob(await readJob(fixture.id))
+        },
+    )
+
     integrationTest('does not issue twice after a lost issue response', async () => {
         const actorId = await createUser()
         const fixture = await createJob(actorId)

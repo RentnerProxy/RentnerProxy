@@ -1,3 +1,4 @@
+import { drainWorker } from '@/server/Foundation/worker-lifecycle.server.ts'
 import { DOCKER_DISCOVERY_WORKER as limits } from '@/config/docker-discovery.config.ts'
 
 /** One flight plus one coalesced dirty bit; an in-flight invalidation always gets a follow-up. */
@@ -83,7 +84,7 @@ export function createDiscoveryWorker(
             timer = null
             queued = null
             controller.abort()
-            await flight
+            await drainWorker(Promise.resolve(flight))
         },
     }
 }
