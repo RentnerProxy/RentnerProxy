@@ -238,6 +238,9 @@ func TestCaddyRuntime(t *testing.T) {
 			message, _ := io.ReadAll(response.Body)
 			t.Fatalf("reload failed: %s", message)
 		}
+		// Reload retires old listeners before returning, while accepted connections drain.
+		// Reconnect so the next assertion uses the new configuration's listener.
+		client.CloseIdleConnections()
 	}
 	before = count("one.test", "/assets/public.css")
 	reload(makeConfig("b", true))
