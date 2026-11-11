@@ -166,7 +166,8 @@ export function createWorkerLifecycleSupervisor() {
                 try {
                     if (!worker) {
                         const pendingLoad = load(controller.signal).then((loaded) => {
-                            if (loaded === stoppedWorker) throw new WorkerStoppedInstanceError(stoppedWorkerCause)
+                            if (loaded === stoppedWorker)
+                                throw new WorkerStoppedInstanceError(stoppedWorkerCause)
                             worker = loaded
                             startExecution = undefined
                             return loaded

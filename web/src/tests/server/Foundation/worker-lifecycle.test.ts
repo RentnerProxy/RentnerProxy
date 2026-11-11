@@ -450,18 +450,25 @@ describe('worker lifecycle', () => {
                 starts++
                 throw startupFailure
             },
-            stop: async () => { stops++ },
+            stop: async () => {
+                stops++
+            },
         }
         const failure = await startWorkerLifecycle(async () => worker, 'npm_import_cleanup', {
-                retryDelayMs: 1,
-            }).then(() => undefined, (error: unknown) => error)
+            retryDelayMs: 1,
+        }).then(
+            () => undefined,
+            (error: unknown) => error,
+        )
         expect(failure).toBeInstanceOf(Error)
         if (!(failure instanceof Error)) throw new Error('Expected stopped-instance failure')
         expect(failure.message).toBe('worker_instance_stopped')
         expect(failure.cause).toBe(startupFailure)
         expect(starts).toBe(1)
         expect(stops).toBe(1)
-        const observed = workerObservability.snapshot().workers.find(value => value.id === 'npm_import_cleanup')!
+        const observed = workerObservability
+            .snapshot()
+            .workers.find((value) => value.id === 'npm_import_cleanup')!
         expect(observed.state).toBe('failed')
         expect(observed.counters.retry).toBe(1)
         expect(observed.counters.exhausted).toBe(1)
