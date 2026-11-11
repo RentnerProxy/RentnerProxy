@@ -67,8 +67,10 @@ test('saturated real critical admission defers all four claim producers without 
         import { mock } from 'bun:test'
         process.env.DATABASE_URL = 'postgresql://unit:unit@127.0.0.1:1/rentnerproxy_unit'
         let statements = 0
+        const { admitDatabaseTransaction } = await import('./db/background-admission.ts')
+        // Preserve the real shared admission boundary while replacing only SQL execution.
         mock.module('./server/Auth/Core/database.server.ts', () => ({
-            getAuthDatabase: () => ({ transaction: async work => work({ execute: async () => { statements++; return [] } }) }),
+            getAuthDatabase: () => ({ transaction: work => admitDatabaseTransaction(() => work({ execute: async () => { statements++; return [] } })) }),
         }))
         const { getBackgroundDatabase, getBackgroundDatabaseResourceSnapshot } = await import('./server/Foundation/background-database.server.ts')
         const gate = Promise.withResolvers(), entered = Promise.withResolvers()
@@ -91,7 +93,7 @@ test('saturated real critical admission defers all four claim producers without 
     )
     expect(JSON.parse(output.trim().split('\n').at(-1)!)).toMatchObject({
         outcome: 'deferred',
-        beforeDrain: 2,
+        beforeDrain: 0,
         pressure: { running: 2, pending: 8, busy: 4 },
         counters: { deferred: 1, failure: 0, success: 0, retry: 4, admissionRejected: 4 },
     })
