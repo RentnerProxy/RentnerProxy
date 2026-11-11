@@ -261,6 +261,7 @@ fn cancellation_waits_for_accepted_provider_post_then_cleans_its_committed_value
             let proof = intent();
             let fixture = Fixture::new(false, &proof).await;
             let provider = fixture.provider();
+            let pass = runtime.background.begin(Worker::Orders);
             let write_runtime = runtime.clone();
             let write_provider = provider.clone();
             let write = tokio::spawn(async move {
@@ -315,9 +316,16 @@ fn cancellation_waits_for_accepted_provider_post_then_cleans_its_committed_value
                 intents
             );
             runtime
-                .certificate_store
-                .finish_failed(ID, CertificateError::AcmeCancelled)
+                .finish_failed_acme_issue(ID, Some(CertificateError::AcmeCancelled), pass)
                 .await;
+            let observed = serde_json::to_value(runtime.background.snapshot()).unwrap();
+            let orders = &observed["workers"][4];
+            assert_eq!(orders["id"], "acme_orders");
+            assert_eq!(orders["cancellations"], 1);
+            // The fixture deliberately lacks the saved connection: only that real cleanup
+            // failure degrades Orders; cancellation must not add another failed pass.
+            assert_eq!(orders["failures"], 1);
+            assert_eq!(orders["runningCount"], 0);
             runtime
                 .cleanup_dns_challenges(ID, &provider, &intents)
                 .await
