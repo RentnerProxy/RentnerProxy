@@ -34,5 +34,5 @@ export type ScaleResourceSample = { stage: ScaleStage; sample: ResourceSample }
 
 export type ScaleFailure = {
     stage: ScaleStage
-    category: 'assertion' | 'timeout' | 'command' | 'telemetry' | 'unexpected'
+    category: 'assertion' | 'timeout' | 'command' | 'telemetry' | 'unexpected' | 'cancelled'
 }

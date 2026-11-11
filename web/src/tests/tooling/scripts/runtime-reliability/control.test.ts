@@ -296,6 +296,14 @@ describe('sanitized reliability reports', () => {
         expect(JSON.stringify(report)).not.toContain('private-secret')
     })
 
+    test('a cancelled run preserves its failure category and cannot pass', () => {
+        const input = reportInput()
+        input.failure = { stage: 'cycle', category: 'cancelled' }
+        const report = buildReliabilityReport(input)
+        expect(report.failure).toEqual({ stage: 'cycle', category: 'cancelled' })
+        expect(report.summary.passed).toBe(false)
+    })
+
     test('rejects arbitrary identity, check, failure and progress payloads', () => {
         const invalidInputs = [
             { ...reportInput(), targetSha: 'private-secret' },
