@@ -5,10 +5,18 @@ import { constants } from 'node:fs'
 import { open } from 'node:fs/promises'
 import { z } from 'zod'
 
-import { managedBackupMaintenanceSchema } from '@/lib/Backups/validation.ts'
+import {
+    managedBackupMaintenanceSchema,
+    managedRestoreResultSchema,
+} from '@/lib/Backups/validation.ts'
 import type { ManagedBackupMaintenance } from '@/lib/Backups/Types/backups.types.ts'
 
 export async function readRestoreMaintenanceStatus(): Promise<ManagedBackupMaintenance | null> {
+    return (await readRestoreMaintenanceObservation()).maintenance
+}
+
+/** One verified root publication couples current admission fencing with ID-bound terminal evidence. */
+export async function readRestoreMaintenanceObservation() {
     for (let attempt = 0; attempt < 8; attempt++) {
         let file
         try {
@@ -18,7 +26,7 @@ export async function readRestoreMaintenanceStatus(): Promise<ManagedBackupMaint
             )
         } catch (error) {
             if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')
-                return null
+                return { maintenance: null, restoreResults: [] }
             throw error
         }
         try {
@@ -37,8 +45,11 @@ export async function readRestoreMaintenanceStatus(): Promise<ManagedBackupMaint
             const { bytesRead } = await file.read(bytes, 0, bytes.length, 0)
             if (bytesRead > 16_384) throw new Error('Restore maintenance status is too large')
             return z
-                .strictObject({ maintenance: managedBackupMaintenanceSchema.nullable() })
-                .parse(JSON.parse(bytes.subarray(0, bytesRead).toString('utf8'))).maintenance
+                .strictObject({
+                    maintenance: managedBackupMaintenanceSchema.nullable(),
+                    restoreResults: z.array(managedRestoreResultSchema).max(100).default([]),
+                })
+                .parse(JSON.parse(bytes.subarray(0, bytesRead).toString('utf8')))
         } finally {
             await file.close()
         }

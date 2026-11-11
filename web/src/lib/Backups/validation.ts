@@ -49,6 +49,14 @@ export const managedBackupMaintenanceSchema = z.strictObject({
         .enum(['execution_failed', 'recovery_failed', 'artifact_invalid', 'interrupted'])
         .nullable(),
 })
+/** Public admission evidence from the bounded root maintenance journal; no actor or artifact data. */
+export const managedRestoreResultSchema = managedBackupMaintenanceSchema
+    .pick({ id: true, operation: true, state: true, phase: true })
+    .extend({
+        operation: z.literal('restore'),
+        state: z.enum(['succeeded', 'failed', 'interrupted']),
+    })
+
 export const backupRestoreSnapshotSchema = z.strictObject({
     maintenance: managedBackupMaintenanceSchema.nullable(),
 })

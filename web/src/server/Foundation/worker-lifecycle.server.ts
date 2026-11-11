@@ -8,9 +8,11 @@ import type {
 } from './Types/worker-observability.types.ts'
 import { workerObservability } from './worker-observability.ts'
 import { startEventLoopObservation } from './event-loop-observation.ts'
-import { readRestoreMaintenanceStatus } from '@/server/Backups/restore-maintenance-status.server.ts'
+import { readRestoreMaintenanceObservation } from '@/server/Backups/restore-maintenance-status.server.ts'
 import { WorkerDrainTimeoutError, drainWorker, settleWorkerTasks } from './worker-drain.ts'
 export { WorkerDrainTimeoutError, drainWorker, settleWorkerTasks } from './worker-drain.ts'
+
+type RestoreObservation = Awaited<ReturnType<typeof readRestoreMaintenanceObservation>>
 
 class WorkerStoppedInstanceError extends Error {
     constructor() {
@@ -19,7 +21,9 @@ class WorkerStoppedInstanceError extends Error {
 }
 
 /** Keep writers fenced for queued/running restores and post-validation failures until the matching restore permits admission. */
-const shouldWait = (status: Awaited<ReturnType<typeof readRestoreMaintenanceStatus>>) =>
+const shouldWait = (
+    status: RestoreObservation['maintenance'] | RestoreObservation['restoreResults'][number],
+) =>
     status?.operation === 'restore' &&
     (status.state === 'queued' ||
         status.state === 'running' ||
@@ -105,7 +109,7 @@ export function createWorkerLifecycleSupervisor() {
         }
         /** Bound restore-status observation without treating its timeout as evidence that the underlying operation completed. */
         const readStatus = async () => {
-            const reading = readRestoreMaintenanceStatus()
+            const reading = readRestoreMaintenanceObservation()
             await drainWorker(reading, options.startupTimeoutMs)
             return reading
         }
@@ -114,6 +118,8 @@ export function createWorkerLifecycleSupervisor() {
             await drainWorker(loading, options.startupTimeoutMs)
             return loading
         }
+        // A retry may replace the worker, but cannot forget a restore whose safe result is unconfirmed.
+        const waiting = new Set<string>()
         const initializing = (async () => {
             if (maintenanceStopped || shutdownRequested || controller.signal.aborted) return
             const attempts = Math.max(1, Math.min(options.maxAttempts ?? 3, 10))
@@ -129,16 +135,34 @@ export function createWorkerLifecycleSupervisor() {
                         return loaded
                     })
                     worker = await drainLoaded(loading)
-                    let status = await readStatus()
-                    if (shouldWait(status)) {
+                    let observation = await readStatus()
+                    if (waiting.size > 0 || shouldWait(observation.maintenance)) {
                         state('maintenance_paused')
-                        const restoreId = status!.id
-                        while (
-                            !controller.signal.aborted &&
-                            (status?.id !== restoreId || shouldWait(status))
-                        ) {
+                        while (!controller.signal.aborted) {
+                            const status = observation.maintenance
+                            if (shouldWait(status)) {
+                                // The root journal retains 100 IDs. Exhaustion cannot become admission proof.
+                                if (!waiting.has(status!.id) && waiting.size === 100)
+                                    throw new Error('restore_admission_history_exhausted')
+                                waiting.add(status!.id)
+                            }
+                            for (const restoreId of waiting) {
+                                const result =
+                                    status?.id === restoreId
+                                        ? status
+                                        : observation.restoreResults.find(
+                                              (entry) => entry.id === restoreId,
+                                          )
+                                if (
+                                    result?.operation === 'restore' &&
+                                    !['queued', 'running'].includes(result.state) &&
+                                    !shouldWait(result)
+                                )
+                                    waiting.delete(restoreId)
+                            }
+                            if (waiting.size === 0) break
                             await delay(250)
-                            if (!controller.signal.aborted) status = await readStatus()
+                            if (!controller.signal.aborted) observation = await readStatus()
                         }
                     }
                     if (maintenanceStopped || shutdownRequested || controller.signal.aborted) {
