@@ -267,6 +267,15 @@ async fn probe(
 /// Owns one restricted PostgreSQL session and bounded probe tasks for the fixture duration.
 /// Recovers interrupted starts first, then drains outstanding tasks and closes the session.
 async fn run(config: Config) -> Result<(), Error> {
+    // Register once before any work, retaining the receiver across SQL and SQLite awaits.
+    // Recreating ctrl_c() per tick can lose a signal while no receiver is subscribed.
+    let interrupt = tokio::signal::ctrl_c();
+    tokio::pin!(interrupt);
+    tokio::select! {
+        biased;
+        result = &mut interrupt => { result?; return Ok(()); }
+        _ = std::future::ready(()) => {}
+    }
     let (client, connection) = database(tokio_postgres::connect(&config.database, NoTls)).await?;
     let pg = tokio::spawn(connection);
     let query = format!(
@@ -356,7 +365,11 @@ async fn run(config: Config) -> Result<(), Error> {
         } else {
             deferred += 1;
         }
-        tokio::select! { _ = tokio::time::sleep(Duration::from_millis(250)) => {}, _ = tokio::signal::ctrl_c() => break }
+        tokio::select! {
+            biased;
+            result = &mut interrupt => { result?; break; }
+            _ = tokio::time::sleep(Duration::from_millis(250)) => {}
+        }
     }
     while let Some(result) = tasks.join_next().await {
         admitted += usize::from(result??);
