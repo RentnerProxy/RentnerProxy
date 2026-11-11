@@ -3825,7 +3825,7 @@
             "closedAt": "Closed",
             "closedReason": "Closure reason",
             "openIncident": "Open",
-            "historyLimit": "Showing up to {{count}} recent checks. Retention: {{days}} days, {{samples}} checks and {{incidents}} incidents.",
+            "historyLimit": "Showing up to {{count}} recent checks. Configured maxima: {{days}} days, {{samples}} checks and {{incidents}} incidents. Global limits of 100,000 checks and 10,000 incidents are shared equally across monitoring policies; actual history can be shorter. Open incidents are preserved.",
             "period": "Period",
             "recent": "Recent",
             "hour": "Last hour",

@@ -47,7 +47,7 @@ export async function claimDueHostMonitoringPolicies(
     if (!Number.isInteger(limit) || limit < 1 || limit > HOST_MONITORING_LIMITS.claimBatchSize)
         throw new Error('Invalid monitoring claim batch size.')
     return getAuthDatabase().transaction(async (transaction) => {
-        await prepareWorkerTransaction(transaction)
+        await prepareWorkerTransaction(transaction, false)
         const [active] = await transaction
             .select({ count: sql<number>`count(*)::integer` })
             .from(hostCheckPolicies)
@@ -204,7 +204,7 @@ function nextScheduledCheck(policy: HostMonitoringPolicy) {
 /** Clears only the still-owned live lease and advances its fixed cadence without immediate catch-up work. */
 export async function releaseHostMonitoringClaim(claim: HostMonitoringClaim): Promise<boolean> {
     return getAuthDatabase().transaction(async (transaction) => {
-        await prepareWorkerTransaction(transaction)
+        await prepareWorkerTransaction(transaction, false)
         const policy = await currentClaim(transaction, claim)
         if (!policy) return false
         await clearLease(transaction, policy)

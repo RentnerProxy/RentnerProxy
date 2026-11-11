@@ -124,23 +124,31 @@ export async function readProxyHostHttpSettingsMap(
     transaction: AuthTransaction,
     proxyHostIds: readonly string[],
 ): Promise<Map<string, ProxyHttpSettings>> {
-    if (proxyHostIds.length === 0) return new Map()
+    return (await readProxyHostSettingsMaps(transaction, proxyHostIds)).httpSettings
+}
+
+/** Hydrates HTTP and cache settings from one validated row set; empty input performs no query. */
+export async function readProxyHostSettingsMaps(
+    transaction: AuthTransaction,
+    proxyHostIds: readonly string[],
+) {
+    const httpSettings = new Map<string, ProxyHttpSettings>()
+    const responseCache = new Map<string, ResponseCacheSettings>()
+    if (proxyHostIds.length === 0) return { httpSettings, responseCache }
     const rows = await transaction
         .select({ key: systemSettings.key, value: systemSettings.value })
         .from(systemSettings)
         .where(inArray(systemSettings.key, proxyHostIds.map(hostSettingsKey)))
-    const result = new Map<string, ProxyHttpSettings>()
     for (const row of rows) {
         const stored = parseStoredSettings(
             row.value,
             'Stored proxy host HTTP settings are invalid.',
         )
-        result.set(
-            row.key.slice(HOST_SETTINGS_PREFIX.length),
-            normalizeStoredHostSettings(stored.httpSettings),
-        )
+        const id = row.key.slice(HOST_SETTINGS_PREFIX.length)
+        httpSettings.set(id, normalizeStoredHostSettings(stored.httpSettings))
+        if (stored.responseCache) responseCache.set(id, stored.responseCache)
     }
-    return result
+    return { httpSettings, responseCache }
 }
 
 export async function writeProxyHostHttpSettings(
@@ -171,21 +179,7 @@ export async function readResponseCacheSettingsMap(
     transaction: AuthTransaction,
     proxyHostIds: readonly string[],
 ): Promise<Map<string, ResponseCacheSettings>> {
-    if (proxyHostIds.length === 0) return new Map()
-    const rows = await transaction
-        .select({ key: systemSettings.key, value: systemSettings.value })
-        .from(systemSettings)
-        .where(inArray(systemSettings.key, proxyHostIds.map(hostSettingsKey)))
-    const result = new Map<string, ResponseCacheSettings>()
-    for (const row of rows) {
-        const stored = parseStoredSettings(
-            row.value,
-            'Stored proxy host HTTP settings are invalid.',
-        )
-        if (stored.responseCache)
-            result.set(row.key.slice(HOST_SETTINGS_PREFIX.length), stored.responseCache)
-    }
-    return result
+    return (await readProxyHostSettingsMaps(transaction, proxyHostIds)).responseCache
 }
 
 export async function writeResponseCacheSettings(
