@@ -2,6 +2,7 @@ import { drainWorker } from '@/server/Foundation/worker-lifecycle.server.ts'
 import '@tanstack/react-start/server-only'
 
 import { eq } from 'drizzle-orm'
+import { withBackgroundDatabaseContext } from '@/db/background-admission.ts'
 import { certificateJobs } from '@/db/schema.ts'
 import { requestCertificateInputSchema } from '@/features/Admin/CertificateManagement/validation.ts'
 import { decryptSecret } from '@/server/Auth/Core/encryption.server.ts'
@@ -20,7 +21,7 @@ import {
 } from './certificate-jobs.binding.server.ts'
 import {
     claimCertificateJob,
-    releaseCertificateJob,
+    releaseCertificateJob as releaseClaimedCertificateJob,
     withCertificateJobClaim,
 } from './certificate-jobs.lease.server.ts'
 import {
@@ -47,6 +48,13 @@ function admissionOutcome(error: ResourceAdmissionError): WorkerOutcome {
     workerObservability.count('certificate_jobs', 'admissionRejected')
     workerObservability.count('certificate_jobs', 'retry')
     return 'deferred'
+}
+
+/** Release an owned lease after worker cancellation while retaining SQL admission and the original token fence. */
+function releaseCertificateJob(
+    ...args: Parameters<typeof releaseClaimedCertificateJob>
+): Promise<void> {
+    return withBackgroundDatabaseContext(() => releaseClaimedCertificateJob(...args), null)
 }
 
 async function saveJobCertificateMetadata(
