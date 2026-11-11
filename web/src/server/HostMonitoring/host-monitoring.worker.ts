@@ -1,5 +1,6 @@
 import { HOST_MONITORING_LIMITS } from '@/config/host-monitoring.config.ts'
 import type { HostMonitoringWorkerDependencies } from './Types/host-monitoring-worker.types.ts'
+import { HostMonitoringCleanupError } from './Types/host-monitoring-worker.types.ts'
 
 /** Refills bounded claim slots independently of slow probes; stop aborts admission and awaits every admitted cleanup. */
 export function createHostMonitoringWorker<Claim>(
@@ -13,6 +14,7 @@ export function createHostMonitoringWorker<Claim>(
     let started = false
     let stopped = false
     let nextPruneAt = 0
+    let cleanupFailure: { reason: unknown } | undefined
     const running = new Set<Promise<void>>()
     const unavailable = new Set<'claim' | 'probe' | 'prune'>()
     const now = dependencies.now ?? Date.now
@@ -23,6 +25,14 @@ export function createHostMonitoringWorker<Claim>(
             timer.unref()
             return () => clearTimeout(timer)
         })
+
+    /** Latch the first unresolved release, fence new work, and retain even falsy thrown causes until the complete worker drain rejects. */
+    function failCleanup(error: unknown) {
+        cleanupFailure ??= {
+            reason: error instanceof HostMonitoringCleanupError ? error.cause : error,
+        }
+        controller.abort()
+    }
 
     /** Deduplicates sanitized availability warnings until the failing subsystem recovers. */
     function warn(source: 'claim' | 'probe' | 'prune', signal: AbortSignal) {
@@ -44,7 +54,8 @@ export function createHostMonitoringWorker<Claim>(
                 // runClaim owns completion and release, including abort cleanup.
                 await dependencies.runClaim(claim, signal)
                 if (!signal.aborted) unavailable.delete('probe')
-            } catch {
+            } catch (error) {
+                if (error instanceof HostMonitoringCleanupError) failCleanup(error)
                 warn('probe', signal)
             }
         })().finally(() => running.delete(task))
@@ -80,7 +91,7 @@ export function createHostMonitoringWorker<Claim>(
 
     /** Coalesces admission ticks and reserves free slots before each storage claim batch. */
     function runOnce(): Promise<void> {
-        if (stopped) return Promise.resolve()
+        if (stopped || cleanupFailure) return Promise.resolve()
         const signal = controller.signal
         prune(signal)
         if (admission) return admission
@@ -100,9 +111,11 @@ export function createHostMonitoringWorker<Claim>(
                     const claims = await dependencies.claim(limit)
                     if (signal.aborted) {
                         // eslint-disable-next-line no-await-in-loop -- Shutdown must await every late lease release before returning.
-                        await Promise.allSettled(
+                        const released = await Promise.allSettled(
                             claims.map(async (claim) => dependencies.releaseCancelled(claim)),
                         )
+                        for (const result of released)
+                            if (result.status === 'rejected') failCleanup(result.reason)
                         return
                     }
                     unavailable.delete('claim')
@@ -123,7 +136,7 @@ export function createHostMonitoringWorker<Claim>(
         runOnce,
         /** Starts admission, or resumes only after a previous stop has finished draining. */
         start() {
-            if (started || stopping) return
+            if (started || stopping || cleanupFailure) return
             if (stopped) controller = new AbortController()
             started = true
             stopped = false
@@ -139,9 +152,12 @@ export function createHostMonitoringWorker<Claim>(
             cancelTimer = null
             controller.abort()
             stopping = (async () => {
-                await Promise.all([admission, pruning])
-                await Promise.all(running)
-            })().finally(() => {
+                const admitted = await Promise.allSettled([admission, pruning])
+                const probes = await Promise.allSettled(running)
+                for (const result of [...admitted, ...probes])
+                    if (result.status === 'rejected') failCleanup(result.reason)
+                if (cleanupFailure) throw cleanupFailure.reason
+            })().then(() => {
                 stopping = null
             })
             return stopping

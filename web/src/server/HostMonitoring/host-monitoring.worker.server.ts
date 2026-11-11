@@ -1,5 +1,6 @@
 import '@tanstack/react-start/server-only'
 import { HOST_MONITORING_LIMITS } from '@/config/host-monitoring.config.ts'
+import { DATABASE_CONNECTION_BUDGET } from '@/config/database.config.ts'
 import { withBackgroundDatabaseContext } from '@/db/background-admission.ts'
 import { observeWorkerOperation } from '@/server/Foundation/worker-operation.ts'
 import { workerObservability } from '@/server/Foundation/worker-observability.ts'
@@ -21,6 +22,7 @@ import type {
     HostMonitoringCompletion,
 } from './Types/host-monitoring.repository.types.ts'
 import type { HostMonitoringProbeContext } from './Types/host-monitoring-probe.types.ts'
+import { HostMonitoringCleanupError } from './Types/host-monitoring-worker.types.ts'
 
 const readContext = createHostMonitoringBatcher<
     HostMonitoringClaim,
@@ -47,9 +49,24 @@ const complete = createHostMonitoringBatcher<HostMonitoringCompletion, boolean>(
     },
 })
 
-/** Finish only an owned claim's fenced release after cancellation, retaining shared background SQL admission. */
+// The existing batcher retains at most 64 owned releases and sends only eight at a time to the shared SQL gate.
+const releaseBatch = createHostMonitoringBatcher<HostMonitoringClaim, boolean>({
+    size: DATABASE_CONNECTION_BUDGET.backgroundTransactions,
+    delayMs: 0,
+    /** Settle every sibling independently; one rejection cannot discard the remaining fenced releases. */
+    run: (claims) =>
+        Promise.allSettled(
+            claims.map(async (claim) =>
+                withBackgroundDatabaseContext(() => releaseHostMonitoringClaim(claim), null),
+            ),
+        ),
+})
+
+/** Retain failed cleanup ownership separately from ordinary probe errors, without bypassing SQL admission or changing claim fences. */
 const release = (claim: HostMonitoringClaim) =>
-    withBackgroundDatabaseContext(() => releaseHostMonitoringClaim(claim), null)
+    releaseBatch(claim).catch((cause: unknown) => {
+        throw new HostMonitoringCleanupError(cause)
+    })
 
 export const hostMonitoringWorker = createHostMonitoringWorker({
     claim: (limit) =>

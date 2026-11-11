@@ -191,12 +191,13 @@ describe('host monitoring worker', () => {
         const released: string[] = []
         let probes = 0
         let warnings = 0
+        const failure = new Error('private release failure')
         const worker = createHostMonitoringWorker(
             dependencies({
                 claim: () => admitted.promise,
                 releaseCancelled: (claim) => {
                     released.push(claim)
-                    if (claim === 'failed') throw new Error('private release failure')
+                    if (claim === 'failed') throw failure
                     return cleaned.promise
                 },
                 runClaim: async () => {
@@ -213,14 +214,22 @@ describe('host monitoring worker', () => {
         await flush()
         expect(released).toEqual(['failed', 'late', 'later'])
         let stopped = false
-        void stopping.then(() => {
-            stopped = true
-        })
+        void stopping.then(
+            () => {
+                stopped = true
+            },
+            () => {
+                stopped = true
+            },
+        )
         await flush()
         expect(stopped).toBeFalse()
         cleaned.resolve()
-        await stopping
+        await expect(stopping).rejects.toBe(failure)
         await tick
+        await expect(worker.stop()).rejects.toBe(failure)
+        worker.start()
+        await worker.runOnce()
         expect({ probes, warnings }).toEqual({ probes: 0, warnings: 0 })
     })
 
