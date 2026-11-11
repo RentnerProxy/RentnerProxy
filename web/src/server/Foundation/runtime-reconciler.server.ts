@@ -76,6 +76,7 @@ export function createRuntimeReconciler<T>(
                 if (stopped) break
                 if (rejectedRevision === dependencies.revision(snapshot)) {
                     completed = target
+                    finish('deferred', { recoverLane: false })
                     resolveWaiters('pending')
                     continue
                 }
