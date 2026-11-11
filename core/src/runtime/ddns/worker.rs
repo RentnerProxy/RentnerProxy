@@ -1,4 +1,5 @@
 use super::AutomationError;
+use crate::runtime::background::{Outcome, Worker};
 use crate::runtime::{ProxyRuntime, task::report_join_failure};
 use std::{
     sync::{Arc, atomic::Ordering},
@@ -22,6 +23,7 @@ impl ProxyRuntime {
         self.start_ddns_scheduler_inner(Some(gate)).await;
     }
 
+    /// Start one resident scheduler; busy admission stays idle, stop cancels, and actual dependency errors drive bounded backoff.
     async fn start_ddns_scheduler_inner(
         self: &Arc<Self>,
         #[cfg(test)] gate: Option<Arc<tokio::sync::RwLock<()>>>,
@@ -31,7 +33,9 @@ impl ProxyRuntime {
             return;
         }
         let runtime = Arc::clone(self);
+        let resident = runtime.background.start(Worker::Ddns);
         *task = Some(tokio::spawn(async move {
+            let _resident = resident;
             let mut failures = 0_u32;
             loop {
                 if runtime.stopping.load(Ordering::SeqCst) {
@@ -58,14 +62,26 @@ impl ProxyRuntime {
                 if runtime.stopping.load(Ordering::SeqCst) {
                     break;
                 }
+                let pass = runtime.background.begin(Worker::Ddns);
                 match runtime
                     .ddns_automation
                     .tick(&runtime.dns_connections, &runtime.ddns)
                     .await
                 {
-                    Ok(()) | Err(AutomationError::Busy) => failures = 0,
-                    Err(AutomationError::Stopping) => break,
+                    Ok(outcome) => {
+                        pass.finish(outcome);
+                        failures = 0;
+                    }
+                    Err(AutomationError::Busy) => {
+                        pass.finish(Outcome::Idle);
+                        failures = 0;
+                    }
+                    Err(AutomationError::Stopping) => {
+                        pass.finish(Outcome::Cancelled);
+                        break;
+                    }
                     Err(error) => {
+                        pass.finish(Outcome::Failure);
                         if failures == 0 {
                             tracing::warn!(
                                 ?error,

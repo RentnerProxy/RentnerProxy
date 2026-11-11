@@ -10,7 +10,10 @@ import {
     proxyHosts,
     users,
 } from '@/db/schema.ts'
-import { HOST_MONITORING_DEFAULTS } from '@/config/host-monitoring.config.ts'
+import {
+    HOST_MONITORING_DEFAULTS,
+    HOST_MONITORING_LIMITS,
+} from '@/config/host-monitoring.config.ts'
 import type {
     HostMonitoringContext,
     HostMonitoringOutcome,
@@ -138,6 +141,109 @@ async function completions(
 }
 
 describe('durable scheduled monitoring repository', () => {
+    integrationTest('claims and releases do not wait for the runtime settings lock', async () => {
+        const policy = await fixture()
+        let release!: () => void
+        let locked!: () => void
+        const ready = new Promise<void>((resolve) => {
+            locked = resolve
+        })
+        const gate = new Promise<void>((resolve) => {
+            release = resolve
+        })
+        const management = db.transaction(async (transaction) => {
+            await transaction.execute(sql`set local lock_timeout = '2000ms'`)
+            await transaction.execute(sql`set local statement_timeout = '2000ms'`)
+            await transaction.execute(sql`set local transaction_timeout = '3000ms'`)
+            await lockProxyRuntimeSettings(transaction)
+            locked()
+            await gate
+        })
+        try {
+            await ready
+            const claimed = await claim(policy)
+            expect(await releaseHostMonitoringClaim(claimed)).toBe(true)
+            expect((await row(policy)).leaseToken).toBeNull()
+        } finally {
+            release()
+            await management
+        }
+    })
+
+    integrationTest(
+        'retention pages share the global budget fairly at 1000 policies',
+        async () => {
+            const ids = Array.from({ length: HOST_MONITORING_LIMITS.maxPolicies }, () =>
+                Bun.randomUUIDv7(),
+            )
+            hostIds.push(...ids)
+            await db.insert(proxyHosts).values(
+                ids.map((id) => ({
+                    id,
+                    forwardScheme: 'http' as const,
+                    forwardHost: '127.0.0.1',
+                    forwardPort: 8080,
+                })),
+            )
+            await db.insert(hostCheckPolicies).values(
+                ids.map((id) => ({
+                    proxyHostId: id,
+                    domain: `retention-${id}.example.test`,
+                    sampleLimit: 1440,
+                })),
+            )
+            await db.execute(sql`
+            insert into rentnerproxy.host_check_observations (policy_id, policy_version, checked_at, status, code)
+            select p.id, p.version, statement_timestamp() - n * interval '1 minute', 'healthy', 'expected_status'
+            from rentnerproxy.host_check_policies p cross join generate_series(1,144) n
+        `)
+            await db.execute(sql`
+            insert into rentnerproxy.host_check_incidents (policy_id, started_at, detected_at, failure_code)
+            select id, statement_timestamp(), statement_timestamp(), 'upstream_timeout' from rentnerproxy.host_check_policies
+        `)
+            await db.execute(sql`
+            insert into rentnerproxy.host_check_incidents (policy_id, started_at, detected_at, failure_code, closed_reason, closed_at)
+            select p.id, statement_timestamp(), statement_timestamp(), 'upstream_timeout', 'policy_changed', statement_timestamp()
+            from rentnerproxy.host_check_policies p cross join generate_series(1,12)
+        `)
+            await pruneHostMonitoringHistory()
+            const [first] = await db.execute<{
+                total: number
+                minimum: number
+                maximum: number
+            }>(sql`
+            select sum(total)::integer total, min(total)::integer minimum, max(total)::integer maximum
+            from (select count(*) total from rentnerproxy.host_check_observations group by policy_id) counts
+        `)
+            expect(first?.total).toBe(144_000 - HOST_MONITORING_LIMITS.retentionDeleteLimit)
+            expect(first!.maximum - first!.minimum).toBeLessThanOrEqual(1)
+            for (let page = 0; page < 11; page++) {
+                // oxlint-disable-next-line no-await-in-loop -- Each bounded page must commit before resuming retention.
+                await pruneHostMonitoringHistory()
+            }
+            const [final] = await db.execute<{
+                total: number
+                minimum: number
+                maximum: number
+                open: number
+                incidents: number
+            }>(sql`
+            select sum(total)::integer total, min(total)::integer minimum, max(total)::integer maximum,
+                (select count(*)::integer from rentnerproxy.host_check_incidents where closed_reason is null) open,
+                (select count(*)::integer from rentnerproxy.host_check_incidents) incidents
+            from (select count(*) total from rentnerproxy.host_check_observations group by policy_id) counts
+        `)
+            expect(final).toEqual({
+                total: 100_000,
+                minimum: 100,
+                maximum: 100,
+                open: 1000,
+                incidents: 10_000,
+            })
+        },
+        20_000,
+    )
+
     beforeEach(async () => {
         if (!isolated) return
         // Global claim/retention behavior needs a database containing only this test's monitoring fixtures.
@@ -995,7 +1101,21 @@ describe('durable scheduled monitoring repository', () => {
             cross join generate_series(1, 1000)
             where p.id in (${ownedIds})
         `)
-            await pruneHostMonitoringHistory()
+            const expectedSamples = await db.execute<{ policy_id: string; identity: string }>(sql`
+            select policy_id, md5(string_agg(id::text, ',' order by id)) as identity
+            from (
+                select policy_id, id,
+                    row_number() over (partition by policy_id order by checked_at desc, id desc) as sample_rank
+                from "rentnerproxy"."host_check_observations"
+                where policy_id in (${ownedIds})
+            ) ranked
+            where sample_rank <= ${Math.floor(HOST_MONITORING_LIMITS.maxObservations / policies.length)}
+            group by policy_id order by policy_id
+        `)
+            for (let page = 0; page < 4; page++) {
+                // oxlint-disable-next-line no-await-in-loop -- Each retention page commits before the next bounded sweep.
+                await pruneHostMonitoringHistory()
+            }
             const [counts] = await db.execute<{
                 observations: number
                 incidents: number
@@ -1017,6 +1137,17 @@ describe('durable scheduled monitoring repository', () => {
             expect(counts?.max_incidents).toBeLessThanOrEqual(1_000)
             expect(counts?.observations).toBeGreaterThan(90_000)
             expect(counts?.incidents).toBeGreaterThan(9_000)
+            const retainedSamples = await db.execute<{
+                policy_id: string
+                identity: string
+            }>(sql`
+            select policy_id, md5(string_agg(id::text, ',' order by id)) as identity
+            from "rentnerproxy"."host_check_observations"
+            where policy_id in (${ownedIds})
+            group by policy_id order by policy_id
+        `)
+            // Equal timestamps still retain precisely the newest IDs in every fair share.
+            expect([...retainedSamples]).toEqual([...expectedSamples])
         },
         20_000,
     )

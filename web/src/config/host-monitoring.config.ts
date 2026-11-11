@@ -13,6 +13,8 @@ export const HOST_MONITORING_LIMITS = {
     historyLimit: 100,
     inputLimitBytes: 4_096,
     retentionSweepMs: 60_000,
+    retentionDeleteLimit: 4_096,
+    retentionPolicyPageSize: 8,
     advisoryLockId: 7_421_916,
 } as const
 

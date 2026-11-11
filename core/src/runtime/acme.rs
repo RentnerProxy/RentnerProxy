@@ -1,3 +1,5 @@
+use super::background::{Outcome, Pass, Worker};
+
 /// Runs one complete local ACME store operation with owned worker captures.
 ///
 /// Network awaits must stay outside this macro. Missing worker results become
@@ -35,6 +37,7 @@ use super::{
 use crate::{
     runtime::certificates::{
         AcmeChallengeType, CertificateError, CertificateIssueRequest, DnsValidationMode,
+        FailedIssueOutcome,
     },
     server::challenges::ChallengeStore,
 };
@@ -54,13 +57,16 @@ static ACME_JOBS: Semaphore = Semaphore::const_new(4);
 mod tests;
 
 impl ProxyRuntime {
-    /// Dispatches pending DNS cleanup in rotating order while ACME permits are available.
+    /// Dispatches pending DNS cleanup in rotating order under shared ACME capacity.
     ///
-    /// Each accepted cleanup belongs to the runtime's background-job registry. Listing
-    /// failures are ignored, and shutdown stops further dispatch without undoing provider writes.
-    pub(crate) async fn recover_dns_cleanup(self: &Arc<Self>) {
+    /// Each accepted cleanup belongs to the runtime's background-job registry and
+    /// records its own outcome. Returns false when pending work cannot be listed;
+    /// successful scanning is idle rather than evidence that cleanup has completed.
+    /// Shutdown or exhausted capacity stops further dispatch without undoing writes.
+    pub(crate) async fn recover_dns_cleanup(self: &Arc<Self>) -> bool {
+        let pass = self.background.begin(Worker::Orders);
         let Ok(mut ids) = self.certificate_store.pending_dns_cleanup_ids().await else {
-            return;
+            return false;
         };
         if !ids.is_empty() {
             let offset = self
@@ -82,16 +88,24 @@ impl ProxyRuntime {
                 runtime.recover_dns_cleanup_one(&id).await;
             });
         }
+        pass.finish(Outcome::Idle);
+        true
     }
 
     /// Claims one persisted cleanup attempt and reconciles its provider records.
     ///
-    /// Missing or unavailable work is skipped. Attempt release is best-effort after
-    /// reconciliation, including provider failure; unresolved intents remain recoverable.
+    /// Missing or busy work is idle; store/provider failures retain failure evidence.
+    /// Attempt release is best-effort after reconciliation, including provider failure;
+    /// unresolved intents remain available for recovery.
     async fn recover_dns_cleanup_one(self: &Arc<Self>, id: &str) {
+        let pass = self.background.begin(Worker::Orders);
         let work = match acme_store!(self; [id]; store => store.begin_dns_cleanup(&id)) {
             Ok(Some(work)) => work,
-            Ok(None) | Err(_) => return,
+            Ok(None) | Err(CertificateError::OperationInProgress) => {
+                pass.finish(Outcome::Idle);
+                return;
+            }
+            Err(_) => return,
         };
         let (environment, config, intents) = work;
         let resolved = self
@@ -104,8 +118,12 @@ impl ProxyRuntime {
             Ok(provider) => self.cleanup_dns_challenges(id, &provider, &intents).await,
             Err(error) => Err(error),
         };
-        let _ = result;
         acme_store!(@unit self; [id]; store => store.finish_dns_cleanup(&id));
+        pass.finish(if result.is_ok() {
+            Outcome::Success
+        } else {
+            Outcome::Failure
+        });
     }
 
     /// Transfers an ACME operation to the runtime and waits for its initial metadata.
@@ -357,6 +375,7 @@ impl ProxyRuntime {
             self.issue_manual_dns_inner(id, request).await;
             return;
         }
+        let pass = self.background.begin(Worker::Orders);
         let dns_provider = match request.challenge_type {
             AcmeChallengeType::Http01 => None,
             AcmeChallengeType::Dns01 => {
@@ -424,14 +443,39 @@ impl ProxyRuntime {
             challenges.remove(&domain, &token).await;
         }
         if let Some(staged) = candidate {
-            let _ = self.commit_or_reapply_staged_certificate(staged).await;
+            let result = self.commit_or_reapply_staged_certificate(staged).await;
             self.recover_dns_cleanup_one(&id).await;
+            pass.finish(if result.is_ok() {
+                Outcome::Success
+            } else {
+                Outcome::Failure
+            });
             return;
         }
-        if let Some(error) = issue_error {
-            acme_store!(@unit self; [id, error]; store => store.finish_failed(&id, error));
+        self.finish_failed_acme_issue(&id, issue_error, pass).await;
+    }
+
+    /// Finish the failed operation and classify its persisted outcome after DNS cleanup; cleanup failures retain their own evidence.
+    async fn finish_failed_acme_issue(
+        self: &Arc<Self>,
+        id: &str,
+        issue_error: Option<CertificateError>,
+        pass: Pass,
+    ) {
+        let outcome = if let Some(error) = issue_error {
+            let id = id.to_owned();
+            self.storage_async(move |runtime| async move {
+                runtime.certificate_store.finish_failed(&id, error).await
+            })
+            .await
+            .ok()
+        } else {
+            None
+        };
+        self.recover_dns_cleanup_one(id).await;
+        if matches!(outcome, Some(FailedIssueOutcome::Cancelled)) {
+            pass.finish(Outcome::Cancelled);
         }
-        self.recover_dns_cleanup_one(&id).await;
     }
 
     /// Reconciles old DNS intents before allowing a new order to create proofs.

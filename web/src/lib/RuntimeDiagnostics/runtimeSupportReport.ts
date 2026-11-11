@@ -14,6 +14,7 @@ import { CERTIFICATE_JOB_STAGES } from '@/config/certificate-jobs.config.ts'
 import { RUNTIME_SUPPORT_REPORT_PERMISSIONS } from '@/config/permissions.config.ts'
 import { CONTROLLER_SERVICE } from '@/config/controller.config.ts'
 import { isRecord } from '@/lib/Records/isRecord.ts'
+import { readBunWorkerReport, readControllerWorkerReport } from './backgroundWorkerReport.ts'
 import type { PermissionKey } from '@/config/Types/permissions-config.types.ts'
 import type {
     RuntimeSupportReport,
@@ -142,6 +143,7 @@ function connected(value: unknown): 'connected' | 'unavailable' {
     return isRecord(value) && value.state === 'connected' ? 'connected' : 'unavailable'
 }
 
+/** Build the allowlisted report from independently validated sections; absent worker snapshots stay unavailable and make completeness partial. */
 export function createRuntimeSupportReport(
     input: RuntimeSupportReportInput,
     capturedAt: Date,
@@ -181,6 +183,8 @@ export function createRuntimeSupportReport(
     )
     const certificates = section(certificateCounts(input.certificates))
     const certificateJobs = section(jobCounts(input.certificateJobs))
+    const bunWorkers = section(readBunWorkerReport(input.bunWorkers))
+    const controllerWorkers = section(readControllerWorkerReport(input.controllerWorkers))
     const database = connected(input.databaseHealth)
     const valkey = connected(input.valkeyHealth)
     const unavailableSections: string[] = []
@@ -194,6 +198,8 @@ export function createRuntimeSupportReport(
     if (configuration.state === 'unavailable') unavailableSections.push('configuration')
     if (certificates.state === 'unavailable') unavailableSections.push('certificates')
     if (certificateJobs.state === 'unavailable') unavailableSections.push('certificate_jobs')
+    if (bunWorkers.state === 'unavailable') unavailableSections.push('bun_workers')
+    if (controllerWorkers.state === 'unavailable') unavailableSections.push('controller_workers')
 
     return {
         format: RUNTIME_SUPPORT_REPORT_FORMAT,
@@ -223,6 +229,30 @@ export function createRuntimeSupportReport(
         configuration,
         certificates,
         certificateJobs,
+        backgroundWorkers: {
+            bun: bunWorkers,
+            controller: controllerWorkers,
+            omissions: [
+                { id: 'maintenance_watcher', owner: 'root', reason: 'restore_safety_owner' },
+                { id: 'backup_agent', owner: 'root', reason: 'separate_privileged_process' },
+                {
+                    id: 'valkey_subscriber',
+                    owner: 'bun',
+                    reason: 'connectivity_reported_separately',
+                },
+                {
+                    id: 'websocket_sampling',
+                    owner: 'bun',
+                    reason: 'demand_driven_not_a_durable_worker',
+                },
+                {
+                    id: 'upstream_health',
+                    owner: 'controller',
+                    reason: 'request_driven_probe_execution',
+                },
+                { id: 'database_pool', owner: 'bun', reason: 'runtime_utilization_unavailable' },
+            ],
+        },
         unavailableSections,
     }
 }

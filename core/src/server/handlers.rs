@@ -43,7 +43,7 @@ fn no_store_status_json<T: Serialize>(status: StatusCode, payload: T) -> Respons
     response
 }
 
-fn no_store_json<T: Serialize>(payload: T) -> Response {
+pub(super) fn no_store_json<T: Serialize>(payload: T) -> Response {
     let mut response = Json(payload).into_response();
     response
         .headers_mut()

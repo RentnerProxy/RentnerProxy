@@ -258,6 +258,7 @@ jobs:
               run: |
                   mkdir -p coverage/typescript
                   docker run --rm --network host --workdir /workspace \
+                    --init \
                     --mount "type=bind,source=$GITHUB_WORKSPACE,target=/workspace" \
                     --env DATABASE_URL --env VALKEY_URL \
                     --env RENTNERPROXY_DATABASE_INTEGRATION --env RENTNERPROXY_VALKEY_INTEGRATION \

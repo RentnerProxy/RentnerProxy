@@ -1,3 +1,4 @@
+use crate::runtime::background::{Outcome, Worker};
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
 use instant_acme::{
@@ -35,11 +36,13 @@ enum ManualOutcome {
 }
 
 impl ProxyRuntime {
+    /// Prepare a manual order within the DNS deadline and record the persisted result rather than treating task admission as success.
     pub(super) async fn issue_manual_dns_inner(
         self: &Arc<Self>,
         id: String,
         request: CertificateIssueRequest,
     ) {
+        let pass = self.background.begin(Worker::Orders);
         let operation_id = match self.certificate_store.get(&id).await {
             Ok(metadata) => match metadata.current_operation {
                 Some(operation) => operation.id,
@@ -53,8 +56,10 @@ impl ProxyRuntime {
         )
         .await
         .unwrap_or(Err(CertificateError::AcmeFailed));
-        self.finish_manual_dns_result(&id, &request, &operation_id, result)
-            .await;
+        pass.finish(
+            self.finish_manual_dns_result(&id, &request, &operation_id, result)
+                .await,
+        );
     }
 
     /// Admits a manual-DNS continuation and returns its initial certificate metadata.
@@ -88,16 +93,18 @@ impl ProxyRuntime {
 
     /// Expires stale orders and dispatches resumable manual-DNS work for recovery.
     ///
-    /// Accepted jobs own their runtime and ACME permits while claiming persisted work.
-    /// Shutdown, exhausted permits, or closed admission stops dispatch; listing, expiry,
-    /// and per-order claim failures are ignored for a later recovery pass.
-    pub(crate) async fn recover_manual_dns(self: &Arc<Self>) {
+    /// Accepted jobs own their runtime and ACME permits while claiming persisted work
+    /// and record claim/resume outcomes independently of this scan. Returns whether
+    /// expiry and listing succeeded; shutdown may return false before listing.
+    /// Exhausted permits or closed admission stop dispatch for a later pass.
+    pub(crate) async fn recover_manual_dns(self: &Arc<Self>) -> bool {
+        let pass = self.background.begin(Worker::Orders);
         if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
-            return;
+            return false;
         }
-        let _ = acme_store!(self; []; store => store.expire_manual_dns_orders());
+        let failed = acme_store!(self; []; store => store.expire_manual_dns_orders()).is_err();
         let Ok(ids) = self.certificate_store.pending_manual_dns_resume_ids().await else {
-            return;
+            return false;
         };
         for id in ids {
             let Ok(permit) = ACME_JOBS.try_acquire() else {
@@ -108,24 +115,37 @@ impl ProxyRuntime {
                 .background_jobs
                 .spawn("acme_manual_dns_recovery", async move {
                     let _permit = permit;
-                    if let Ok(Some((request, order))) =
-                        acme_store!(runtime; [id]; store => store.begin_manual_dns_recovery(&id))
+                    let claim = runtime.background.begin(Worker::Orders);
+                    match acme_store!(runtime; [id]; store => store.begin_manual_dns_recovery(&id))
                     {
-                        runtime.resume_manual_dns_inner(id, request, order).await;
+                        Ok(Some((request, order))) => {
+                            claim.finish(Outcome::Idle);
+                            runtime.resume_manual_dns_inner(id, request, order).await;
+                        }
+                        Ok(None) => claim.finish(Outcome::Idle),
+                        Err(_) => claim.finish(Outcome::Failure),
                     }
                 })
             {
                 break;
             }
         }
+        pass.finish(if failed {
+            Outcome::Failure
+        } else {
+            Outcome::Idle
+        });
+        !failed
     }
 
+    /// Resume the saved operation within the DNS deadline and classify the durable completion through its operation identity.
     async fn resume_manual_dns_inner(
         self: &Arc<Self>,
         id: String,
         request: CertificateIssueRequest,
         saved: ManualDnsOrder,
     ) {
+        let pass = self.background.begin(Worker::Orders);
         let operation_id = saved.operation_id.clone();
         let result = timeout(
             DNS_ORDER_TIMEOUT,
@@ -133,29 +153,41 @@ impl ProxyRuntime {
         )
         .await
         .unwrap_or(Err(CertificateError::AcmeFailed));
-        self.finish_manual_dns_result(&id, &request, &operation_id, result)
-            .await;
+        pass.finish(
+            self.finish_manual_dns_result(&id, &request, &operation_id, result)
+                .await,
+        );
     }
 
     /// Applies an issuance outcome without overwriting a newer manual-DNS operation.
     ///
     /// Paused orders remain parked. Issued material is staged for activation; transient
     /// failures in recoverable phases release the order for another attempt, while terminal
-    /// failures finish it. Store/activation failures are handled best-effort.
+    /// failures finish it. Pauses report idle; success requires the staged commit or
+    /// reapply to succeed. Store/activation failures retain failure evidence while
+    /// failure/recovery writes remain fenced by the saved operation ID.
     async fn finish_manual_dns_result(
         self: &Arc<Self>,
         id: &str,
         request: &CertificateIssueRequest,
         operation_id: &str,
         result: Result<ManualOutcome, CertificateError>,
-    ) {
+    ) -> Outcome {
         match result {
-            Ok(ManualOutcome::Paused) => {}
+            Ok(ManualOutcome::Paused) => return Outcome::Idle,
             Ok(ManualOutcome::Issued(certificate, key)) => {
                 match acme_store!(self; [id, request, certificate, key]; store => store.stage_acme(&id, &request, certificate, key))
                 {
                     Ok(staged) => {
-                        let _ = self.commit_or_reapply_staged_certificate(staged).await;
+                        return if self
+                            .commit_or_reapply_staged_certificate(staged)
+                            .await
+                            .is_ok()
+                        {
+                            Outcome::Success
+                        } else {
+                            Outcome::Failure
+                        };
                     }
                     Err(CertificateError::StoreUnavailable) => {
                         let _ = acme_store!(self; [id, operation_id]; store => store.release_manual_dns_for_recovery(
@@ -171,25 +203,25 @@ impl ProxyRuntime {
             }
             Err(error) => {
                 let Ok(metadata) = self.certificate_store.get(id).await else {
-                    return;
+                    return Outcome::Failure;
                 };
                 if metadata.operation == CertificateOperation::Idle
                     || metadata
                         .current_operation
                         .is_none_or(|operation| operation.id != operation_id)
                 {
-                    return;
+                    return Outcome::Failure;
                 }
                 let saved = match acme_store!(self; [id]; store => store.load_manual_dns_order(&id))
                 {
                     Ok(saved) => saved,
-                    Err(_) => return,
+                    Err(_) => return Outcome::Failure,
                 };
                 if saved
                     .as_ref()
                     .is_some_and(|(_, order)| order.operation_id != operation_id)
                 {
-                    return;
+                    return Outcome::Failure;
                 }
                 if saved.is_none()
                     && matches!(
@@ -198,7 +230,7 @@ impl ProxyRuntime {
                     )
                 {
                     acme_store!(@unit self; [id, error]; store => store.finish_failed(&id, error));
-                    return;
+                    return Outcome::Failure;
                 }
                 let recoverable = !matches!(
                     error,
@@ -218,6 +250,7 @@ impl ProxyRuntime {
                 }
             }
         }
+        Outcome::Failure
     }
 
     /// Records order creation and obtains an observed account before manual-DNS setup.

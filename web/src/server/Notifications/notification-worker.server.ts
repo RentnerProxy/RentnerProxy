@@ -14,16 +14,66 @@ import {
     readNextNotificationDeliveryAt,
 } from './notification-repository.ts'
 import { createNotificationWorker } from './notification-worker.ts'
+import { observeWorkerOperation } from '@/server/Foundation/worker-operation.ts'
+import { workerObservability } from '@/server/Foundation/worker-observability.ts'
+import { NOTIFICATION_LIMITS } from '@/config/notifications.config.ts'
 
 export const notificationWorker = createNotificationWorker({
-    claimCollection: claimNotificationCollection,
-    collect: collectNotificationObservations,
-    commitCollection: commitNotificationCollection,
-    claimDelivery: claimNextNotificationDelivery,
-    acknowledge: acknowledgeNotificationDelivery,
-    deliver: deliverAuthorizedNotificationClaim,
+    claimCollection: () =>
+        observeWorkerOperation(
+            'notifications',
+            claimNotificationCollection,
+            undefined,
+            () => 'deferred',
+            'admission',
+        ),
+    collect: (cursor, signal) =>
+        observeWorkerOperation(
+            'notifications',
+            () => collectNotificationObservations(cursor, signal),
+            signal,
+            undefined,
+            'collection',
+        ),
+    /** Classify persistence as progress only when the collection commit changed durable state; empty commits remain deferred. */
+    commitCollection: (claim, batch) =>
+        observeWorkerOperation(
+            'notifications',
+            () => commitNotificationCollection(claim, batch),
+            undefined,
+            (changed) => (changed ? 'success' : 'deferred'),
+            'persistence',
+        ),
+    claimDelivery: () =>
+        observeWorkerOperation(
+            'notifications',
+            claimNextNotificationDelivery,
+            undefined,
+            () => 'deferred',
+            'admission',
+        ),
+    acknowledge: (token, result) =>
+        observeWorkerOperation(
+            'notifications',
+            () => acknowledgeNotificationDelivery(token, result),
+            undefined,
+            undefined,
+            'persistence',
+        ),
+    /** Classify the delivery result on its own lane so bookkeeping cannot clear delivery failures and cancellation does not count as success. */
+    deliver: (claim, signal) =>
+        observeWorkerOperation(
+            'notifications',
+            () => deliverAuthorizedNotificationClaim(claim, signal),
+            signal,
+            (result) =>
+                result.success ? 'success' : result.code === 'cancelled' ? 'cancelled' : 'failure',
+            'delivery',
+        ),
     changed: publishApplicationChange,
     nextDeliveryAt: readNextNotificationDeliveryAt,
     subscribe: subscribeToApplicationChanges,
     unavailable: () => console.warn('[notifications] Delivery worker temporarily unavailable'),
 })
+
+workerObservability.sample('notifications', { concurrency: NOTIFICATION_LIMITS.concurrency })

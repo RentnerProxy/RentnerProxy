@@ -94,6 +94,7 @@ export async function drainConcurrent<T extends readonly unknown[]>(
     return Promise.all(operations)
 }
 
+/** Validate report identity, stages, and fixed failure categories; cancellation stays a failure and incomplete required checks cannot establish success. */
 export function buildScaleReport(input: {
     targetSha: string
     imageIdentity: string
@@ -197,7 +198,14 @@ export function buildScaleReport(input: {
         ? z
               .strictObject({
                   stage: z.enum(stages),
-                  category: z.enum(['assertion', 'timeout', 'command', 'telemetry', 'unexpected']),
+                  category: z.enum([
+                      'assertion',
+                      'timeout',
+                      'command',
+                      'telemetry',
+                      'unexpected',
+                      'cancelled',
+                  ]),
               })
               .parse({ stage: input.failure.stage, category: input.failure.category })
         : undefined

@@ -349,6 +349,13 @@ pub(crate) fn app_with_state(state: AppState) -> Router {
         ));
     let internal = Router::new()
         .route(
+            "/internal/v1/background/status",
+            get({
+                let state = state.clone();
+                move || async move { handlers::no_store_json(state.runtime.background.snapshot()) }
+            }),
+        )
+        .route(
             "/internal/v1/proxy/version",
             get({
                 let state = state.clone();

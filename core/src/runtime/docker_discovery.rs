@@ -19,6 +19,7 @@ use tokio::{
 };
 
 pub(crate) struct Discovery {
+    background: Arc<super::background::Registry>,
     path: PathBuf,
     io: Arc<Mutex<()>>,
     inspection: Mutex<()>,
@@ -47,8 +48,16 @@ impl Discovery {
         }
         client::Docker::new(&request.endpoint)?.inventory().await
     }
+    #[cfg(test)]
     pub(crate) fn new(path: PathBuf) -> Arc<Self> {
+        Self::with_background(path, super::background::Registry::new())
+    }
+    pub(super) fn with_background(
+        path: PathBuf,
+        background: Arc<super::background::Registry>,
+    ) -> Arc<Self> {
         Arc::new(Self {
+            background,
             path,
             io: Arc::new(Mutex::new(())),
             inspection: Mutex::new(()),
@@ -96,20 +105,22 @@ impl Discovery {
         Ok(Snapshot::for_configuration(document, restored))
     }
 
+    /// Fence inventory publication against the current persisted configuration; replaced/restored input is idle and unavailable publication fails.
     async fn publish(
         &self,
         configuration: &Document,
         candidates: Option<Vec<models::Candidate>>,
         error: Option<Error>,
-    ) {
+    ) -> super::background::Outcome {
+        let succeeded = candidates.is_some() && error.is_none();
         let mut snapshot = self.snapshot.lock().await;
         // A late response from a replaced endpoint must never become its successor's inventory.
         // Recheck persistence under the same snapshot -> I/O order as observation.
         let Ok((current, restored)) = persistence::load(&self.path, &self.io).await else {
-            return;
+            return super::background::Outcome::Failure;
         };
         if &current != configuration || restored {
-            return;
+            return super::background::Outcome::Idle;
         }
         let previous = snapshot.clone();
         if snapshot.configuration != current {
@@ -126,6 +137,11 @@ impl Discovery {
         snapshot.error = error;
         if *snapshot != previous {
             self.advance_generation();
+        }
+        if succeeded {
+            super::background::Outcome::Success
+        } else {
+            super::background::Outcome::Failure
         }
     }
 }

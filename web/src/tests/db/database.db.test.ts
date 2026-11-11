@@ -1,7 +1,15 @@
 import { describe, expect, test } from 'bun:test'
 import { eq } from 'drizzle-orm'
+import { sql } from 'drizzle-orm'
+import { DATABASE_CONNECTION_BUDGET } from '@/config/database.config.ts'
 
 import { db } from '@/db/index.ts'
+import {
+    admitDatabaseTransaction,
+    withBackgroundDatabaseContext,
+} from '@/db/background-admission.ts'
+import { ResourceAdmissionError } from '@/server/Foundation/resource-admission.ts'
+import { observeWorkerOperation } from '@/server/Foundation/worker-operation.ts'
 import { systemSettings, users } from '@/db/schema.ts'
 import { getDatabaseUrl } from '@/server/env.server.ts'
 import { checkDatabaseHealth } from '@/server/Foundation/database-health.server.ts'
@@ -9,7 +17,242 @@ import { checkDatabaseHealth } from '@/server/Foundation/database-health.server.
 const integrationTest =
     process.env.RENTNERPROXY_DATABASE_INTEGRATION === '1' && getDatabaseUrl() ? test : test.skip
 
+async function waitForAdmission(ready: () => boolean): Promise<void> {
+    const deadline = Date.now() + 2000
+    while (!ready()) {
+        if (Date.now() > deadline) throw new Error('Fixture admission deadline exceeded')
+        // oxlint-disable-next-line no-await-in-loop -- Observe owned admission within a fixed fixture deadline.
+        await Bun.sleep(1)
+    }
+}
+
 describe('PostgreSQL integration', () => {
+    test('a cancelled running background operation retains its permit until actual settlement', async () => {
+        const controller = new AbortController()
+        let release!: () => void
+        const gate = new Promise<void>((resolve) => {
+            release = resolve
+        })
+        let running = 0
+        let queuedRan = false
+        const held = Array.from({ length: DATABASE_CONNECTION_BUDGET.backgroundTransactions }, () =>
+            withBackgroundDatabaseContext(
+                () =>
+                    admitDatabaseTransaction(async () => {
+                        running++
+                        await gate
+                    }),
+                controller.signal,
+            ),
+        )
+        let queued: Promise<unknown> | undefined
+        try {
+            await waitForAdmission(
+                () => running === DATABASE_CONNECTION_BUDGET.backgroundTransactions,
+            )
+            queued = withBackgroundDatabaseContext(() =>
+                admitDatabaseTransaction(async () => {
+                    queuedRan = true
+                }),
+            )
+            controller.abort()
+            await Bun.sleep(10)
+            expect(queuedRan).toBe(false)
+            expect(await admitDatabaseTransaction(async () => 'foreground')).toBe('foreground')
+            await expect(
+                withBackgroundDatabaseContext(
+                    () =>
+                        withBackgroundDatabaseContext(() =>
+                            admitDatabaseTransaction(async () => 'must not execute'),
+                        ),
+                    controller.signal,
+                ),
+            ).rejects.toMatchObject({ reason: 'cancelled' })
+            release()
+            await queued
+            expect(queuedRan).toBe(true)
+        } finally {
+            release()
+            await Promise.allSettled([...held, ...(queued ? [queued] : [])])
+        }
+    })
+
+    integrationTest(
+        'excess certificate and notification transactions wait while all eight interactive slots remain available',
+        async () => {
+            let release!: () => void
+            const gate = new Promise<void>((resolve) => {
+                release = resolve
+            })
+            let admitted = 0
+            let interactive = 0
+            let overflowAdmitted = false
+            const backgroundPids = new Set<number>()
+            const interactivePids = new Set<number>()
+            const hold = () =>
+                db.transaction(async (transaction) => {
+                    await transaction.execute(sql`set local transaction_timeout = '3000ms'`)
+                    const [row] = await transaction.execute<{ pid: number }>(
+                        sql`select pg_backend_pid() pid`,
+                    )
+                    backgroundPids.add(row!.pid)
+                    admitted++
+                    await gate
+                })
+            const background = Array.from(
+                { length: DATABASE_CONNECTION_BUDGET.backgroundTransactions },
+                (_, index) =>
+                    observeWorkerOperation(index < 4 ? 'certificate_jobs' : 'notifications', hold),
+            )
+            let overflow: Promise<unknown> | undefined
+            let management: Promise<unknown>[] = []
+            try {
+                await waitForAdmission(
+                    () => admitted === DATABASE_CONNECTION_BUDGET.backgroundTransactions,
+                )
+                overflow = observeWorkerOperation('notifications', () =>
+                    db.transaction(async () => {
+                        overflowAdmitted = true
+                    }),
+                )
+                management = Array.from(
+                    { length: DATABASE_CONNECTION_BUDGET.interactiveHeadroom },
+                    () =>
+                        db.transaction(
+                            async (transaction) => {
+                                const [row] = await transaction.execute<{
+                                    pid: number
+                                    readOnly: string
+                                }>(
+                                    sql`select pg_backend_pid() pid, current_setting('transaction_read_only') as "readOnly"`,
+                                )
+                                expect(row!.readOnly).toBe('on')
+                                await transaction.transaction(async (nested) => {
+                                    await nested.execute(sql`select 1`)
+                                })
+                                interactivePids.add(row!.pid)
+                                interactive++
+                                await gate
+                            },
+                            { accessMode: 'read only' },
+                        ),
+                )
+                await waitForAdmission(
+                    () => interactive === DATABASE_CONNECTION_BUDGET.interactiveHeadroom,
+                )
+                await Bun.sleep(25)
+                expect(overflowAdmitted).toBe(false)
+                expect(backgroundPids.size).toBe(DATABASE_CONNECTION_BUDGET.backgroundTransactions)
+                expect(interactivePids.size).toBe(DATABASE_CONNECTION_BUDGET.interactiveHeadroom)
+                expect(new Set([...backgroundPids, ...interactivePids]).size).toBe(
+                    DATABASE_CONNECTION_BUDGET.maxConnections,
+                )
+                release()
+                await overflow
+                expect(overflowAdmitted).toBe(true)
+            } finally {
+                release()
+                await Promise.allSettled([
+                    ...background,
+                    ...management,
+                    ...(overflow ? [overflow] : []),
+                ])
+            }
+        },
+    )
+
+    integrationTest(
+        'queued cancellation never opens SQL and every failed transaction returns its background permit',
+        async () => {
+            let release!: () => void
+            const gate = new Promise<void>((resolve) => {
+                release = resolve
+            })
+            let admitted = 0
+            const held = Array.from(
+                { length: DATABASE_CONNECTION_BUDGET.backgroundTransactions },
+                () =>
+                    withBackgroundDatabaseContext(() =>
+                        db.transaction(async () => {
+                            admitted++
+                            await gate
+                        }),
+                    ),
+            )
+            let cancelled: Promise<unknown> | undefined
+            try {
+                const until = Date.now() + 2000
+                while (admitted < DATABASE_CONNECTION_BUDGET.backgroundTransactions) {
+                    if (Date.now() > until) throw new Error('Fixture admission deadline exceeded')
+                    // oxlint-disable-next-line no-await-in-loop -- Wait only for the owned transaction fixture to saturate.
+                    await Bun.sleep(1)
+                }
+                const controller = new AbortController()
+                let invoked = false
+                cancelled = withBackgroundDatabaseContext(
+                    () =>
+                        db.transaction(async () => {
+                            invoked = true
+                        }),
+                    controller.signal,
+                )
+                const rejected = cancelled.then(
+                    () => undefined,
+                    (error: unknown) => error,
+                )
+                controller.abort()
+                expect(await rejected).toMatchObject({ reason: 'cancelled' })
+                expect(invoked).toBe(false)
+                await expect(
+                    withBackgroundDatabaseContext(
+                        () =>
+                            db.transaction(async () => {
+                                invoked = true
+                            }),
+                        controller.signal,
+                    ),
+                ).rejects.toBeInstanceOf(ResourceAdmissionError)
+                expect(invoked).toBe(false)
+            } finally {
+                release()
+                await Promise.allSettled([...held, ...(cancelled ? [cancelled] : [])])
+            }
+            const failure = new Error('fixture transaction failure')
+            const outcomes = await Promise.allSettled(
+                Array.from({ length: DATABASE_CONNECTION_BUDGET.backgroundTransactions }, () =>
+                    withBackgroundDatabaseContext(() =>
+                        db.transaction(async (transaction) => {
+                            await transaction.execute(sql`select 1`)
+                            throw failure
+                        }),
+                    ),
+                ),
+            )
+            expect(
+                outcomes.every(
+                    (result) => result.status === 'rejected' && result.reason === failure,
+                ),
+            ).toBe(true)
+            const recovered = await Promise.all(
+                Array.from({ length: DATABASE_CONNECTION_BUDGET.backgroundTransactions }, () =>
+                    withBackgroundDatabaseContext(() =>
+                        db.transaction((transaction) =>
+                            transaction.transaction(async (nested) => {
+                                const [row] = await nested.execute<{ ready: number }>(
+                                    sql`select 1 as ready`,
+                                )
+                                return row!.ready
+                            }),
+                        ),
+                    ),
+                ),
+            )
+            expect(recovered).toEqual(
+                Array(DATABASE_CONNECTION_BUDGET.backgroundTransactions).fill(1),
+            )
+        },
+    )
+
     integrationTest(
         'uses PostgreSQL 18, the application schema, and the updated_at trigger',
         async () => {

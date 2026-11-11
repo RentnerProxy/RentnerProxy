@@ -8,7 +8,7 @@ use super::validation::utc_now;
 use super::{
     CertificateEnvironment, CertificateError, CertificateEventKind, CertificateOperation,
     CertificateOperationStage, CertificateSource, CertificateStatus, CertificateStore,
-    OffsetDateTime, Rfc3339, StagedCertificate,
+    FailedIssueOutcome, OffsetDateTime, Rfc3339, StagedCertificate,
 };
 use crate::proxy::is_canonical_uuid_v7;
 
@@ -61,7 +61,12 @@ impl CertificateStore {
             .and_then(|directory| persist_index(&directory, &index))
     }
 
-    pub(crate) async fn finish_failed(&self, id: &str, error: CertificateError) {
+    /// Returns cancellation only when its settled metadata and event were persisted.
+    pub(crate) async fn finish_failed(
+        &self,
+        id: &str,
+        error: CertificateError,
+    ) -> FailedIssueOutcome {
         let pending_candidate = {
             let index = self.index.lock().await;
             index
@@ -74,8 +79,9 @@ impl CertificateStore {
         };
         if let Some(staged) = pending_candidate {
             self.finish_candidate_failed(&staged, error).await;
-            return;
+            return FailedIssueOutcome::Failed;
         }
+        let mut outcome = FailedIssueOutcome::Failed;
         let mut index = self.index.lock().await;
         if let Some(entry) = index.certificates.get_mut(id) {
             let had_acme_operation = entry.metadata.operation != CertificateOperation::Idle;
@@ -133,6 +139,7 @@ impl CertificateStore {
                 entry.metadata.updated_at =
                     utc_now().unwrap_or_else(|_| entry.metadata.updated_at.clone());
             }
+            let mut event_recorded = false;
             if let Some(operation_id) = operation_id {
                 let stage = if cancelled {
                     CertificateOperationStage::Cancelled
@@ -141,7 +148,7 @@ impl CertificateStore {
                 } else {
                     CertificateOperationStage::Failed
                 };
-                let _ = operations::append_event(
+                event_recorded = operations::append_event(
                     &mut index,
                     &operation_id,
                     id,
@@ -156,7 +163,8 @@ impl CertificateStore {
                         CertificateOperationStage::Failed
                     },
                     Some(error.code().to_owned()),
-                );
+                )
+                .is_ok();
                 if retryable {
                     let _ = operations::append_event(
                         &mut index,
@@ -168,11 +176,15 @@ impl CertificateStore {
                     );
                 }
             }
-            let _ = self
+            let persisted = self
                 .certificates_dir()
                 .and_then(|directory| persist_index(&directory, &index));
+            if cancelled && event_recorded && persisted.is_ok() {
+                outcome = FailedIssueOutcome::Cancelled;
+            }
         }
         drop(index);
         self.release_lease(id).await;
+        outcome
     }
 }

@@ -1,7 +1,13 @@
 // oxlint-disable no-await-in-loop -- Settle each virtual timer turn before advancing the next interval.
 import { afterAll, afterEach, beforeAll, beforeEach, expect, jest, mock, spyOn } from 'bun:test'
-import { eq, inArray } from 'drizzle-orm'
-import { proxyHosts, systemSettings, userRoles, users } from '@/db/schema.ts'
+import { and, eq, inArray } from 'drizzle-orm'
+import { DATABASE_CONNECTION_BUDGET } from '@/config/database.config.ts'
+import {
+    admitDatabaseTransaction,
+    withBackgroundDatabaseContext,
+} from '@/db/background-admission.ts'
+import { auditEvents, proxyHosts, systemSettings, userRoles, users } from '@/db/schema.ts'
+import { DiscoveryFinalizationError } from '@/server/Admin/DockerDiscovery/discovery-observer.ts'
 import {
     discoveryCandidate,
     discoveryRegistry,
@@ -316,6 +322,151 @@ integrationTest.each([false, true])(
             jest.useRealTimers()
         }
     },
+)
+
+integrationTest.each(['waiting', 'deadline', 'busy', 'superseded', 'exhausted'] as const)(
+    'shutdown finalization keeps its SQL budget through %s admission and drains the applied receipt',
+    async (admission) => {
+        const actor = await createBackendActor()
+        await configure(actor, { runtimeStatus: 'pending' })
+        const inventory = observed(discoverySnapshot([]))
+        spyOn(dockerDiscoveryController, 'watch').mockResolvedValue(inventory)
+        const applyEntered = Promise.withResolvers<void>()
+        const applied = Promise.withResolvers<void>()
+        const originalApply = runtime.reconcileProxyConfigurationService
+        spyOn(runtime, 'reconcileProxyConfigurationService').mockImplementation(
+            Object.assign(
+                async (): Promise<'applied'> => {
+                    applyEntered.resolve()
+                    await applied.promise
+                    return 'applied'
+                },
+                {
+                    start: originalApply.start,
+                    stop: originalApply.stop,
+                    checkDrift: originalApply.checkDrift,
+                },
+            ),
+        )
+        const receiptEntered = Promise.withResolvers<void>()
+        const finishReceipt = Promise.withResolvers<void>()
+        const originalWrite = storage.writeDiscoveryRegistry
+        spyOn(storage, 'writeDiscoveryRegistry').mockImplementation(async (transaction, value) => {
+            if (value.runtimeStatus === 'applied') {
+                receiptEntered.resolve()
+                await finishReceipt.promise
+            }
+            return originalWrite(transaction, value)
+        })
+        const worker = createDockerDiscoveryWorker()
+        const running = worker.start()
+        const budgetReady = Promise.withResolvers<void>()
+        const releaseBudget = Promise.withResolvers<void>()
+        let occupied = 0
+        let receiptStarted = false
+        void receiptEntered.promise.then(() => {
+            receiptStarted = true
+        })
+        let held: Array<Promise<void>> = []
+        const queued: Array<Promise<void>> = []
+        let deadline: ReturnType<typeof setTimeout> | undefined
+        const expired = new Promise<never>((_, reject) => {
+            deadline = setTimeout(
+                () => reject(new Error('Receipt finalization fixture stalled')),
+                10_000,
+            )
+        })
+        try {
+            await Promise.race([applyEntered.promise, expired])
+            held = Array.from({ length: DATABASE_CONNECTION_BUDGET.backgroundTransactions }, () =>
+                withBackgroundDatabaseContext(() =>
+                    admitDatabaseTransaction(async () => {
+                        if (++occupied === DATABASE_CONNECTION_BUDGET.backgroundTransactions)
+                            budgetReady.resolve()
+                        await releaseBudget.promise
+                    }),
+                ),
+            )
+            await Promise.race([budgetReady.promise, expired])
+            if (admission === 'busy') {
+                for (let index = 0; index < DATABASE_CONNECTION_BUDGET.backgroundPending; index++) {
+                    const pending = withBackgroundDatabaseContext(() =>
+                        admitDatabaseTransaction(async () => undefined),
+                    )
+                    void pending.catch(() => undefined)
+                    queued.push(pending)
+                }
+                await expect(
+                    withBackgroundDatabaseContext(() =>
+                        admitDatabaseTransaction(async () => undefined),
+                    ),
+                ).rejects.toMatchObject({ reason: 'busy' })
+            }
+            let drained = false
+            const stopping = worker.stop().then(() => {
+                drained = true
+            })
+            void stopping.catch(() => undefined)
+            applied.resolve()
+            await Bun.sleep(0)
+            const successfulReceipts = () =>
+                database
+                    .select({ id: auditEvents.id })
+                    .from(auditEvents)
+                    .where(
+                        and(
+                            eq(auditEvents.actorUserId, actor),
+                            eq(auditEvents.resource, 'proxy-runtime'),
+                            eq(auditEvents.action, 'apply'),
+                            eq(auditEvents.result, 'success'),
+                        ),
+                    )
+            if (admission === 'exhausted') {
+                await expect(Promise.race([stopping, expired])).rejects.toBeInstanceOf(
+                    DiscoveryFinalizationError,
+                )
+                expect(drained).toBe(false)
+                expect((await registry()).runtimeStatus).toBe('pending')
+                expect(await successfulReceipts()).toHaveLength(0)
+                await expect(worker.stop()).rejects.toBeInstanceOf(DiscoveryFinalizationError)
+                return
+            }
+            if (admission !== 'waiting')
+                await Bun.sleep(DATABASE_CONNECTION_BUDGET.backgroundWaitMs + 100)
+            expect(receiptStarted).toBe(false)
+            expect(drained).toBe(false)
+            if (admission === 'superseded')
+                await database.transaction(async (transaction) => {
+                    await lockProxyRuntimeSettings(transaction)
+                    const newer = await readDiscoveryRegistry(transaction)
+                    newer.revision += 1
+                    newer.enabled = false
+                    await writeDiscoveryRegistry(transaction, newer)
+                })
+            releaseBudget.resolve()
+            if (admission === 'superseded') {
+                await Promise.all([running, stopping])
+                expect(await registry()).toMatchObject({ runtimeStatus: 'pending', enabled: false })
+                expect(await successfulReceipts()).toHaveLength(0)
+                expect(receiptStarted).toBe(false)
+                return
+            }
+            await Promise.race([receiptEntered.promise, expired])
+            expect(drained).toBe(false)
+            finishReceipt.resolve()
+            await Promise.all([running, stopping])
+            expect((await registry()).runtimeStatus).toBe('applied')
+            expect(await successfulReceipts()).toHaveLength(1)
+            expect(drained).toBe(true)
+        } finally {
+            if (deadline) clearTimeout(deadline)
+            applied.resolve()
+            releaseBudget.resolve()
+            finishReceipt.resolve()
+            await Promise.allSettled([running, worker.stop(), ...held, ...queued])
+        }
+    },
+    15_000,
 )
 
 integrationTest(

@@ -18,6 +18,8 @@ import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts
 import { persistControllerCertificatesMetadataInTransaction } from './certificate-metadata.persistence.ts'
 import { getCertificateMetadataSnapshot } from './certificate-metadata-snapshot.server.ts'
 import { lockProxyRuntimeSettings } from '@/server/ProxyRuntime/proxy-runtime-settings.ts'
+import { observeWorkerOperation } from '@/server/Foundation/worker-operation.ts'
+import { workerObservability } from '@/server/Foundation/worker-observability.ts'
 
 const CERTIFICATE_EVENT_SYNC_LOCK_ID = 7_421_910
 const CERTIFICATE_EVENT_PAGE_LIMIT = 100
@@ -232,18 +234,29 @@ async function waitForWakeOrDelay(milliseconds: number): Promise<void> {
     if (wakeResolver !== null) wakeResolver = null
 }
 
+/** Count event progress only for committed changes and retain bounded wakeable retry timing when synchronization fails. */
 async function runWorker(): Promise<void> {
     let retryDelay = CERTIFICATE_EVENT_INITIAL_RETRY_DELAY_MS
     // oxlint-disable-next-line no-unmodified-loop-condition -- stopCertificateEventsSynchronization changes this lifecycle flag.
     while (!stopped) {
         try {
-            await synchronizeCertificateEventsOnce()
+            await observeWorkerOperation(
+                'certificate_events',
+                synchronizeCertificateEventsOnce,
+                undefined,
+                (committed) => (committed ? 'success' : 'deferred'),
+            )
             if (stopped) break
             retryDelay = CERTIFICATE_EVENT_INITIAL_RETRY_DELAY_MS
+            workerObservability.sample('certificate_events', {
+                nextDueAt: Date.now() + CERTIFICATE_EVENT_POLL_INTERVAL_MS,
+            })
             await waitForWakeOrDelay(CERTIFICATE_EVENT_POLL_INTERVAL_MS)
         } catch {
             if (stopped) break
             console.warn('[certificates] event synchronization unavailable')
+            workerObservability.count('certificate_events', 'retry')
+            workerObservability.sample('certificate_events', { nextDueAt: Date.now() + retryDelay })
             await waitForWakeOrDelay(retryDelay)
             retryDelay = Math.min(retryDelay * 2, CERTIFICATE_EVENT_MAX_RETRY_DELAY_MS)
         }

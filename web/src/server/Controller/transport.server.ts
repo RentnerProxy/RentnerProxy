@@ -42,6 +42,7 @@ export async function controllerRequest(
         | '/health'
         | '/ready'
         | '/internal/v1/backups/status'
+        | '/internal/v1/background/status'
         | '/internal/v1/backups/maintenance'
         | `/internal/v1/backups/${string}/delete`
         | `/internal/v1/backups/${string}/restore`

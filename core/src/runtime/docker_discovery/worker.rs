@@ -3,6 +3,7 @@ use super::{
     client::{Docker, EventUpdate, Events},
     models::*,
 };
+use crate::runtime::background::{Outcome, Worker};
 use std::{
     sync::{Arc, atomic::Ordering},
     time::Duration,
@@ -10,18 +11,23 @@ use std::{
 use tokio::time::{Instant, sleep, sleep_until};
 
 impl Discovery {
+    /// Start at most one resident observer and refuse new task admission after shutdown has begun.
     pub(crate) async fn start(self: &Arc<Self>) {
         let mut task = self.task.lock().await;
         if task.is_some() || self.stopping.load(Ordering::SeqCst) {
             return;
         }
         let discovery = Arc::clone(self);
+        let resident = discovery.background.start(Worker::Docker);
         *task = Some(tokio::spawn(async move {
+            let _resident = resident;
             discovery.run().await;
         }));
     }
+    /// Latch shutdown, mark the observer stopping, and wake both observation and change listeners.
     pub(crate) fn stop_accepting(&self) {
         self.stopping.store(true, Ordering::SeqCst);
+        self.background.stop_worker(Worker::Docker);
         self.wake.notify_one();
         self.changes.send_modify(|_| {});
     }
@@ -53,27 +59,39 @@ impl Discovery {
             }
         }
     }
+    /// Serialize observation passes, distinguish disabled idle from errors, and cancel on configuration wake without inventing failures.
     async fn run(&self) {
         let mut failures = 0_u32;
         while !self.stopping.load(Ordering::SeqCst) {
+            let pass = self.background.begin(Worker::Docker);
             let loaded = super::persistence::load(&self.path, &self.io).await;
             let document = match loaded {
                 Ok((document, false)) if document.settings.enabled => document,
-                _ => {
+                other => {
+                    pass.finish(if other.is_err() {
+                        Outcome::Failure
+                    } else {
+                        Outcome::Idle
+                    });
                     tokio::select! { _ = self.wake.notified() => {}, _ = sleep(Duration::from_secs(30)) => {} }
                     continue;
                 }
             };
             // Changing configuration cancels reads/streams, never enqueues a second worker.
             let result = tokio::select! {
-                _ = self.wake.notified() => { failures = 0; continue; },
+                _ = self.wake.notified() => { pass.finish(Outcome::Cancelled); failures = 0; continue; },
                 result = self.observe(&document) => result,
             };
-            if let Err(error) = result {
-                self.publish(&document, None, Some(error)).await;
-                failures = failures.saturating_add(1).min(6);
-            } else {
-                failures = 0;
+            match result {
+                Err(error) => {
+                    self.publish(&document, None, Some(error)).await;
+                    pass.finish(Outcome::Failure);
+                    failures = failures.saturating_add(1).min(6);
+                }
+                Ok(outcome) => {
+                    pass.finish(outcome);
+                    failures = 0;
+                }
             }
             let delay = Duration::from_secs(if failures == 0 {
                 1
@@ -83,7 +101,8 @@ impl Discovery {
             tokio::select! { _ = self.wake.notified() => { failures = 0; }, _ = sleep(delay) => {} }
         }
     }
-    async fn observe(&self, document: &Document) -> Result<(), Error> {
+    /// Subscribe before inventory, coalesce event scans to at most twice per second, and retain any publication failure within the subscription.
+    async fn observe(&self, document: &Document) -> Result<Outcome, Error> {
         let docker = Docker::new(
             document
                 .settings
@@ -93,7 +112,8 @@ impl Discovery {
         )?;
         // Subscribe before listing, so events during a scan are retained by the bounded HTTP stream.
         let mut stream = docker.events().await?;
-        self.publish(document, Some(docker.inventory().await?), None)
+        let mut outcome = self
+            .publish(document, Some(docker.inventory().await?), None)
             .await;
         let expires = Instant::now() + Duration::from_secs(60);
         let mut refresh = expires;
@@ -104,17 +124,18 @@ impl Discovery {
                 // Deadlines win even under a continuous event flood; at most one scan every 500ms.
                 biased;
                 _ = sleep_until(refresh) => {
-                    if Instant::now() >= expires { return Ok(()); }
-                    self.publish(document, Some(docker.inventory().await?), None).await;
+                    if Instant::now() >= expires { return Ok(outcome); }
+                    let published = self.publish(document, Some(docker.inventory().await?), None).await;
+                    if !matches!(outcome, Outcome::Failure) { outcome = published; }
                     dirty = false;
                     refresh = expires;
                 },
                 chunk = stream.chunk() => {
                     // A clean EOF rotates the subscription without marking the inventory stale.
                     // Transport errors still trigger the normal unavailable/backoff path.
-                    let Some(chunk) = chunk.map_err(|_| Error::EndpointUnavailable)? else { return Ok(()); };
+                    let Some(chunk) = chunk.map_err(|_| Error::EndpointUnavailable)? else { return Ok(outcome); };
                     match decoder.push(&chunk)? {
-                        EventUpdate::Reconnect => return Ok(()),
+                        EventUpdate::Reconnect => return Ok(outcome),
                         EventUpdate::Changed if !dirty => {
                             dirty = true;
                             refresh = (Instant::now() + Duration::from_millis(500)).min(expires);

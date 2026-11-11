@@ -28,7 +28,7 @@ const script = `
         reads++
         requests.push({ path, options })
         if (failController) throw new Error('PRIVATE-CONTROLLER-FAILURE')
-        return path === '/health' ? fixture.controllerHealth : fixture.caddyVersion
+        return path === '/health' ? fixture.controllerHealth : path === '/internal/v1/background/status' ? fixture.controllerWorkers : fixture.caddyVersion
     } }))
     mock.module('./server/Controller/proxy.server.ts', () => ({ getProxyRuntimeStatus: async () => {
         reads++
@@ -89,7 +89,7 @@ describe('support report endpoint authorization and partial reads', () => {
             }
             expect(output.anonymous).toBe('authentication_required')
             expect(output.anonymousReads).toBe(0)
-            expect(output.reads).toBe(27)
+            expect(output.reads).toBe(30)
             expect(output.healthy.completeness).toBe('complete')
             expect(output.healthy.runtime.state).toBe('synced')
             expect(output.partial.completeness).toBe('partial')
@@ -97,6 +97,8 @@ describe('support report endpoint authorization and partial reads', () => {
             expect(output.partial.configuration.state).toBe('available')
             expect(output.unavailable.runtime.state).toBe('unavailable')
             expect(output.unavailable.versions.caddy.value).toBeNull()
+            expect(output.unavailable.backgroundWorkers.controller.state).toBe('unavailable')
+            expect(output.unavailable.backgroundWorkers.bun.state).toBe('available')
             expect(stdout).not.toContain('PRIVATE-')
             expect(stdout).not.toContain('private.example.com')
             expect(output.headers).toEqual({
@@ -112,6 +114,15 @@ describe('support report endpoint authorization and partial reads', () => {
                 timeoutMs: 2_000,
                 privileged: true,
                 allowNotFound: true,
+            })
+            expect(output.requests[2]).toEqual({
+                path: '/internal/v1/background/status',
+                options: {
+                    timeoutMs: 1_200,
+                    responseLimit: 8 * 1_024,
+                    privileged: true,
+                    allowNotFound: true,
+                },
             })
         } finally {
             clearTimeout(timer)

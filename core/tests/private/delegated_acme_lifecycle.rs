@@ -246,6 +246,95 @@ async fn begin_delegated(runtime: &ProxyRuntime) -> String {
         .id
 }
 
+/// Accepts delegated cancellation while failure settlement waits for storage admission.
+/// Only a persisted cancellation counts as cancelled; failed metadata replacement
+/// remains a failure and releases the observed pass.
+#[test]
+fn late_delegated_cancellation_uses_settled_store_outcome() {
+    if !isolated("late_delegated_cancellation_uses_settled_store_outcome") {
+        return;
+    }
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            for persist in [true, false] {
+                let runtime = runtime().await;
+                let operation_id = begin_delegated(&runtime).await;
+                let (entered, started) = tokio::sync::oneshot::channel();
+                let (release, blocked) = std::sync::mpsc::channel();
+                let storage_runtime = Arc::clone(&runtime);
+                let storage = tokio::spawn(async move {
+                    storage_runtime
+                        .storage(move |_| {
+                            entered.send(()).unwrap();
+                            blocked.recv().unwrap();
+                        })
+                        .await
+                        .unwrap();
+                });
+                timeout(Duration::from_secs(3), started)
+                    .await
+                    .unwrap()
+                    .unwrap();
+
+                let pass = runtime.background.begin(Worker::Orders);
+                let mut finish = Box::pin(runtime.finish_failed_acme_issue(
+                    ID,
+                    Some(CertificateError::AcmeFailed),
+                    pass,
+                ));
+                // Poll the failure path into its blocked storage wait before accepting
+                // cancellation. No cancellation snapshot taken before that wait is valid.
+                std::future::poll_fn(|context| {
+                    assert!(finish.as_mut().poll(context).is_pending());
+                    std::task::Poll::Ready(())
+                })
+                .await;
+                runtime
+                    .certificate_store
+                    .request_delegated_cancel(ID, &operation_id)
+                    .await
+                    .unwrap();
+                if !persist {
+                    let path = runtime
+                        .settings
+                        .state_dir
+                        .join("certificates/certificate-metadata.json");
+                    std::fs::remove_file(&path).unwrap();
+                    std::fs::create_dir(&path).unwrap();
+                }
+                release.send(()).unwrap();
+                timeout(Duration::from_secs(3), finish).await.unwrap();
+                storage.await.unwrap();
+
+                let observed = serde_json::to_value(runtime.background.snapshot()).unwrap();
+                let orders = &observed["workers"][4];
+                assert_eq!(orders["id"], "acme_orders");
+                assert_eq!(orders["cancellations"], u64::from(persist));
+                assert_eq!(orders["failures"], u64::from(!persist));
+                assert_eq!(orders["runningCount"], 0);
+                if persist {
+                    let metadata = runtime.certificate_store.get(ID).await.unwrap();
+                    assert_eq!(metadata.last_error_code.as_deref(), Some("acme_cancelled"));
+                    assert_eq!(
+                        metadata.current_operation.unwrap().stage,
+                        crate::runtime::certificates::CertificateOperationStage::Cancelled
+                    );
+                    let restarted = crate::runtime::certificates::CertificateStore::new(
+                        runtime.settings.state_dir.clone(),
+                    );
+                    restarted.initialize().await.unwrap();
+                    assert_eq!(
+                        restarted.get(ID).await.unwrap().last_error_code.as_deref(),
+                        Some("acme_cancelled")
+                    );
+                }
+            }
+        });
+}
+
 /// Cancels after a provider has accepted a write, proving the operation retains authority until
 /// that write finishes and its exact committed proof can be cleaned up.
 #[test]
@@ -263,6 +352,7 @@ fn cancellation_waits_for_accepted_provider_post_then_cleans_its_committed_value
             let proof = intent();
             let fixture = Fixture::new(false, &proof).await;
             let provider = fixture.provider();
+            let pass = runtime.background.begin(Worker::Orders);
             let write_runtime = runtime.clone();
             let write_provider = provider.clone();
             let write = tokio::spawn(async move {
@@ -317,9 +407,16 @@ fn cancellation_waits_for_accepted_provider_post_then_cleans_its_committed_value
                 intents
             );
             runtime
-                .certificate_store
-                .finish_failed(ID, CertificateError::AcmeCancelled)
+                .finish_failed_acme_issue(ID, Some(CertificateError::AcmeCancelled), pass)
                 .await;
+            let observed = serde_json::to_value(runtime.background.snapshot()).unwrap();
+            let orders = &observed["workers"][4];
+            assert_eq!(orders["id"], "acme_orders");
+            assert_eq!(orders["cancellations"], 1);
+            // The fixture deliberately lacks the saved connection: only that real cleanup
+            // failure degrades Orders; cancellation must not add another failed pass.
+            assert_eq!(orders["failures"], 1);
+            assert_eq!(orders["runningCount"], 0);
             runtime
                 .cleanup_dns_challenges(ID, &provider, &intents)
                 .await
@@ -668,6 +765,20 @@ fn cleanup_recovery_keeps_authority_when_connection_is_missing_and_releases_work
                     .await
                     .unwrap()
                     .is_some()
+            );
+            let observed_before = serde_json::to_value(runtime.background.snapshot()).unwrap();
+            runtime.recover_dns_cleanup_one(ID).await;
+            let observed_after = serde_json::to_value(runtime.background.snapshot()).unwrap();
+            let orders_before = &observed_before["workers"][4];
+            let orders_after = &observed_after["workers"][4];
+            assert_eq!(orders_after["id"], "acme_orders");
+            assert_eq!(orders_after["failures"], orders_before["failures"]);
+            assert_eq!(orders_after["successes"], orders_before["successes"]);
+            assert_eq!(orders_after["runningCount"], 0);
+            assert_eq!(
+                runtime.certificate_store.begin_dns_cleanup(ID).await,
+                Err(CertificateError::OperationInProgress),
+                "a competing cleanup pass must not release the owner's live lease"
             );
             runtime.certificate_store.finish_dns_cleanup(ID).await;
             runtime.recover_dns_cleanup().await;

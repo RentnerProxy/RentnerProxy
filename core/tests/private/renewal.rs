@@ -1,5 +1,26 @@
 use super::*;
 
+#[test]
+fn busy_certificate_work_is_idle_but_real_failures_are_retained() {
+    use certificates::CertificateError;
+    assert!(matches!(
+        certificate_work_outcome::<()>(Err(CertificateError::OperationInProgress)),
+        Outcome::Idle
+    ));
+    assert!(matches!(
+        certificate_work_outcome::<()>(Err(CertificateError::StoreUnavailable)),
+        Outcome::Failure
+    ));
+    assert!(matches!(
+        certificate_work_outcome::<()>(Ok(None)),
+        Outcome::Idle
+    ));
+    assert!(matches!(
+        certificate_work_outcome(Ok(Some(()))),
+        Outcome::Success
+    ));
+}
+
 #[tokio::test]
 async fn scheduler_first_tick_preserves_candidate_backoff_and_can_be_cancelled() {
     const ID: &str = "0198d98a-0000-7000-8000-000000000531";
@@ -65,15 +86,39 @@ async fn scheduler_first_tick_preserves_candidate_backoff_and_can_be_cancelled()
             .unwrap(),
         [ID]
     );
-    runtime
-        .renew_due_certificates(crate::server::challenges::ChallengeStore::new(), usize::MAX)
-        .await;
+    assert!(matches!(
+        runtime
+            .renew_due_certificates(crate::server::challenges::ChallengeStore::new(), usize::MAX)
+            .await,
+        Outcome::Idle
+    ));
     assert_eq!(runtime.certificate_store.get(ID).await.unwrap(), before);
-    runtime.begin_shutdown();
-    runtime.retry_certificate_candidates().await;
+    let held = runtime
+        .certificate_store
+        .begin_candidate_activation(ID, false)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        runtime.retry_certificate_candidates().await,
+        Outcome::Idle
+    ));
     runtime
-        .renew_due_certificates(crate::server::challenges::ChallengeStore::new(), 0)
+        .certificate_store
+        .finish_candidate_failed(&held, certificates::CertificateError::RuntimeApplyFailed)
         .await;
+    let before = runtime.certificate_store.get(ID).await.unwrap();
+    runtime.begin_shutdown();
+    assert!(matches!(
+        runtime.retry_certificate_candidates().await,
+        Outcome::Cancelled
+    ));
+    assert!(matches!(
+        runtime
+            .renew_due_certificates(crate::server::challenges::ChallengeStore::new(), 0)
+            .await,
+        Outcome::Cancelled
+    ));
     assert_eq!(runtime.certificate_store.get(ID).await.unwrap(), before);
     std::fs::remove_dir_all(path).unwrap();
 }

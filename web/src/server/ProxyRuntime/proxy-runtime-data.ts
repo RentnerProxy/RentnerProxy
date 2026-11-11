@@ -2,7 +2,6 @@
 import '@tanstack/react-start/server-only'
 
 import { asc, eq, inArray } from 'drizzle-orm'
-import { readResponseCacheSettingsMap } from './proxy-runtime-settings.ts'
 
 import {
     accessPolicyBasicAuthAccounts,
@@ -14,7 +13,11 @@ import {
 } from '@/db/schema.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
 import { createProxyRuntimeSnapshot } from './proxy-runtime-snapshot.ts'
-import { readProxyHttpSettings, readProxyHostHttpSettingsMap } from './proxy-runtime-settings.ts'
+import {
+    readProxyHttpSettings,
+    readProxyHostSettingsMaps,
+    readResponseCacheSettingsMap,
+} from './proxy-runtime-settings.ts'
 import { readDefaultSiteSettings } from '@/server/DefaultSite/default-site-settings.ts'
 import type {
     ProxyRuntimeHost,
@@ -184,8 +187,8 @@ export async function readProxyRuntimeSnapshot(
     }
 
     const httpSettings = await readProxyHttpSettings(transaction)
-    const hostSettings = await readProxyHostHttpSettingsMap(transaction, [...hosts.keys()])
-    const responseCacheSettings = await readResponseCacheSettingsMap(transaction, [...hosts.keys()])
+    const { httpSettings: hostSettings, responseCache: responseCacheSettings } =
+        await readProxyHostSettingsMaps(transaction, [...hosts.keys()])
     const configuredHosts = [...hosts.values()].map((host) =>
         Object.assign({}, host, {
             httpSettings: hostSettings.get(host.id) ?? {},

@@ -201,7 +201,11 @@ impl ProxyRuntime {
         let runtime = Arc::clone(self);
         runtime.recovery_health.worker_started();
         let progress = super::recovery_health::WorkerProgress(Arc::clone(&runtime.recovery_health));
+        let resident = runtime
+            .background
+            .start(super::background::Worker::Recovery);
         *slot = Some(tokio::spawn(async move {
+            let _resident = resident;
             let _progress = progress;
             let mut failures = 0u32;
             loop {
@@ -214,7 +218,24 @@ impl ProxyRuntime {
                 if runtime.stopping.load(Ordering::SeqCst) {
                     break;
                 }
+                let pass = runtime
+                    .background
+                    .begin(super::background::Worker::Recovery);
                 let result = runtime.recover().await;
+                pass.finish(match result {
+                    Ok(())
+                        if runtime
+                            .recovery_health
+                            .snapshot(Instant::now())
+                            .consecutive_probe_failures
+                            > 0 =>
+                    {
+                        super::background::Outcome::Failure
+                    }
+                    Ok(()) => super::background::Outcome::Success,
+                    Err(RuntimeError::Busy) => super::background::Outcome::Idle,
+                    Err(_) => super::background::Outcome::Failure,
+                });
                 runtime.recovery_health.completed();
                 if result.is_ok() || result == Err(RuntimeError::Busy) {
                     failures = 0;
@@ -410,6 +431,7 @@ impl ProxyRuntime {
     pub(crate) fn begin_shutdown(&self) {
         self.background_jobs.stop_accepting();
         self.stopping.store(true, Ordering::SeqCst);
+        self.background.stopping();
         self.ddns_automation.stop_accepting();
         self.docker_discovery.stop_accepting();
     }
