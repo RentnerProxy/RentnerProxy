@@ -22,18 +22,23 @@ for (const design of ['A', 'B2'] as const)
         const globals = globalThis as unknown as Record<string, unknown>
         globals[key] = state
         try {
+            await writeFile(join(directory, 'fixture-key.json'), JSON.stringify(key), {
+                mode: 0o600,
+            })
             // A thenable module deterministically invokes the startup boundary at the added dynamic-import await.
             // Static importing its publisher does not run this hook; no timer/scheduler timing assumption is needed.
             await writeFile(
                 join(directory, 'application-change.js'),
-                `export function p(){globalThis[${JSON.stringify(key)}].wakes++}
-export function then(resolve){globalThis[${JSON.stringify(key)}].worker.start();resolve({p})}`,
+                `import key from "./fixture-key.json" with { type: "json" };
+export function p(){globalThis[key].wakes++}
+export function then(resolve){globalThis[key].worker.start();resolve({p})}`,
             )
             await writeFile(
                 join(directory, 'host-monitoring.worker.server-Fixture.js'),
                 `import { p as publishApplicationChange } from "./application-change.js";
-export const hostMonitoringWorker={start(){globalThis[${JSON.stringify(key)}].originalStarts++},async stop(){}};
-globalThis[${JSON.stringify(key)}].worker=hostMonitoringWorker;
+import key from "./fixture-key.json" with { type: "json" };
+export const hostMonitoringWorker={start(){globalThis[key].originalStarts++},async stop(){}};
+globalThis[key].worker=hostMonitoringWorker;
 void publishApplicationChange;`,
             )
             const prepared = await prepareMonitoringB2Web(design, directory)
