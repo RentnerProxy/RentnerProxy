@@ -3,6 +3,9 @@ import '@tanstack/react-start/server-only'
 
 import type { ProxyRuntimeMutationStatus } from '@/lib/ProxyRuntime/Types/proxy-runtime.types.ts'
 import { workerObservability } from './worker-observability.ts'
+import { withBackgroundDatabaseContext } from '@/db/background-admission.ts'
+import { ResourceAdmissionError } from './resource-admission.ts'
+import { WorkerDrainTimeoutError } from './Types/worker-lifecycle.types.ts'
 import type {
     RuntimeReconcileDependencies,
     RuntimeReconcileOptions,
@@ -22,6 +25,7 @@ export function createRuntimeReconciler<T>(
     let requested = 0
     let completed = 0
     let worker: Promise<void> | null = null
+    let driftFlight: Promise<void> | null = null
     let stopped = false
     let driftTimer: ReturnType<typeof setInterval> | null = null
     let wakeResolver: (() => void) | null = null
@@ -120,8 +124,15 @@ export function createRuntimeReconciler<T>(
                 retryDelay = INITIAL_RETRY_DELAY_MS
                 finish('success')
                 resolveWaiters('applied')
-            } catch {
-                finish('failure')
+            } catch (error) {
+                finish(
+                    error instanceof ResourceAdmissionError
+                        ? error.reason === 'cancelled'
+                            ? 'cancelled'
+                            : 'deferred'
+                        : 'failure',
+                    { recoverLane: false },
+                )
                 if (stopped) break
                 resolveWaiters('pending')
                 console.warn(`[${options.name}] reconcile unavailable`)
@@ -137,7 +148,7 @@ export function createRuntimeReconciler<T>(
     function enqueue(): void {
         requested += 1
         if (!worker && !stopped) {
-            worker = runWorker().finally(() => {
+            worker = withBackgroundDatabaseContext(runWorker).finally(() => {
                 worker = null
             })
         }
@@ -177,9 +188,24 @@ export function createRuntimeReconciler<T>(
         }
     }
 
-    async function checkDrift(): Promise<void> {
+    /** Share drift ownership so shutdown can drain every admitted observation. */
+    function checkDrift(): Promise<void> {
         const drift = dependencies.drift
-        if (!drift || stopped || dependencies.enabled === false) return
+        if (!drift || stopped || dependencies.enabled === false) return Promise.resolve()
+        if (driftFlight) return driftFlight
+        driftFlight = withBackgroundDatabaseContext(() => observeDrift(drift)).finally(() => {
+            driftFlight = null
+        })
+        return driftFlight
+    }
+
+    /** Recover only the observation lane after a completed drift scan; apply failures require an actual successful apply. */
+    async function observeDrift(
+        drift: NonNullable<RuntimeReconcileDependencies<T>['drift']>,
+    ): Promise<void> {
+        const finish = options.workerId
+            ? workerObservability.begin(options.workerId, 'collection')
+            : () => {}
         try {
             let hasDrift: boolean
             if ('check' in drift) {
@@ -189,28 +215,50 @@ export function createRuntimeReconciler<T>(
                 if (stopped) return
                 hasDrift = await drift.matches(snapshot)
             }
+            finish(stopped ? 'cancelled' : 'deferred')
             if (!stopped && hasDrift) enqueue()
-        } catch {
+        } catch (error) {
+            finish(
+                stopped || (error instanceof ResourceAdmissionError && error.reason === 'cancelled')
+                    ? 'cancelled'
+                    : error instanceof ResourceAdmissionError
+                      ? 'deferred'
+                      : 'failure',
+                { recoverLane: false },
+            )
             console.warn(`[${options.name}] drift check unavailable`)
+        } finally {
+            finish('cancelled')
         }
     }
 
+    /** Fence new work and bound shutdown waiting while retaining the actual apply and drift drain in timeout errors. */
     async function stop(): Promise<void> {
         stopped = true
         if (driftTimer !== null) clearInterval(driftTimer)
         driftTimer = null
         resolveWaiters('pending')
         wake()
-        if (worker) {
+        const draining = Promise.allSettled([worker, driftFlight]).then((results) => {
+            const failed = results.find((result) => result.status === 'rejected')
+            if (failed?.status === 'rejected') throw failed.reason
+        })
+        if (worker || driftFlight) {
             let timer: ReturnType<typeof setTimeout> | undefined
-            await Promise.race([
-                worker,
-                new Promise<void>((resolve) => {
-                    timer = setTimeout(resolve, options.stopTimeoutMs)
-                    timer.unref?.()
-                }),
-            ])
-            if (timer !== undefined) clearTimeout(timer)
+            try {
+                await Promise.race([
+                    draining,
+                    new Promise<void>((_, reject) => {
+                        timer = setTimeout(
+                            () => reject(new WorkerDrainTimeoutError(draining)),
+                            options.stopTimeoutMs,
+                        )
+                        timer.unref?.()
+                    }),
+                ])
+            } finally {
+                if (timer !== undefined) clearTimeout(timer)
+            }
         }
     }
 

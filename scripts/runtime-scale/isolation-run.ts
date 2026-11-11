@@ -38,16 +38,37 @@ async function bounded<T>(operation: Promise<T>, milliseconds: number): Promise<
         clearTimeout(timer)
     }
 }
+/** Propagate budget expiry into the caller's finally even if its current operation never settles. */
+export async function withIsolationCancellation<T>(operation: Promise<T>, signal: AbortSignal) {
+    if (signal.aborted) {
+        void operation.catch(() => {})
+        throw signal.reason
+    }
+    const cancelled = Promise.withResolvers<never>()
+    const abort = () => cancelled.reject(signal.reason)
+    signal.addEventListener('abort', abort, { once: true })
+    try {
+        return await Promise.race([operation, cancelled.promise])
+    } finally {
+        signal.removeEventListener('abort', abort)
+    }
+}
 export class IsolationCommandError extends Error {
     constructor(readonly exitCode: number) {
         super('Isolation fixture command failed')
     }
 }
 /** Run an owned tool with bounded output completion; failures kill and reap the child and bound inherited-pipe cleanup before rethrowing. */
-export async function command(args: string[], timeoutMs = 30_000): Promise<string> {
+export async function command(
+    args: string[],
+    timeoutMs = 30_000,
+    signal?: AbortSignal,
+): Promise<string> {
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
         throw new Error('Invalid isolation command timeout')
-    const child = Bun.spawn(args, { stdout: 'pipe', stderr: 'pipe' })
+    signal?.throwIfAborted()
+    const grouped = process.platform !== 'win32'
+    const child = Bun.spawn(args, { stdout: 'pipe', stderr: 'pipe', detached: grouped })
     const output = new AbortController()
     const read = (stream: ReadableStream<Uint8Array>) =>
         new Response(
@@ -57,19 +78,40 @@ export async function command(args: string[], timeoutMs = 30_000): Promise<strin
         ).text()
     const completions = [child.exited, read(child.stdout), read(child.stderr)] as const
     try {
-        const [code, out] = await bounded(Promise.all(completions), timeoutMs)
+        const completion = Promise.all(completions)
+        const [code, out] = await bounded(
+            signal ? withIsolationCancellation(completion, signal) : completion,
+            timeoutMs,
+        )
         if (code !== 0) throw new IsolationCommandError(code)
         return out.trim()
     } catch (error) {
-        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+        const cleanupErrors: unknown[] = []
+        try {
+            // detached establishes a new session: only the group created for this owned child is signalled.
+            if (grouped && Number.isSafeInteger(child.pid) && child.pid > 1)
+                process.kill(-child.pid, 'SIGKILL')
+            else if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+        } catch (killError) {
+            if (!(killError instanceof Error && 'code' in killError && killError.code === 'ESRCH'))
+                cleanupErrors.push(killError)
+        }
         // Reap the owned process even when a descendant keeps an inherited pipe open.
-        await child.exited
+        await bounded(child.exited, 1_000).catch((reapError: unknown) =>
+            cleanupErrors.push(reapError),
+        )
         try {
             await bounded(Promise.allSettled(completions), 250)
         } catch {
             output.abort()
             await bounded(Promise.allSettled(completions), 250).catch(() => {})
         }
+        if (cleanupErrors.length)
+            throw new AggregateError(
+                [error, ...cleanupErrors],
+                'Isolation command termination failed',
+                { cause: error },
+            )
         throw error
     }
 }
@@ -100,7 +142,9 @@ export async function stopIsolationPostgres(
             } catch (killError) {
                 errors.push(killError)
             } finally {
-                await postgres.exited
+                await bounded(postgres.exited, 1_000).catch((reapError: unknown) =>
+                    errors.push(reapError),
+                )
             }
         }
         if (postgres.signalCode !== null)
@@ -164,18 +208,19 @@ export async function finishIsolationFixture(
     stages: (() => Promise<unknown>)[],
     remove: () => Promise<unknown>,
     primary: { error: unknown } | undefined,
+    stageTimeoutMs = 10_000,
 ) {
     const errors: unknown[] = []
     for (const stage of stages) {
         try {
-            await stage()
+            await bounded(stage(), stageTimeoutMs)
         } catch (error) {
             errors.push(error)
         }
     }
     if (!errors.length) {
         try {
-            await remove()
+            await bounded(remove(), stageTimeoutMs)
         } catch (error) {
             errors.push(error)
         }
@@ -287,7 +332,10 @@ async function spawnRole(
     role: 'foreground' | 'combined' | 'background',
     networkPort: number,
     denied = false,
+    signal?: AbortSignal,
+    owned?: Set<Bun.Subprocess>,
 ): Promise<Child> {
+    signal?.throwIfAborted()
     const ready = Promise.withResolvers<{ port: number; pid: number; uid: number }>()
     const started = performance.now()
     const user = denied
@@ -321,6 +369,7 @@ async function spawnRole(
             stderr: 'pipe',
         },
     )
+    owned?.add(child)
     const lines = createIsolationLineReader((line) => {
         try {
             ready.resolve(isolationReadySchema.parse(JSON.parse(line)))
@@ -335,12 +384,15 @@ async function spawnRole(
         return {
             process: child,
             ready: await bounded(
-                Promise.race([
-                    ready.promise,
-                    child.exited.then(() => {
-                        throw new Error('Isolation role failed before readiness')
-                    }),
-                ]),
+                withIsolationCancellation(
+                    Promise.race([
+                        ready.promise,
+                        child.exited.then(() => {
+                            throw new Error('Isolation role failed before readiness')
+                        }),
+                    ]),
+                    signal ?? new AbortController().signal,
+                ),
                 10_000,
             ),
             startupMs: performance.now() - started,
@@ -352,24 +404,43 @@ async function spawnRole(
     }
 }
 /** Send a control-marked request only to the owned role loopback port, with a sixteen-second deadline and redirects disabled. */
-async function request(child: Child, path: string, method = 'GET') {
+async function request(child: Child, path: string, method = 'GET', signal?: AbortSignal) {
     return fetch('http://127.0.0.1:' + child.ready.port + path, {
         method,
         headers: controlHeaders,
-        signal: AbortSignal.timeout(16_000),
+        signal: signal
+            ? AbortSignal.any([signal, AbortSignal.timeout(16_000)])
+            : AbortSignal.timeout(16_000),
         redirect: 'error',
     })
 }
-/** Require successful drain and a zero exit after SIGTERM; always kill and reap a still-running child when shutdown fails. */
-async function stopChild(child: Child) {
-    const start = performance.now()
+/** Read final counters from the first completed drain and retain its actual duration. */
+export async function drainIsolationRole(send: () => Promise<Response>) {
+    const started = performance.now()
+    const response = await send()
+    if (!response.ok) throw new Error('Isolation role did not drain')
+    const metrics = isolationRoleMetricsSchema.parse(await response.json())
+    return { metrics, elapsedMs: performance.now() - started }
+}
+
+/** Final durable progress must be read after every completion batch has drained. */
+export async function readIsolationCompletion<T>(
+    send: () => Promise<Response>,
+    readProgress: () => Promise<T>,
+) {
+    const drained = await drainIsolationRole(send)
+    return { drained, progress: await readProgress() }
+}
+
+/** Include the original drain duration when metrics were collected before terminating this role. */
+async function stopChild(child: Child, drained?: Awaited<ReturnType<typeof drainIsolationRole>>) {
     try {
-        const response = await request(child, '/stop', 'POST')
-        if (!response.ok) throw new Error('Isolation role did not drain')
+        const drain = drained ?? (await drainIsolationRole(() => request(child, '/stop', 'POST')))
+        const start = performance.now()
         child.process.kill('SIGTERM')
         if ((await bounded(child.process.exited, 15_000)) !== 0)
             throw new Error('Isolation child exit failed')
-        return performance.now() - start
+        return drain.elapsedMs + performance.now() - start
     } finally {
         if (child.process.exitCode === null) {
             child.process.kill('SIGKILL')
@@ -386,37 +457,51 @@ async function removeFixtureDirectory(directory: string) {
 }
 
 /** Create and migrate a fresh disposable database with connection-limited roles; return the admin connection that the caller must close. */
-async function prepareDatabase(url: string) {
+async function prepareDatabase(url: string, signal: AbortSignal, owned: Set<SQL>) {
+    signal.throwIfAborted()
     const admin = new SQL('postgresql://postgres@127.0.0.1:55439/postgres', { max: 4 })
+    owned.add(admin)
     await admin.unsafe('create database rentnerproxy_upstream_test')
+    signal.throwIfAborted()
     await admin.unsafe('create role isolation_foreground login connection limit 16')
+    signal.throwIfAborted()
     await admin.unsafe('create role isolation_worker login connection limit 8')
     await admin.close()
+    owned.delete(admin)
+    signal.throwIfAborted()
     process.env.DATABASE_URL = url
     const { runMigrate } = await import('../../web/src/db/migrate.ts')
+    signal.throwIfAborted()
     await runMigrate({ databaseUrl: url, migrationsFolder: join(root, 'web/drizzle') })
+    signal.throwIfAborted()
     const database = new SQL(url, { max: 4 })
+    owned.add(database)
     await database.unsafe(
         'grant connect on database rentnerproxy_upstream_test to isolation_foreground,isolation_worker',
     )
+    signal.throwIfAborted()
     await database.unsafe(
         'grant usage on schema rentnerproxy to isolation_foreground,isolation_worker',
     )
+    signal.throwIfAborted()
     await database.unsafe(
         'grant select,insert,update,delete on all tables in schema rentnerproxy to isolation_foreground,isolation_worker',
     )
+    signal.throwIfAborted()
     await database.unsafe(
         'grant usage,select on all sequences in schema rentnerproxy to isolation_foreground,isolation_worker',
     )
     return database
 }
 /** Replace fixture hosts and insert the selected load atomically with deterministic identities and a shared future due time. */
-async function seed(load: IsolationLoad, database: SQL) {
+async function seed(load: IsolationLoad, database: SQL, signal: AbortSignal) {
+    signal.throwIfAborted()
     await database.unsafe('delete from rentnerproxy.proxy_hosts')
     const [{ db }, schema] = await Promise.all([
         import('../../web/src/db/index.ts'),
         import('../../web/src/db/schema.ts'),
     ])
+    signal.throwIfAborted()
     const ids = Array.from(
         { length: load },
         (_, index) => '00000000-0000-4000-8000-' + String(index + 1).padStart(12, '0'),
@@ -459,27 +544,36 @@ async function measure(
     database: SQL,
     networkPort: number,
     networkStats: { probes: number; accepted: number; invalid: number; snapshots: number },
+    signal: AbortSignal,
+    owned: Set<Bun.Subprocess>,
 ): Promise<IsolationMeasurement> {
-    await seed(load, database)
+    signal.throwIfAborted()
+    const send = (child: Child, path: string, method = 'GET') =>
+        request(child, path, method, signal)
+    await seed(load, database, signal)
     const foreground = await spawnRole(
         mode === 'in-process' ? 'combined' : 'foreground',
         networkPort,
+        false,
+        signal,
+        owned,
     )
     let background: Child | null = null
     try {
-        if (mode === 'separate-bun') background = await spawnRole('background', networkPort)
+        if (mode === 'separate-bun')
+            background = await spawnRole('background', networkPort, false, signal, owned)
         const networkBefore = { ...networkStats }
         const owner = background ?? foreground
         const idleBefore = await Promise.all(
             [foreground, ...(background ? [background] : [])].map(async (child) =>
-                isolationRoleMetricsSchema.parse(await (await request(child, '/metrics')).json()),
+                isolationRoleMetricsSchema.parse(await (await send(child, '/metrics')).json()),
             ),
         )
         const idleStarted = performance.now()
         await Bun.sleep(250)
         const idleAfter = await Promise.all(
             [foreground, ...(background ? [background] : [])].map(async (child) =>
-                isolationRoleMetricsSchema.parse(await (await request(child, '/metrics')).json()),
+                isolationRoleMetricsSchema.parse(await (await send(child, '/metrics')).json()),
             ),
         )
         const idleCpuPercentagePoints =
@@ -490,7 +584,7 @@ async function measure(
         await database.unsafe(
             "update rentnerproxy.host_check_policies set next_check_at=clock_timestamp()+interval '0.5 seconds' returning extract(epoch from next_check_at)*1000 as due",
         )
-        await request(owner, '/start', 'POST')
+        await send(owner, '/start', 'POST')
         const latencies: number[] = []
         let rejectedTraffic = 0,
             ssrFailures = 0,
@@ -536,7 +630,7 @@ async function measure(
             const task = (async () => {
                 const start = performance.now()
                 try {
-                    const response = await request(foreground, '/ssr')
+                    const response = await send(foreground, '/ssr')
                     if (!response.ok || !(await response.text()).includes('Proxy hosts'))
                         ssrFailures++
                 } catch {
@@ -549,32 +643,41 @@ async function measure(
             pending.add(task)
             void task.finally(() => pending.delete(task))
         }, 1000 / contract.requestsPerSecond)
-        try {
-            await Bun.sleep(options.durationSeconds * 1000)
-        } finally {
+        const stopTraffic = () => {
             clearInterval(traffic)
             clearInterval(sampler)
+        }
+        signal.addEventListener('abort', stopTraffic, { once: true })
+        try {
+            await withIsolationCancellation(Bun.sleep(options.durationSeconds * 1000), signal)
+        } finally {
+            stopTraffic()
+            signal.removeEventListener('abort', stopTraffic)
             await Promise.allSettled(pending)
         }
+        signal.throwIfAborted()
+        const { drained, progress } = await readIsolationCompletion(
+            () => send(owner, '/stop', 'POST'),
+            () =>
+                database.unsafe(
+                    "select count(*)::integer as count,count(distinct policy_id)::integer as distinct_policies,count(*) filter(where status='healthy' and code='expected_status')::integer as healthy from rentnerproxy.host_check_observations",
+                ),
+        )
+        // Completion totals and the resource/time denominator cover the same window, including drain.
         const elapsedMs = performance.now() - started,
             ending = await cgroup()
-        const foregroundMetrics = isolationRoleMetricsSchema.parse(
-                await (await request(foreground, '/metrics')).json(),
-            ),
-            backgroundMetrics = background
+        const foregroundMetrics = background
                 ? isolationRoleMetricsSchema.parse(
-                      await (await request(background, '/metrics')).json(),
+                      await (await send(foreground, '/metrics')).json(),
                   )
-                : null
-        const progress = await database.unsafe(
-            "select count(*)::integer as count,count(distinct policy_id)::integer as distinct_policies,count(*) filter(where status='healthy' and code='expected_status')::integer as healthy from rentnerproxy.host_check_observations",
-        )
+                : drained.metrics,
+            backgroundMetrics = background ? drained.metrics : null
         const observations = Number(progress[0]?.count),
             unique = Number(progress[0]?.distinct_policies)
         const progressMetrics = backgroundMetrics ?? foregroundMetrics
         const dueToCommitMaxMs =
             progressMetrics.committed === observations ? progressMetrics.commitLagMaxMs : null
-        const stopMs = await stopChild(owner)
+        const stopMs = await stopChild(owner, drained)
         if (background) await stopChild(foreground)
         return {
             mode,
@@ -624,13 +727,22 @@ export async function runIsolationEvaluation(options: IsolationOptions) {
         process.getuid?.() !== 0
     )
         throw new Error('Explicit disposable Linux isolation fixture required')
-    const wallClock = setTimeout(() => {
-        console.error('Isolation fixture wall-clock budget exhausted')
-        process.exit(1)
-    }, contract.wallClockBudgetMs)
-    wallClock.unref()
-    await cgroup()
-    const codeHash = await sourceHash()
+    const budget = new AbortController()
+    const wallClock = setTimeout(
+        () => budget.abort(new Error('Isolation fixture wall-clock budget exhausted')),
+        contract.wallClockBudgetMs,
+    )
+    try {
+        return await evaluateIsolation(options, budget.signal)
+    } finally {
+        clearTimeout(wallClock)
+    }
+}
+
+/** Keep cleanup outside the cancelled operation so expiry still reaps every owned resource. */
+async function evaluateIsolation(options: IsolationOptions, signal: AbortSignal) {
+    await withIsolationCancellation(cgroup(), signal)
+    const codeHash = await withIsolationCancellation(sourceHash(), signal)
     console.log(
         JSON.stringify({
             predeclaredContract: contract,
@@ -640,11 +752,24 @@ export async function runIsolationEvaluation(options: IsolationOptions) {
         }),
     )
     const directory = await mkdtemp('/tmp/rentnerproxy-isolation-')
-    const postgresUid = Number(await command(['id', '-u', 'postgres'])),
-        postgresGid = Number(await command(['id', '-g', 'postgres']))
-    await chown(directory, postgresUid, postgresGid)
-    await chmod(directory, 0o700)
+    const owned = new Set<Bun.Subprocess>()
+    const commands = new Set<Promise<string>>()
+    const toolCleanupErrors: unknown[] = []
+    const run = (args: string[], timeoutMs?: number) => {
+        const operation = command(args, timeoutMs, signal)
+        commands.add(operation)
+        void operation.then(
+            () => commands.delete(operation),
+            (error: unknown) => {
+                if (error instanceof AggregateError) toolCleanupErrors.push(error)
+                commands.delete(operation)
+            },
+        )
+        return operation
+    }
     let database: SQL | undefined
+    const ownedDatabases = new Set<SQL>()
+    let initialization: Promise<SQL> | undefined
     let postgresStartAttempted = false
     let postgres: Bun.Subprocess<'ignore', number, number> | undefined
     let primary: { error: unknown } | undefined
@@ -681,119 +806,153 @@ export async function runIsolationEvaluation(options: IsolationOptions) {
         },
     })
     try {
-        await command([
-            'gosu',
-            'postgres',
-            'initdb',
-            '-D',
-            directory + '/pg',
-            '--auth=trust',
-            '--no-instructions',
-        ])
-        const log = await open(directory + '/postgres.log', 'a')
-        const postgresLaunchedAt = Date.now()
-        try {
-            // Own the postmaster directly: a timed-out readiness tool cannot orphan a daemonized server.
-            postgresStartAttempted = true
-            postgres = Bun.spawn(
-                [
+        return await withIsolationCancellation(
+            (async () => {
+                signal.throwIfAborted()
+                const postgresUid = Number(await run(['id', '-u', 'postgres'])),
+                    postgresGid = Number(await run(['id', '-g', 'postgres']))
+                await chown(directory, postgresUid, postgresGid)
+                await chmod(directory, 0o700)
+                await run([
                     'gosu',
                     'postgres',
-                    'postgres',
+                    'initdb',
                     '-D',
                     directory + '/pg',
-                    '-h',
-                    '127.0.0.1',
-                    '-p',
-                    '55439',
-                    '-c',
-                    'max_connections=100',
-                    '-c',
-                    'shared_buffers=64MB',
-                ],
-                { stdin: 'ignore', stdout: log.fd, stderr: log.fd },
-            )
-        } finally {
-            await log.close()
-        }
-        await waitForIsolationPostgres(directory, postgres, postgresLaunchedAt)
-        database = await prepareDatabase(
-            'postgresql://postgres@127.0.0.1:55439/rentnerproxy_upstream_test',
-        )
-        const measurements: IsolationMeasurement[] = []
-        for (const load of options.faultsOnly ? [] : options.loads)
-            for (let repetition = 1; repetition <= options.repetitions; repetition++) {
-                const modes =
-                    repetition % 2 === 1 ? contract.modes : [...contract.modes].toReversed()
-                for (const mode of modes) {
-                    const result = await measure(
-                        mode,
-                        load,
-                        repetition,
-                        options,
-                        database,
-                        network.port!,
-                        networkStats,
+                    '--auth=trust',
+                    '--no-instructions',
+                ])
+                const log = await open(directory + '/postgres.log', 'a')
+                const postgresLaunchedAt = Date.now()
+                try {
+                    signal.throwIfAborted()
+                    // Own the postmaster directly: a timed-out readiness tool cannot orphan a daemonized server.
+                    postgresStartAttempted = true
+                    postgres = Bun.spawn(
+                        [
+                            'gosu',
+                            'postgres',
+                            'postgres',
+                            '-D',
+                            directory + '/pg',
+                            '-h',
+                            '127.0.0.1',
+                            '-p',
+                            '55439',
+                            '-c',
+                            'max_connections=100',
+                            '-c',
+                            'shared_buffers=64MB',
+                        ],
+                        { stdin: 'ignore', stdout: log.fd, stderr: log.fd },
                     )
-                    measurements.push(result)
-                    console.log(JSON.stringify({ measurement: result }))
+                } finally {
+                    await log.close()
                 }
-            }
-        const faults = options.faults
-            ? await (
-                  await import('./isolation-faults.ts')
-              ).runIsolationFaults({
-                  database,
-                  seed: (load) => seed(load, database!),
-                  spawnRole: (role, denied) => spawnRole(role, network.port!, denied),
-                  request,
-                  stopChild,
-                  bounded,
-                  command,
-                  snapshotPath: join(directory, 'active-writers.dump'),
-              })
-            : null
-        const report = {
-            kind: 'bounded-bun-isolation-fixture',
-            codeHash,
-            bunVersion: Bun.version,
-            contract,
-            options,
-            measurements,
-            assessment: assessIsolation(measurements, false),
-            faults,
-        }
-        console.log(JSON.stringify({ isolationReport: report }))
-        return report
+                await waitForIsolationPostgres(directory, postgres, postgresLaunchedAt)
+                initialization = prepareDatabase(
+                    'postgresql://postgres@127.0.0.1:55439/rentnerproxy_upstream_test',
+                    signal,
+                    ownedDatabases,
+                )
+                database = await initialization
+                signal.throwIfAborted()
+                const measurements: IsolationMeasurement[] = []
+                for (const load of options.faultsOnly ? [] : options.loads)
+                    for (let repetition = 1; repetition <= options.repetitions; repetition++) {
+                        const modes =
+                            repetition % 2 === 1 ? contract.modes : [...contract.modes].toReversed()
+                        for (const mode of modes) {
+                            const result = await measure(
+                                mode,
+                                load,
+                                repetition,
+                                options,
+                                database,
+                                network.port!,
+                                networkStats,
+                                signal,
+                                owned,
+                            )
+                            measurements.push(result)
+                            console.log(JSON.stringify({ measurement: result }))
+                        }
+                    }
+                const faults = options.faults
+                    ? await (
+                          await import('./isolation-faults.ts')
+                      ).runIsolationFaults({
+                          database,
+                          seed: (load) => {
+                              signal.throwIfAborted()
+                              return seed(load, database!, signal)
+                          },
+                          spawnRole: (role, denied) =>
+                              spawnRole(role, network.port!, denied, signal, owned),
+                          request: (child, path, method) => {
+                              signal.throwIfAborted()
+                              return request(child, path, method, signal)
+                          },
+                          stopChild,
+                          bounded,
+                          command: run,
+                          snapshotPath: join(directory, 'active-writers.dump'),
+                      })
+                    : null
+                signal.throwIfAborted()
+                const report = {
+                    kind: 'bounded-bun-isolation-fixture',
+                    codeHash,
+                    bunVersion: Bun.version,
+                    contract,
+                    options,
+                    measurements,
+                    assessment: assessIsolation(measurements, false),
+                    faults,
+                }
+                console.log(JSON.stringify({ isolationReport: report }))
+                return report
+            })(),
+            signal,
+        )
     } catch (error) {
         primary = { error }
         throw error
     } finally {
-        try {
-            await finishIsolationFixture(
-                [
-                    () => network.stop(true),
-                    async () => database?.close(),
-                    async () => {
-                        if (
-                            process.env.DATABASE_URL ===
-                            'postgresql://postgres@127.0.0.1:55439/rentnerproxy_upstream_test'
-                        ) {
-                            const { closeDatabaseForRestoreMaintenance } =
-                                await import('../../web/src/db/index.ts')
-                            await closeDatabaseForRestoreMaintenance()
-                        }
-                    },
-                    async () => {
-                        if (postgresStartAttempted) await stopIsolationPostgres(directory, postgres)
-                    },
-                ],
-                () => removeFixtureDirectory(directory),
-                primary,
-            )
-        } finally {
-            clearTimeout(wallClock)
-        }
+        await finishIsolationFixture(
+            [
+                async () => {
+                    await Promise.allSettled(commands)
+                    if (toolCleanupErrors.length)
+                        throw new AggregateError(toolCleanupErrors, 'Isolation tool cleanup failed')
+                },
+                ...[...owned].map((child) => async () => {
+                    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+                    await bounded(child.exited, 1_000)
+                }),
+                () => network.stop(true),
+                // An unsettled initializer makes teardown uncertain, so retain the directory.
+                async () => {
+                    await initialization?.catch(() => {})
+                },
+                ...[...ownedDatabases].map((client) => () => client.close()),
+                async () => {
+                    if (
+                        process.env.DATABASE_URL ===
+                        'postgresql://postgres@127.0.0.1:55439/rentnerproxy_upstream_test'
+                    ) {
+                        const { closeDatabaseForRestoreMaintenance } =
+                            await import('../../web/src/db/index.ts')
+                        await closeDatabaseForRestoreMaintenance()
+                    }
+                },
+                async () => {
+                    if (postgresStartAttempted) await stopIsolationPostgres(directory, postgres)
+                },
+            ],
+            () => removeFixtureDirectory(directory),
+            primary,
+        )
     }
 }
 
@@ -821,6 +980,7 @@ if (import.meta.main) {
         } else await runIsolationEvaluation(parseIsolationOptions(process.argv.slice(2)))
     } catch {
         console.error('Isolation evaluation failed; only disposable fixture state was used.')
-        process.exitCode = 1
+        // All bounded cleanup has completed. Do not let abandoned imports or queries revive fixture work.
+        process.exit(1)
     }
 }

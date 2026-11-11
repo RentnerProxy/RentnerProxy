@@ -2,19 +2,23 @@ import '@tanstack/react-start/server-only'
 // oxlint-disable no-await-in-loop, no-unmodified-loop-condition -- Poll root completion serially; shutdown changes the listener-owned stop flag.
 
 import type { WorkerLifecycle } from './Types/worker-lifecycle.types.ts'
+import { WorkerDrainTimeoutError } from './Types/worker-lifecycle.types.ts'
 import type { BackgroundWorkerId } from './Types/worker-observability.types.ts'
 import { workerObservability } from './worker-observability.ts'
 import { startEventLoopObservation } from './event-loop-observation.ts'
 import { readRestoreMaintenanceStatus } from '@/server/Backups/restore-maintenance-status.server.ts'
 
 let maintenanceStopped = false
+let maintenanceDrain: Promise<void> | null = null
 
 /** Fence future starts before collecting listener drain promises; propagate any failure to stop an existing writer. */
 export async function stopWorkersForRestoreMaintenance(): Promise<void> {
+    if (maintenanceDrain) return maintenanceDrain
     maintenanceStopped = true
     const pending: Array<Promise<void>> = []
     process.emit('rentnerproxy:maintenance', pending)
-    await Promise.all(pending)
+    maintenanceDrain = Promise.all(pending).then(() => undefined)
+    return maintenanceDrain
 }
 
 /** Delay writer startup until restore state permits it and share shutdown/maintenance drain ownership across initialization races. */
@@ -59,21 +63,25 @@ export async function startWorkerLifecycle(
         return worker
     })
     let stopping: Promise<void> | null = null
+    /** Publish a terminal lifecycle state only after the worker's real execution has settled. */
+    const drained = () => {
+        if (id) workerObservability.state(id, maintenanceStopped ? 'maintenance_paused' : 'stopped')
+    }
     /** Latch stop intent before initialization completes and share one drain promise while retaining truthful terminal diagnostics. */
     const stop = (pending: Array<Promise<void>>) => {
         stoppingRequested = true
-        if (id)
-            workerObservability.state(id, maintenanceStopped ? 'maintenance_paused' : 'stopping')
+        if (id && !stopping) workerObservability.state(id, 'stopping')
         stopping ??= initializing.then(async (worker) => {
             try {
                 await worker.stop()
-                if (id)
-                    workerObservability.state(
-                        id,
-                        maintenanceStopped ? 'maintenance_paused' : 'stopped',
-                    )
+                drained()
             } catch (error) {
-                if (id) workerObservability.state(id, 'failed')
+                if (error instanceof WorkerDrainTimeoutError) {
+                    if (id) workerObservability.count(id, 'drainTimeout')
+                    void error.drained.then(drained).catch(() => {
+                        if (id) workerObservability.state(id, 'failed')
+                    })
+                } else if (id) workerObservability.state(id, 'failed')
                 throw error
             }
         })
@@ -88,7 +96,7 @@ export async function startWorkerLifecycle(
         throw error
     }
     if (maintenanceStopped) {
-        if (id) workerObservability.state(id, 'maintenance_paused')
-        await (stopping ??= initializing.then((worker) => worker.stop()))
+        if (!stopping) stop([])
+        await stopping
     }
 }

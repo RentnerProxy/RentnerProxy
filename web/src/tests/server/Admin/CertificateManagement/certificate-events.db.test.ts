@@ -326,7 +326,19 @@ describe('certificate event synchronization with PostgreSQL', () => {
             workerObservability.reset()
             startCertificateEventsSynchronization()
             try {
-                await waitForEventWorker(async () => (await readEventRows()).length === 1)
+                // The row can commit before the loop publishes its next scheduling sample.
+                // Keep the worker running until that sample has actually been observed.
+                await waitForEventWorker(async () => {
+                    if ((await readEventRows()).length !== 1) return false
+                    const progress = workerObservability
+                        .snapshot()
+                        .workers.find((item) => item.id === 'certificate_events')
+                    return (
+                        typeof progress?.nextDueAt === 'number' &&
+                        typeof progress.lastFinishedAt === 'number' &&
+                        progress.nextDueAt > progress.lastFinishedAt
+                    )
+                })
             } finally {
                 await stopCertificateEventsSynchronization()
             }

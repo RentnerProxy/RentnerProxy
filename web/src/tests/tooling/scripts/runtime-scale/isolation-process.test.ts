@@ -5,11 +5,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
     command,
+    readIsolationCompletion,
     createIsolationLineReader,
     IsolationCommandError,
     stopIsolationPostgres,
     finishIsolationFixture,
     waitForIsolationPostgres,
+    withIsolationCancellation,
 } from '../../../../../../scripts/runtime-scale/isolation-run.ts'
 import { isolationReadySchema } from '../../../../../../scripts/runtime-scale/isolation.validation.ts'
 
@@ -298,6 +300,90 @@ describe('isolation PostgreSQL cleanup ownership', () => {
 })
 
 describe('isolation command ownership and readiness streams', () => {
+    test('drain waits for a late durable commit and reports its original latency', async () => {
+        const commit = Promise.withResolvers<void>()
+        const metrics = {
+            pid: 123,
+            uid: 20004,
+            rssBytes: 1024,
+            cpuMicroseconds: 100,
+            fds: 4,
+            lag: { count: 1, p95: 0, p99: 0, max: 0 },
+            failures: 0,
+            committed: 0,
+            commitLagMaxMs: null as number | null,
+        }
+        let rows = 0,
+            read = false
+        const operation = readIsolationCompletion(
+            async () => {
+                await commit.promise
+                rows++
+                metrics.committed++
+                metrics.commitLagMaxMs = 25
+                return Response.json({ drained: true, ...metrics })
+            },
+            async () => {
+                read = true
+                return rows
+            },
+        )
+        let settled = false
+        void operation.then(() => {
+            settled = true
+        })
+        await Bun.sleep(30)
+        expect(settled).toBe(false)
+        expect(read).toBe(false)
+        commit.resolve()
+        const { drained, progress } = await operation
+        expect(read).toBe(true)
+        expect(drained.metrics.committed).toBe(progress)
+        expect(progress).toBe(1)
+        expect(drained.metrics.commitLagMaxMs).toBe(25)
+        expect(drained.elapsedMs).toBeGreaterThanOrEqual(25)
+    })
+    test('wall expiry reaches bounded cleanup even when evaluation and one cleanup stage hang', async () => {
+        const abort = new AbortController()
+        const primary = new Error('wall budget exhausted')
+        const hung = Promise.withResolvers<void>()
+        let stopped = false,
+            removed = false
+        const operation = (async () => {
+            let failure: { error: unknown } | undefined
+            try {
+                await withIsolationCancellation(hung.promise, abort.signal)
+            } catch (error) {
+                failure = { error }
+                throw error
+            } finally {
+                await finishIsolationFixture(
+                    [
+                        () => hung.promise,
+                        async () => {
+                            stopped = true
+                        },
+                    ],
+                    async () => {
+                        removed = true
+                    },
+                    failure,
+                    25,
+                )
+            }
+        })()
+        abort.abort(primary)
+        try {
+            await expect(operation).rejects.toBeInstanceOf(AggregateError)
+            await operation.catch((error: AggregateError) => {
+                expect(error.errors[0]).toBe(primary)
+            })
+            expect(stopped).toBe(true)
+            expect(removed).toBe(false)
+        } finally {
+            hung.resolve()
+        }
+    })
     test.skipIf(process.platform === 'win32')(
         'a descendant holding both pipes cannot extend command cleanup indefinitely',
         async () => {
@@ -305,6 +391,7 @@ describe('isolation command ownership and readiness streams', () => {
             const pidFile = join(directory, 'descendant.pid')
             const spawned = spyOn(Bun, 'spawn')
             let deadline: ReturnType<typeof setTimeout> | undefined
+            let descendantExited = false
             const started = performance.now()
             const operation = command(
                 [
@@ -338,12 +425,23 @@ describe('isolation command ownership and readiness streams', () => {
                 expect(child.signalCode).toBe('SIGKILL')
                 const descendant = Number(await readFile(pidFile, 'utf8'))
                 expect(Number.isInteger(descendant) && descendant > 0).toBe(true)
-                expect(process.kill(descendant, 0)).toBe(true)
+                const exitDeadline = performance.now() + 2_000
+                while (!descendantExited && performance.now() < exitDeadline) {
+                    try {
+                        process.kill(descendant, 0)
+                        await Bun.sleep(25)
+                    } catch (error) {
+                        if (!(error instanceof Error && 'code' in error && error.code === 'ESRCH'))
+                            throw error
+                        descendantExited = true
+                    }
+                }
+                expect(descendantExited).toBe(true)
             } finally {
                 clearTimeout(deadline)
                 spawned.mockRestore()
                 const descendant = Number(await readFile(pidFile, 'utf8').catch(() => ''))
-                if (Number.isInteger(descendant) && descendant > 0) {
+                if (!descendantExited && Number.isInteger(descendant) && descendant > 0) {
                     try {
                         process.kill(descendant, 'SIGKILL')
                     } catch {}
