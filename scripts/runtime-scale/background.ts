@@ -1,4 +1,6 @@
+// oxlint-disable no-await-in-loop -- Ownership proof requires ordered census/readiness checks within one deadline.
 import { createHash } from 'node:crypto'
+import assert from 'node:assert/strict'
 import { createSeededRandom, parseReliabilityOptions } from '../runtime-reliability/control.ts'
 import { resourceLimits } from '../runtime-reliability/control.config.ts'
 import type {
@@ -8,6 +10,70 @@ import type {
     BackgroundResourceSample,
     BackgroundSnapshot,
 } from './Types/background.types.ts'
+import type {
+    ComponentRecoveryDependencies,
+    ComponentRecoverySnapshot,
+} from '../runtime-reliability/Types/component-recovery.types.ts'
+
+/** Confirm live, stable owners before injecting a separate component fault. */
+export async function backgroundRecoveryBaseline(
+    dependencies: ComponentRecoveryDependencies,
+    timeoutMs: number = backgroundSlo.recoveryMs,
+): Promise<ComponentRecoverySnapshot> {
+    const now = dependencies.now ?? (() => performance.now())
+    const sleep = dependencies.sleep ?? Bun.sleep
+    const deadline = now() + timeoutMs
+    let startedAt: string | undefined
+    const generation = (snapshot: ComponentRecoverySnapshot) => {
+        assert.equal(snapshot.running, true, 'Baseline must retain the running appliance')
+        startedAt ??= snapshot.startedAt
+        assert.equal(snapshot.startedAt, startedAt, 'Baseline must retain appliance identity')
+        let live = true
+        const owners = (['web', 'controller', 'caddy'] as const).map((role) => {
+            const matches = snapshot.processes.filter((process) => process.role === role)
+            assert.ok(matches.length <= 1, 'Baseline rejects duplicate ' + role + ' owners')
+            const owner = matches[0]
+            if (!owner || owner.state === 'Z' || owner.state === 'X') live = false
+            return owner ? [role, owner.pid, owner.startTicks] : null
+        })
+        return live ? JSON.stringify(owners) : undefined
+    }
+    while (now() <= deadline) {
+        const before = await dependencies.snapshot()
+        const expected = before && generation(before)
+        if (expected && (await dependencies.ready())) {
+            const after = await dependencies.snapshot()
+            if (after && generation(after) === expected && now() <= deadline) return after
+        }
+        const remaining = deadline - now()
+        if (remaining <= 0) break
+        await sleep(Math.min(250, remaining))
+    }
+    throw dependencies.timeoutError('stable background recovery baseline')
+}
+
+export function backgroundFailureDiagnostic(error: unknown) {
+    if (!(error instanceof Error)) return { frames: [] as string[] }
+    const frames = [
+        ...(error.stack ?? '').matchAll(
+            /[\\/](background-run|background|component-recovery)\.ts:(\d{1,7}):(\d{1,7})\b/gu,
+        ),
+    ].map((match) => match[1] + '.ts:' + match[2] + ':' + match[3])
+    const role =
+        error instanceof assert.AssertionError
+            ? (['web', 'controller', 'caddy'] as const).find(
+                  (candidate) =>
+                      error.message.startsWith(
+                          'component recovery requires one ' + candidate + ' process',
+                      ) ||
+                      error.message.startsWith('recovered ' + candidate + ' owner must be live') ||
+                      error.message.startsWith(
+                          'Baseline rejects duplicate ' + candidate + ' owners',
+                      ),
+              )
+            : undefined
+    return { frames: [...new Set(frames)].slice(0, 4), ...(role ? { role } : {}) }
+}
 
 export const backgroundSlo = {
     intervalSeconds: 60,

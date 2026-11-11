@@ -1,10 +1,13 @@
 import { describe, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
+import assert from 'node:assert/strict'
 import {
     backgroundDistribution,
     backgroundMonitoringReport,
     backgroundPolicies,
     backgroundResourceEvidence,
+    backgroundRecoveryBaseline,
+    backgroundFailureDiagnostic,
     parseBackgroundOptions,
 } from '../../../../../../scripts/runtime-scale/background.ts'
 import {
@@ -19,6 +22,115 @@ import { startBackgroundDockerEngine } from '../../../../../../scripts/runtime-s
 import { withInFlightBackgroundHead } from '../../../../../../scripts/runtime-scale/background-network.ts'
 import type { BackgroundResourceSample } from '../../../../../../scripts/runtime-scale/Types/background.types.ts'
 import type { NotificationPayload } from '../../../../lib/Notifications/Types/notifications.types.ts'
+import type {
+    ComponentRecoveryDependencies,
+    ComponentRecoverySnapshot,
+} from '../../../../../../scripts/runtime-reliability/Types/component-recovery.types.ts'
+
+function ownerSnapshot(webTicks = '1', startedAt = 'original'): ComponentRecoverySnapshot {
+    return {
+        running: true,
+        startedAt,
+        processes: [
+            { pid: 10, startTicks: webTicks, uid: 10002, role: 'web', state: 'S' },
+            { pid: 11, startTicks: '2', uid: 10001, role: 'controller', state: 'S' },
+            { pid: 12, startTicks: '3', uid: 10001, role: 'caddy', state: 'S' },
+        ],
+    }
+}
+
+function baselineFixture(states: ComponentRecoverySnapshot[]) {
+    let now = 0
+    const signals: unknown[] = []
+    const dependencies: ComponentRecoveryDependencies = {
+        snapshot: async () => (states.length > 1 ? states.shift() : states[0]),
+        ready: async () => true,
+        signal: async (target) => {
+            signals.push(target)
+        },
+        start: async () => {
+            throw new Error('No baseline may start the appliance')
+        },
+        now: () => now,
+        sleep: async (milliseconds) => {
+            now += milliseconds
+        },
+        timeoutError: (label) => new Error(label),
+    }
+    return {
+        dependencies,
+        signals,
+        advance: (milliseconds: number) => {
+            now += milliseconds
+        },
+    }
+}
+
+test('recovery baseline waits for missing or dead owners before a separate fault is injected', async () => {
+    const missing = ownerSnapshot()
+    missing.processes = missing.processes.filter((process) => process.role !== 'web')
+    const zombie = ownerSnapshot()
+    zombie.processes[0]!.state = 'Z'
+    const f = baselineFixture([missing, zombie, ownerSnapshot('10'), ownerSnapshot('10')])
+    expect(await backgroundRecoveryBaseline(f.dependencies)).toEqual(ownerSnapshot('10'))
+    expect(f.signals).toEqual([])
+    await expect(
+        backgroundRecoveryBaseline(baselineFixture([missing]).dependencies, 500),
+    ).rejects.toThrow('stable background recovery baseline')
+})
+
+test('recovery baseline rechecks the same owners after readiness and rejects duplicate or restarted ownership', async () => {
+    const f = baselineFixture([
+        ownerSnapshot(),
+        ownerSnapshot('10'),
+        ownerSnapshot('10'),
+        ownerSnapshot('10'),
+    ])
+    expect(await backgroundRecoveryBaseline(f.dependencies)).toEqual(ownerSnapshot('10'))
+    const duplicate = ownerSnapshot()
+    duplicate.processes.push({ ...duplicate.processes[2]!, pid: 13 })
+    await expect(
+        backgroundRecoveryBaseline(baselineFixture([duplicate]).dependencies),
+    ).rejects.toThrow('duplicate caddy owners')
+    await expect(
+        backgroundRecoveryBaseline(
+            baselineFixture([ownerSnapshot(), ownerSnapshot('10', 'replacement')]).dependencies,
+        ),
+    ).rejects.toThrow('retain appliance identity')
+})
+
+test('a late successful readiness response cannot extend the recovery baseline budget', async () => {
+    const f = baselineFixture([ownerSnapshot()])
+    f.dependencies.ready = async () => {
+        f.advance(501)
+        return true
+    }
+    await expect(backgroundRecoveryBaseline(f.dependencies, 500)).rejects.toThrow(
+        'stable background recovery baseline',
+    )
+})
+
+test('failure diagnostics export only static source frames and a declared owner role', () => {
+    const error = new assert.AssertionError({
+        actual: 0,
+        expected: 1,
+        operator: 'strictEqual',
+        message: 'component recovery requires one controller process',
+    })
+    error.stack =
+        'private-token-value\n at owner (/private/component-recovery.ts:20:12)\n at recover (/private/component-recovery.ts:73:27)\n at run (C:\\private\\background-run.ts:310:19)\n at driver (/private/credentials.ts:1:1)'
+    expect(backgroundFailureDiagnostic(error)).toEqual({
+        role: 'controller',
+        frames: [
+            'component-recovery.ts:20:12',
+            'component-recovery.ts:73:27',
+            'background-run.ts:310:19',
+        ],
+    })
+    expect(JSON.stringify(backgroundFailureDiagnostic(error))).not.toContain('private')
+    expect(backgroundFailureDiagnostic(new Error('password=never-export'))).toEqual({ frames: [] })
+    expect(backgroundFailureDiagnostic('token=never-export')).toEqual({ frames: [] })
+})
 
 describe('bounded seeded background workload', () => {
     test('keeps large cases explicit, separates monitoring count, rejects unsafe/unbounded options', () => {
