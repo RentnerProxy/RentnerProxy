@@ -7,6 +7,8 @@ import {
 } from '@/server/Foundation/worker-lifecycle.server.ts'
 import { workerObservability } from '@/server/Foundation/worker-observability.ts'
 import type { WorkerLifecycle } from '@/server/Foundation/Types/worker-lifecycle.types.ts'
+import { WorkerDrainTimeoutError } from '@/server/Foundation/Types/worker-lifecycle.types.ts'
+import { runBunScript } from '@/tests/Helpers/runBunScript.ts'
 
 let startWorkerLifecycle: ReturnType<typeof createWorkerLifecycleSupervisor>['startWorkerLifecycle']
 beforeEach(() => {
@@ -28,6 +30,23 @@ afterEach(() => {
 })
 
 describe('worker lifecycle', () => {
+    test('nested stop deadlines retain a running sibling before propagating an actual failure', async () => {
+        const writing = Promise.withResolvers<void>()
+        const [inner] = await Promise.allSettled([drainWorker(writing.promise, 0)])
+        expect(inner?.status).toBe('rejected')
+        if (inner?.status !== 'rejected') throw new Error('Expected the inner deadline')
+        expect(inner.reason).toBeInstanceOf(WorkerDrainTimeoutError)
+        const failure = new Error('actual sibling failure')
+        const settling = settleWorkerTasks([Promise.reject(failure), Promise.reject(inner.reason)])
+        const [outer] = await Promise.allSettled([drainWorker(settling, 0)])
+        expect(outer?.status).toBe('rejected')
+        if (outer?.status !== 'rejected') throw new Error('Expected the outer deadline')
+        expect(outer.reason).toBeInstanceOf(WorkerDrainTimeoutError)
+        writing.resolve()
+        await expect(settling).rejects.toBe(failure)
+        await expect((outer.reason as WorkerDrainTimeoutError).drained).rejects.toBe(failure)
+    })
+
     test('a failed sibling cannot report quiescence while another admitted writer is still running', async () => {
         const writing = Promise.withResolvers<void>()
         let settled = false
@@ -233,6 +252,77 @@ describe('worker lifecycle', () => {
         await write
         expect(completed).toBe(true)
     })
+    for (const event of ['shutdown', 'maintenance'] as const) {
+        for (const phase of ['load', 'apply', 'drift'] as const) {
+            test(`${event} timeout preserves ${phase} ownership until the actual drain`, async () => {
+                const output = await runBunScript(
+                    `
+                    import { mock } from 'bun:test'
+                    mock.module('@tanstack/react-start/server-only', () => ({}))
+                    mock.module('./server/Backups/restore-maintenance-status.server.ts', () => ({ readRestoreMaintenanceObservation: async () => ({ maintenance: null, restoreResults: [] }) }))
+                    mock.module('./server/Foundation/event-loop-observation.ts', () => ({ startEventLoopObservation() {} }))
+                    const { createRuntimeReconciler } = await import('./server/Foundation/runtime-reconciler.server.ts')
+                    const { startWorkerLifecycle, stopWorkersForRestoreMaintenance } = await import('./server/Foundation/worker-lifecycle.server.ts')
+                    const { WorkerDrainTimeoutError } = await import('./server/Foundation/Types/worker-lifecycle.types.ts')
+                    const { workerObservability } = await import('./server/Foundation/worker-observability.ts')
+                    workerObservability.reset()
+                    const gate = Promise.withResolvers()
+                    const entered = Promise.withResolvers()
+                    const phase = '${phase}'
+                    const reconciler = createRuntimeReconciler({
+                        load: async () => {
+                            if (phase === 'load') { entered.resolve(); await gate.promise }
+                            return 'revision'
+                        },
+                        revision: value => value,
+                        apply: async () => {
+                            if (phase === 'apply') { entered.resolve(); await gate.promise }
+                            return true
+                        },
+                        drift: { check: async () => { entered.resolve(); await gate.promise; return false } },
+                    }, { workerId: 'proxy_reconciliation', name: 'fixture', timeoutMs: 100, stopTimeoutMs: 0 })
+                    await startWorkerLifecycle(async () => reconciler, 'proxy_reconciliation', { drainTimeoutMs: 0 })
+                    if (phase === 'drift') {
+                        await reconciler()
+                        const first = reconciler.checkDrift()
+                        if (reconciler.checkDrift() !== first) throw new Error('Overlapping drift ownership')
+                    }
+                    await entered.promise
+                    const pending = []
+                    if ('${event}' === 'maintenance') pending.push(stopWorkersForRestoreMaintenance())
+                    else process.emit('rentnerproxy:shutdown', pending)
+                    const [result] = await Promise.allSettled(pending)
+                    if (result.status !== 'rejected' || !(result.reason instanceof WorkerDrainTimeoutError))
+                        throw new Error('Undrained execution was acknowledged')
+                    if ('${event}' === 'maintenance') {
+                        const [repeated] = await Promise.allSettled([stopWorkersForRestoreMaintenance()])
+                        if (repeated.status !== 'rejected' || repeated.reason !== result.reason)
+                            throw new Error('Repeated maintenance forgot its failed drain')
+                    }
+                    const read = () => workerObservability.snapshot().workers.find(item => item.id === 'proxy_reconciliation')
+                    const timedOut = read()
+                    gate.resolve()
+                    await result.reason.drained
+                    const drained = read()
+                    console.log(JSON.stringify({
+                        timedOut: { state: timedOut.state, running: timedOut.running, drainTimeout: timedOut.counters.drainTimeout },
+                        drained: { state: drained.state, running: drained.running, drainTimeout: drained.counters.drainTimeout },
+                    }))
+                `,
+                    { cwd: new URL('../../..', import.meta.url) },
+                )
+                expect(JSON.parse(output.trim().split('\n').at(-1)!)).toEqual({
+                    timedOut: { state: 'stopping', running: 1, drainTimeout: 1 },
+                    drained: {
+                        state: event === 'maintenance' ? 'maintenance_paused' : 'stopped',
+                        running: 0,
+                        drainTimeout: 1,
+                    },
+                })
+            })
+        }
+    }
+
     test('shutdown waits for a worker that is still loading and stops it once', async () => {
         const loaded = Promise.withResolvers<WorkerLifecycle>()
         const stopped = Promise.withResolvers<void>()

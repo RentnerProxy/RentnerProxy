@@ -2,8 +2,40 @@ import { describe, expect, test } from 'bun:test'
 
 import { workerObservability } from '@/server/Foundation/worker-observability.ts'
 import { observeWorkerOperation } from '@/server/Foundation/worker-operation.ts'
+import { ResourceAdmissionError } from '@/server/Foundation/resource-admission.ts'
 
 describe('observed worker execution', () => {
+    test('unexecuted completions and resource admission preserve a failed lane until actual recovery', async () => {
+        workerObservability.reset()
+        workerObservability.begin('host_monitoring')('failure')
+        await observeWorkerOperation(
+            'host_monitoring',
+            async () => undefined,
+            undefined,
+            () => ({ outcome: 'deferred', recoverLane: false }),
+        )
+        await Promise.all(
+            (['busy', 'deadline', 'cancelled'] as const).map((reason) => {
+                const error = new ResourceAdmissionError(reason)
+                return expect(
+                    observeWorkerOperation('host_monitoring', async () => {
+                        throw error
+                    }),
+                ).rejects.toBe(error)
+            }),
+        )
+        expect(
+            workerObservability.snapshot().workers.find((item) => item.id === 'host_monitoring'),
+        ).toMatchObject({
+            state: 'degraded',
+            degradedLanes: ['execution'],
+            counters: { failure: 1, deferred: 3, cancelled: 1, success: 0 },
+        })
+        await observeWorkerOperation('host_monitoring', async () => undefined)
+        expect(
+            workerObservability.snapshot().workers.find((item) => item.id === 'host_monitoring'),
+        ).toMatchObject({ state: 'idle', degradedLanes: [] })
+    })
     test('a combined deadline abort records a dependency failure while shutdown stays cancelled', async () => {
         workerObservability.reset()
         const shutdown = new AbortController()

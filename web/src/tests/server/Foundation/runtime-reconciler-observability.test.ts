@@ -63,13 +63,13 @@ for (const recovery of ['new-revision', 'manual-retry'] as const) {
                     expect(skipped.degradedLanes).toEqual(['execution'])
                     expect(skipped.running).toBe(0)
                     expect(skipped.counters).toMatchObject({
-                        started: index + 2,
+                        started: 2 * index + 3,
                         failure: 1,
-                        deferred: index + 1,
+                        deferred: 2 * (index + 1),
                         cancelled: 0,
                         success: 0,
                     })
-                    expect(skipped.duration.count).toBe(index + 2)
+                    expect(skipped.duration.count).toBe(2 * index + 3)
                     expect(skipped.lastSuccessAt).toBeNull()
                     expect(skipped.lastFailureAt).toBe(initial.lastFailureAt)
                 }
@@ -79,7 +79,7 @@ for (const recovery of ['new-revision', 'manual-retry'] as const) {
                     await reconciler.checkDrift()
                     await Bun.sleep(0)
                     expect(read().counters.failure).toBe(2)
-                    expect(read().duration.count).toBe(5)
+                    expect(read().duration.count).toBe(9)
                     failLoad = false
                 }
                 accepted = true
@@ -104,3 +104,54 @@ for (const recovery of ['new-revision', 'manual-retry'] as const) {
         },
     )
 }
+
+test('drift outages degrade their own lane and successful drift does not recover rejected applies', async () => {
+    workerObservability.reset()
+    const warnings = spyOn(console, 'warn').mockImplementation(() => undefined)
+    let unavailable = false
+    let rejected = false
+    const reconciler = createRuntimeReconciler(
+        {
+            load: async () => 'revision',
+            revision: (snapshot) => snapshot,
+            apply: async () =>
+                rejected
+                    ? { applied: false, retryable: false, code: 'invalid', status: 400 }
+                    : true,
+            drift: {
+                check: async () => {
+                    if (unavailable) throw new Error('private observation payload')
+                    return false
+                },
+            },
+        },
+        { workerId: 'proxy_reconciliation', name: 'fixture', timeoutMs: 100, stopTimeoutMs: 100 },
+    )
+    try {
+        expect(await reconciler()).toBe('applied')
+        unavailable = true
+        await reconciler.checkDrift()
+        await reconciler.checkDrift()
+        expect(read()).toMatchObject({
+            state: 'degraded',
+            degradedLanes: ['collection'],
+            counters: { failure: 2, success: 1 },
+        })
+        rejected = true
+        expect(await reconciler()).toBe('pending')
+        unavailable = false
+        await reconciler.checkDrift()
+        expect(read()).toMatchObject({
+            state: 'degraded',
+            degradedLanes: ['execution'],
+            counters: { failure: 3, success: 1, deferred: 1 },
+        })
+        rejected = false
+        expect(await reconciler()).toBe('applied')
+        expect(read()).toMatchObject({ state: 'idle', degradedLanes: [] })
+    } finally {
+        await reconciler.stop()
+        warnings.mockRestore()
+        workerObservability.reset()
+    }
+})
