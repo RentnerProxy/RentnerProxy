@@ -93,6 +93,8 @@ export default function useRestoreProgress(beforeHide?: () => void) {
                 return
             const pendingRetry = retryOwner.current
             if (pendingRetry) {
+                if (pendingRetry.owner === previous &&
+                    JSON.stringify(pendingRetry.target) === JSON.stringify(next)) return
                 if (previous?.id !== next.id && pendingRetry.target.id !== next.id)
                     retireOperation(pendingRetry.target.id)
                 cancelRefreshRetry(pendingRetry.target.id !== next.id)
@@ -159,11 +161,17 @@ export default function useRestoreProgress(beforeHide?: () => void) {
             // Preserve the route and its component state below the screen. A disconnect
             // or empty snapshot cannot confirm that destructive replacement finished.
             if (!previous) beforeHide?.()
-            if (historical) historicalBlocker.current = next.id
+            if (historical) {
+                historicalBlocker.current = next.id
+                refreshRequired.current = true
+                setRefreshPending(true)
+            }
             else if (previous?.id !== next.id) historicalBlocker.current = null
             current.current = next
             setMaintenance(next)
             if (next.state !== 'succeeded' || completing.current === next.id) return
+            refreshRequired.current = true
+            setRefreshPending(true)
             completing.current = next.id
             try {
                 await queryClient.cancelQueries()
