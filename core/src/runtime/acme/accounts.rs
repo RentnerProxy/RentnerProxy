@@ -23,6 +23,14 @@ struct PendingAccountRegistration {
 }
 
 impl ProxyRuntime {
+    /// Obtains the environment's ACME account under the registration mutex.
+    ///
+    /// Optional trust-root file reads run on the bounded storage worker; account network
+    /// requests remain asynchronous outside that worker.
+    ///
+    /// # Errors
+    /// Returns `AcmeFailed` for directory, trust-root, or transport setup failures and
+    /// propagates account restoration, registration, and persistence errors.
     pub(super) async fn acme_account(
         self: &Arc<Self>,
         id: &str,
@@ -52,6 +60,14 @@ impl ProxyRuntime {
         .await
     }
 
+    /// Opens an observed ACME account and returns its identity and directory URL.
+    ///
+    /// When resuming, the saved identity must match before any account network operation.
+    /// Registration is serialized, and local account/root-file I/O uses storage workers.
+    ///
+    /// # Errors
+    /// Returns `StoreUnavailable` for missing, invalid, or mismatched stored credentials;
+    /// propagates account, transport, and persistence failures.
     pub(super) async fn manual_acme_account(
         self: &Arc<Self>,
         id: &str,
@@ -97,6 +113,15 @@ impl ProxyRuntime {
         Ok((account, identity, directory))
     }
 
+    /// Restores credentials or registers using a durably saved pending account key.
+    ///
+    /// Callers serialize registration. Persisting the key before the network request lets
+    /// a retry reuse the same account identity after an interrupted registration; network
+    /// awaits remain outside the bounded local-store operations.
+    ///
+    /// # Errors
+    /// Returns `StoreUnavailable` for invalid/mismatched stored state or persistence
+    /// failure, and `AcmeFailed` for key generation or ACME account/contact requests.
     async fn acme_account_with_builder(
         self: &Arc<Self>,
         request: &CertificateIssueRequest,

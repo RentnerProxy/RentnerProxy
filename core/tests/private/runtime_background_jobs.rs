@@ -11,6 +11,8 @@ use tokio::{
     time::{Instant, timeout},
 };
 
+/// Fills tracked admission, closes the gate while preparation is paused, and verifies shutdown
+/// waits for the admitted jobs while refusing all subsequent work.
 #[tokio::test]
 async fn admission_is_bounded_and_closes_before_a_preparing_job_finishes() {
     let jobs = Arc::new(BackgroundJobs::new());
@@ -67,6 +69,8 @@ impl Drop for Dropped {
     }
 }
 
+/// Keeps a job pending past the shutdown deadline and verifies aborting its async future drops
+/// its lifetime witness and returns the semaphore permit.
 #[tokio::test]
 async fn deadline_aborts_owned_work_and_releases_its_permit() {
     let jobs = BackgroundJobs::new();
@@ -90,6 +94,8 @@ async fn deadline_aborts_owned_work_and_releases_its_permit() {
     assert_eq!(permit.available_permits(), 1);
 }
 
+/// Panics inside owned work to verify supervision records a sanitized failure while task
+/// admission and semaphore permits are released for following work.
 #[tokio::test]
 async fn a_panicking_job_is_observed_and_releases_admission_and_permits() {
     let output = Captured(Arc::new(Mutex::new(Vec::new())));

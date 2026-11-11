@@ -85,6 +85,10 @@ fn provider_error(error: CertificateError) -> Error {
 }
 
 impl Store {
+    /// Builds a permission-check provider using the stored entry and current key.
+    ///
+    /// Credential failures propagate; provider construction errors are mapped to
+    /// connection verification errors without performing a DNS operation.
     async fn check_provider(&self, entry: &Entry, zone: &str) -> Result<DnsProvider, Error> {
         let config = match super::resolve_provider(None, Some(entry))? {
             super::ProviderId::Hetzner => DnsProviderConfig::Hetzner {
@@ -104,6 +108,10 @@ impl Store {
         DnsProvider::for_connection_check(config, &endpoint).map_err(provider_error)
     }
 
+    /// Commits a revision-checked verification outcome and its checked timestamp.
+    ///
+    /// Success records all selected zones as verified; failures clear that list and
+    /// distinguish denied access from other failures. Persistence errors propagate.
     async fn finish_check(
         &self,
         id: &str,
@@ -145,6 +153,10 @@ impl Store {
         Ok(metadata)
     }
 
+    /// Commits removal of a completed zone cleanup intent at the expected revision.
+    ///
+    /// A revision conflict preserves the current registry; persistence failures leave
+    /// the cache invalidated for authoritative reload.
     async fn remove_check(&self, id: &str, revision: u32, zone_id: &str) -> Result<(), Error> {
         let mut state = self.lock().await?;
         let registry = Self::registry(&mut state)?;
@@ -161,6 +173,10 @@ impl Store {
         self.commit(state, next).await
     }
 
+    /// Cleans each persisted DNS intent before removing its registry ownership record.
+    ///
+    /// Stops on provider, revision or storage failure so remaining intents can be
+    /// retried; successful earlier cleanups may already have been committed.
     async fn cleanup_checks(&self, entry: &Entry) -> Result<(), Error> {
         for check in &entry.pending_checks {
             self.check_provider(entry, &check.zone_id)
@@ -207,6 +223,11 @@ impl Store {
         }
     }
 
+    /// Checks permitted zones and probes write access with operation-owned TXT records.
+    ///
+    /// Old intents are cleaned first; new intents and cleared verification are persisted
+    /// before provider writes. Each intent is removed only after cleanup succeeds, so
+    /// cancellation or failure leaves ownership available for recovery.
     async fn verify_inner(&self, mut entry: Entry) -> Result<(), Error> {
         self.cleanup_checks(&entry).await?;
         let provider = super::resolve_provider(None, Some(&entry))?;

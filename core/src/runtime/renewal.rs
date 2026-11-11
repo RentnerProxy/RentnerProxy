@@ -11,6 +11,12 @@ const MAX_ACME_STARTS_PER_TICK: usize = 4;
 static PERMISSION_RECOVERY: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
 impl ProxyRuntime {
+    /// Starts the single minute-based certificate recovery and renewal loop.
+    ///
+    /// Returns without spawning when already started or stopping. The runtime retains
+    /// the task handle for shutdown; each tick dispatches bounded ACME work and at most
+    /// one concurrent permission-recovery job. Store expiry failures are best-effort,
+    /// and stopping checks prevent further scheduled dispatch.
     pub(crate) async fn start_renewal_scheduler(
         self: &Arc<Self>,
         challenges: crate::server::challenges::ChallengeStore,

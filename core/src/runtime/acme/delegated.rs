@@ -7,6 +7,14 @@ use crate::runtime::{
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use tokio::time::{Instant, sleep, timeout_at};
 
+/// Checks the active delegated operation's persisted cancellation request.
+///
+/// Success permits the caller to proceed at this checkpoint; it does not reserve
+/// against a later cancellation or reverse a provider mutation already accepted.
+///
+/// # Errors
+/// Returns `AcmeCancelled` for a requested cancellation, `OperationInProgress` when
+/// there is no current operation, or the certificate-store lookup error.
 pub(super) async fn check_cancelled(
     runtime: &Arc<ProxyRuntime>,
     id: &str,
@@ -22,6 +30,16 @@ pub(super) async fn check_cancelled(
     Ok(())
 }
 
+/// Persists cleanup authority before presenting one delegated DNS proof.
+///
+/// Mutates `intents` to retain ambiguous writes and clears their unconfirmed flag only
+/// for a definitive provider outcome. Provider I/O runs between bounded store updates.
+/// Cancellation is checked before and after presentation; an error after a write does
+/// not imply the write was rolled back.
+///
+/// # Errors
+/// Rejects replay of an identical ambiguous write with `DnsCleanupFailed` and
+/// propagates cancellation, persistence, validation, and provider errors.
 pub(super) async fn present(
     runtime: &Arc<ProxyRuntime>,
     id: &str,
@@ -93,6 +111,14 @@ pub(super) async fn recheck(
     Ok(())
 }
 
+/// Polls delegated proof visibility for up to sixty seconds.
+///
+/// Checks persisted cancellation between attempts and retries lookup/propagation
+/// failures every two seconds. Success means the supplied records were observed.
+///
+/// # Errors
+/// Returns cancellation or permanent validation errors immediately; at the deadline,
+/// returns the latest lookup/propagation error rather than discarding its meaning.
 pub(super) async fn wait_for_records(
     intents: &[DnsRecordIntent],
     environment: CertificateEnvironment,

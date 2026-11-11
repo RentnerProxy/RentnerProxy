@@ -1,6 +1,8 @@
 use super::*;
 use std::time::Duration;
 
+/// Pauses a cold registry read on a single-thread runtime and cancels its caller, proving both
+/// reactor responsiveness and serialization of the next reader until the owned I/O finishes.
 #[tokio::test(flavor = "current_thread")]
 async fn cold_load_keeps_runtime_responsive_and_cancelled_load_serialized() {
     let store = Arc::new(Store::new(directory()));
@@ -30,6 +32,8 @@ async fn cold_load_keeps_runtime_responsive_and_cancelled_load_serialized() {
     );
 }
 
+/// Cancels a commit waiter at the blocking I/O boundary and checks that a following mutation sees
+/// the committed revision only after the original worker has published it.
 #[tokio::test(flavor = "current_thread")]
 async fn cancelled_commit_retains_serialization_and_publishes_before_following_mutation() {
     let (store, server, _) = fixture().await;
@@ -73,6 +77,8 @@ async fn cancelled_commit_retains_serialization_and_publishes_before_following_m
     server.abort();
 }
 
+/// Forces an error after a cancelled commit has renamed its file and verifies that the next read
+/// reloads authoritative disk state rather than retaining the invalidated cache.
 #[tokio::test(flavor = "current_thread")]
 async fn cancelled_uncertain_commit_forces_authoritative_reload() {
     let (store, server, _) = fixture().await;
@@ -103,6 +109,8 @@ async fn cancelled_uncertain_commit_forces_authoritative_reload() {
     server.abort();
 }
 
+/// Holds a key-file read outside the single Tokio thread, then cancels its waiter and verifies that
+/// another key read cannot bypass the still-running worker's I/O admission.
 #[tokio::test(flavor = "current_thread")]
 async fn key_read_keeps_runtime_responsive_and_cancellation_retains_admission() {
     let mut store = Store::new(directory());
