@@ -142,6 +142,7 @@ export async function requestSupportRpc(
     }
 }
 
+/** Extract only built metadata for the named support handler, deduplicating identical references without executing asset contents. */
 function supportRpcIds(sources: readonly string[]) {
     return new Set(
         sources.flatMap((source) =>
@@ -154,11 +155,13 @@ function supportRpcIds(sources: readonly string[]) {
     )
 }
 
+/** Return the support handler ID only when built metadata identifies exactly one unique candidate. */
 export function findSupportRpcId(sources: readonly string[]): string | null {
     const ids = supportRpcIds(sources)
     return ids.size === 1 ? [...ids][0]! : null
 }
 
+/** Bound asset count and bytes while resolving exactly one support RPC handler; failures return fixed diagnostic categories only. */
 export async function readSupportRpcMetadata(directory: string) {
     try {
         const names = (await readdir(directory))
@@ -194,6 +197,7 @@ export async function readSupportRpcMetadata(directory: string) {
     }
 }
 
+/** Read only the owned fixture session and query the actual authenticated web process; never substitute one-shot fixture singleton metrics. */
 export async function probeActualWebWorkers() {
     const metadata = await readSupportRpcMetadata('/opt/rentnerproxy/web/web/dist/server/assets')
     if (!('id' in metadata)) return metadata

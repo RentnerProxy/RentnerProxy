@@ -71,7 +71,9 @@ export function planBackupAuditBatch(cursor: BackupAuditCursor, status: ManagedB
 
 class BackupAuditCursorChanged extends Error {}
 
+/** Fetch root status outside SQL permits, revalidate the cursor before committing, and acknowledge producer disposal only after durable commit. */
 export function createBackupAuditIngestor(dependencies: BackupAuditDependencies) {
+    /** Fence a two-phase snapshot by the original cursor and advance only the admitted prefix; cancellation prevents late acknowledgement. */
     async function ingest(signal: AbortSignal) {
         signal.throwIfAborted()
         const expectedCursor = await dependencies.transaction(async (transaction) => {

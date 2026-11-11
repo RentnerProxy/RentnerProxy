@@ -88,6 +88,7 @@ export const contentionContract = {
         'One additional root-owned Bun receiver process inside the unchanged appliance cgroup; its CPU/RSS/PIDs/connections count against the baseline',
 } as const
 
+/** Require observed overlapping work, actual web-process metrics, bounded SQL pressure, and native progress; missing evidence never supports a capacity claim. */
 export function buildContentionReport(
     samples: ContentionSample[],
     baseline: { attempts: number; successes: number; discoveryRevision: number },

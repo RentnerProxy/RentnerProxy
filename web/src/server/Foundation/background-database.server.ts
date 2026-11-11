@@ -25,6 +25,7 @@ if (
 /** Only SQL belongs inside this boundary; network calls and lease ownership never occupy a waiting connection. */
 export function getBackgroundDatabase(resource: BackgroundDatabaseClass) {
     return {
+        /** Acquire the class permit before opening SQL and apply transaction-local statement/lock/transaction deadlines before invoking the caller. */
         transaction<T>(
             operation: (transaction: Transaction) => Promise<T>,
             options?: Parameters<Database['transaction']>[1],

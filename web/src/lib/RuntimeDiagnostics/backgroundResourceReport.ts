@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { BACKGROUND_DATABASE_POLICY } from '@/config/background-resources.config.ts'
 
 const count = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER)
+/** Validate only safe nonnegative counters while enforcing the configured class running and pending ceilings. */
 function usage(policy: { readonly running: number; readonly pending: number }) {
     return z.object({
         running: count.max(policy.running),

@@ -9,6 +9,7 @@ import {
 } from '../../web/src/tests/server/Notifications/Types/tls-test.types.ts'
 import type { NotificationMailClient } from '../../web/src/server/Mail/Types/notification-mail.types.ts'
 
+/** Own configurable loopback SMTP/webhook receivers, track active transport overlap, and distinguish attempts from accepted identities. */
 export async function startBackgroundNotificationReceivers(
     options: { smtpPort?: number; webhookPort?: number; delayMs?: number } = {},
 ) {
@@ -18,6 +19,7 @@ export async function startBackgroundNotificationReceivers(
     const slowPayloadIds = new Set<string>()
     const kinds = { email: new Set<string>(), webhook: new Set<string>() }
     let activeWebhooks = 0
+    /** Normalize stable payload identity while keeping per-transport unique acceptance separate from repeated receiver attempts. */
     const record = (id: string, kind: keyof typeof kinds) => {
         const stable = receiverIdentity.get(id) ?? id
         accepted.add(stable)
@@ -27,6 +29,7 @@ export async function startBackgroundNotificationReceivers(
     const webhook = Bun.serve({
         hostname: '127.0.0.1',
         port: options.webhookPort ?? 0,
+        /** Accept only webhook POSTs with identities, count active delayed sends, and record acceptance before returning success. */
         async fetch(request) {
             if (request.method !== 'POST') return new Response(null, { status: 405 })
             const input: unknown = await request.json()

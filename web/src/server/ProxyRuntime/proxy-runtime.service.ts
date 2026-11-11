@@ -27,6 +27,7 @@ export async function getProxyRuntimeSnapshotService(): Promise<ProxyRuntimeSnap
     })
 }
 
+/** Read one repeatable configuration snapshot through the selected critical/notification partition without routing background reads through foreground capacity. */
 export async function getBackgroundProxyRuntimeSnapshotService(
     resource: 'critical' | 'notifications' = 'critical',
 ): Promise<ProxyRuntimeSnapshot> {

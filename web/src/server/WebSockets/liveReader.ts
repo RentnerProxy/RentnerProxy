@@ -49,6 +49,7 @@ function abortable<T>(
     }
 }
 
+/** Bound response/body observation by cancellation and payload size while tracking underlying promises for truthful permit release and drain. */
 export async function readSubscriptionSnapshot(
     subscription: LiveTopicSubscription,
     signal: AbortSignal,
@@ -109,6 +110,7 @@ export async function readSubscriptionSnapshot(
     }
 }
 
+/** Authorize through the bounded snapshot reader with a dedicated handshake deadline and expose underlying work to the shared resource owner. */
 export async function readLiveHandshake(
     connection: LiveConnectionData,
     snapshotPath: string,

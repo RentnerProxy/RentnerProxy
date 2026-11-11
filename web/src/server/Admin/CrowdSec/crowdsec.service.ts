@@ -71,6 +71,7 @@ function runtimeMatches(
     )
 }
 
+/** Load configuration through reserved critical SQL capacity, then derive the controller request after releasing the database permit. */
 async function loadReconcileSnapshot(): Promise<ReconcileSnapshot> {
     const stored = await getBackgroundDatabase('critical').transaction(
         (transaction) => readStoredCrowdSecConfiguration(transaction),

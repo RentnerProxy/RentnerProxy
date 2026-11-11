@@ -45,6 +45,7 @@ export async function withContentionCleanup<T>(
     return outcome.value
 }
 
+/** Measure actual overlapping appliance workers after arming the event burst, retain exact native-progress observation time, and always drain seeded fixture state. */
 export async function runContentionWindow(
     harness: Awaited<ReturnType<typeof createHarness>>,
     options: BackgroundOptions,
@@ -78,6 +79,7 @@ export async function runContentionWindow(
                 ),
             ),
         )
+    /** Read the fixed recovery worker counters and timestamp this observation so later snapshot collection cannot inflate its progress latency. */
     const native = async () => {
         const response = await context.controller('/internal/v1/background/status')
         assert.equal(response.status, 200)
@@ -91,6 +93,7 @@ export async function runContentionWindow(
             observedAt: performance.now(),
         }
     }
+    /** Measure authenticated SSR in the real web process with a bounded response body and deadline, rejecting redirects or unsuccessful responses. */
     const management = async () => {
         const script = `const state=JSON.parse(await Bun.file('/tmp/rentnerproxy-reliability-fixture.json').text());const start=performance.now();const r=await fetch('http://127.0.0.1:3000/proxy-hosts',{headers:{cookie:'rentnerproxy_session='+state.session},signal:AbortSignal.timeout(3000),redirect:'manual'});if(r.body){const reader=r.body.getReader();let bytes=0;while(true){const part=await reader.read();if(part.done)break;bytes+=part.value.byteLength;if(bytes>4*1024*1024){await reader.cancel();throw new Error('bounded management body exceeded')}}}process.stdout.write(JSON.stringify({status:r.status,elapsedMs:performance.now()-start}));`
         const value = JSON.parse(

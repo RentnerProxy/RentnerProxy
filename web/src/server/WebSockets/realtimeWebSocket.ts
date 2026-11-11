@@ -31,6 +31,7 @@ import {
 } from '@/server/Foundation/resource-admission.ts'
 import { drainWorker } from '@/server/Foundation/worker-drain.ts'
 
+/** Share bounded snapshot admission across upgrades and subscriptions and retain one terminal shutdown/drain result. */
 export function createLiveWebSocketRuntime(
     options: LiveWebSocketRuntimeOptions,
 ): LiveWebSocketRuntime {
@@ -93,6 +94,7 @@ export function createLiveWebSocketRuntime(
         idleTimeoutSeconds,
     })
 
+    /** Reserve connection capacity before asynchronous origin/auth checks, acquire realtime read capacity, and release failed upgrades and actual work separately. */
     async function handle(
         request: Request,
         server: Bun.Server<LiveSocketData>,
@@ -177,6 +179,7 @@ export function createLiveWebSocketRuntime(
 
     const unsubscribeFromChanges = subscribeToApplicationChanges(() => manager.sampleAll())
 
+    /** Latch shutdown before closing connections and await actual admitted snapshot work; repeated callers receive the same bounded drain result. */
     function shutdown(): Promise<void> {
         if (shutdownResult) return shutdownResult
         shuttingDown = true

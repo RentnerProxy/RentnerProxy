@@ -27,6 +27,7 @@ import type { DiscoveryRegistry } from '../../web/src/lib/DockerDiscovery/Types/
 const endpoint = 'http://127.0.0.1:9017'
 const control = 'http://127.0.0.1:9018'
 
+/** Derive eight stable detached discovery identities from the seed so event reconciliation cannot adopt extra proxy routes. */
 export function contentionDetachedOwners(seed: number) {
     return Array.from({ length: 8 }, (_, index) => {
         const id = createHash('sha256').update(`docker:${seed}:${index}`).digest('hex')
@@ -51,6 +52,7 @@ type Saved = {
     >['configuration']['settings']
 }
 
+/** Require unused disposable settings, save prior state, seed real workers, and restore only after notification admission and in-flight sends drain. */
 export async function backgroundContentionFixture(context: FixtureContext) {
     const database = context.database
     const path = '/tmp/background-contention-' + context.command.runId + '.json'

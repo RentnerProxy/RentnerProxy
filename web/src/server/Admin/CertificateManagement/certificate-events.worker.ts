@@ -65,6 +65,7 @@ function cursorIsAtLeast(candidate: Cursor, current: Cursor): boolean {
     )
 }
 
+/** Read the cursor through the reserved critical SQL class while preserving invalid durable input as the expected write fence. */
 async function readCursor(): Promise<CursorSnapshot> {
     const rows = await getBackgroundDatabase('critical').transaction(
         async (transaction) =>
@@ -117,6 +118,7 @@ function eventResult(event: CertificateEventMetadata): 'success' | 'failure' {
         : 'success'
 }
 
+/** Bound both age-based and excess-row deletes to half the per-pass retention budget each. */
 async function pruneEventReceiptsInTransaction(transaction: AuthTransaction): Promise<void> {
     const pageSize = BACKGROUND_RESOURCE_ENVELOPE.certificates.receiptDeletesPerPass / 2
     const cutoff = new Date(
@@ -142,6 +144,7 @@ async function pruneEventReceiptsInTransaction(transaction: AuthTransaction): Pr
     `)
 }
 
+/** Commit event receipts and cursor under the critical SQL partition with serialization and expected-cursor fencing; retention runs separately. */
 async function persistFetchedBatch(batch: FetchedEvents): Promise<boolean> {
     return getBackgroundDatabase('critical').transaction(async (transaction) => {
         await transaction.execute(
@@ -219,6 +222,7 @@ async function persistFetchedBatch(batch: FetchedEvents): Promise<boolean> {
     })
 }
 
+/** Commit critical event progress before best-effort housekeeping; retention failure cannot roll back or occupy the reserved critical SQL slot. */
 export async function synchronizeCertificateEventsOnce(signal?: AbortSignal): Promise<boolean> {
     signal?.throwIfAborted()
     const cursor = await readCursor()

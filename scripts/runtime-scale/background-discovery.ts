@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { createSeededRandom } from '../runtime-reliability/control.ts'
 
+/** Serve the bounded seeded Docker inventory with optional delayed event arming and detached-only mutations; caller owns shutdown. */
 export function startBackgroundDockerEngine(
     seed: number,
     options: { port?: number; initiallyPaused?: boolean; mutateDetachedInventory?: boolean } = {},
@@ -40,6 +41,7 @@ export function startBackgroundDockerEngine(
         inspections = 0
     let armed = !options.initiallyPaused
     const waiting = new Set<ReadableStreamDefaultController<Uint8Array>>()
+    /** Emit the next 64 events, optionally vary detached inventory, and force reconnects until the final batch is delivered. */
     const send = (controller: ReadableStreamDefaultController<Uint8Array>) => {
         const batch = events.slice(emitted, emitted + 64)
         emitted += batch.length
@@ -100,6 +102,7 @@ export function startBackgroundDockerEngine(
         ids: inventory.map((item) => item.Id),
         events,
         waitingStreams: () => waiting.size,
+        /** Release waiting event streams once the measured workload is active and clear their retained controllers. */
         arm() {
             armed = true
             for (const controller of waiting) send(controller)

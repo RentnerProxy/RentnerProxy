@@ -53,6 +53,7 @@ const complete = createHostMonitoringBatcher<HostMonitoringCompletion, boolean>(
 const release = createHostMonitoringBatcher<HostMonitoringClaim, boolean>({
     size: HOST_MONITORING_LIMITS.workerConcurrency,
     delayMs: 0,
+    /** Release a cancelled probe batch under token/version fences and publish only when at least one owned lease was actually released. */
     run: async (claims) => {
         const results = await releaseHostMonitoringClaims(claims)
         if (results.some(Boolean)) publishApplicationChange()

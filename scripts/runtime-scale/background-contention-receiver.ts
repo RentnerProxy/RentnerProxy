@@ -1,6 +1,7 @@
 import { startBackgroundNotificationReceivers } from './background-receivers.ts'
 import { startBackgroundDockerEngine } from './background-discovery.ts'
 
+/** Own slow private notification receivers and a paused deterministic Docker source; the control server arms the burst and shuts down all owned listeners. */
 export async function startContentionReceivers(
     seed: number,
     ports = { smtp: 2525, webhook: 9016, docker: 9017, control: 9018 },
@@ -15,6 +16,7 @@ export async function startContentionReceivers(
         initiallyPaused: true,
         mutateDetachedInventory: true,
     })
+    /** Stop discovery/control admission before awaiting notification receiver closure. */
     const stop = async () => {
         discovery.stop()
         control.stop(true)
@@ -23,6 +25,7 @@ export async function startContentionReceivers(
     const control = Bun.serve({
         hostname: '127.0.0.1',
         port: ports.control,
+        /** Expose only fixture status, one burst-arm action, and delayed shutdown acknowledgement on the loopback control listener. */
         async fetch(request) {
             const path = new URL(request.url).pathname
             if (request.method === 'GET' && path === '/status')

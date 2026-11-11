@@ -8,6 +8,7 @@ import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts
 import { lockProxyRuntimeSettings } from '@/server/ProxyRuntime/proxy-runtime-settings.ts'
 import type { CertificateJobRow } from './Types/certificate-jobs-storage.types.ts'
 
+/** Use reserved critical SQL capacity to claim one oldest eligible job with a fresh lease token while preserving manual-DNS attempt accounting. */
 export async function claimCertificateJob(): Promise<CertificateJobRow | null> {
     return getBackgroundDatabase('critical').transaction(async (transaction) => {
         await lockProxyRuntimeSettings(transaction)
@@ -45,6 +46,7 @@ export async function claimCertificateJob(): Promise<CertificateJobRow | null> {
     })
 }
 
+/** Run SQL only under a current unexpired job token and the critical permit; stale or missing claims perform no action. */
 export async function withCertificateJobClaim<T>(
     job: CertificateJobRow,
     action: (transaction: AuthTransaction, current: CertificateJobRow) => Promise<T>,

@@ -37,6 +37,7 @@ import {
 import { nextNotificationDeliveryAt } from './notification-scheduling.ts'
 import { workerObservability } from '@/server/Foundation/worker-observability.ts'
 
+/** Read one repeatable queue snapshot through the notification SQL partition; disabled/restored queues retain unavailable metrics. */
 export async function readNextNotificationDeliveryAt(): Promise<number | null> {
     const sample = await getBackgroundDatabase('notifications').transaction(
         async (transaction) => {
@@ -62,6 +63,7 @@ export async function readNextNotificationDeliveryAt(): Promise<number | null> {
     return sample.nextDueAt
 }
 
+/** Use notification capacity for read-only disabled checks and configuration-before-runtime locking before durable collection admission. */
 export async function claimNotificationCollection(): Promise<NotificationCollectionClaim | null> {
     // Keep the disabled default read-only, including before the first channel is configured.
     const snapshot = await getBackgroundDatabase('notifications').transaction(
@@ -91,6 +93,7 @@ export async function claimNotificationCollection(): Promise<NotificationCollect
     })
 }
 
+/** Consume the collection fence under notification SQL admission and atomically persist reconciled availability and notification effects. */
 export async function commitNotificationCollection(
     claim: NotificationCollectionClaim,
     batch: NotificationCollectedBatch,
@@ -120,6 +123,7 @@ export async function commitNotificationCollection(
     })
 }
 
+/** Claim durable work under the notification partition and return only a channel matching its admitted revision; transport runs after SQL release. */
 export async function claimNextNotificationDelivery(): Promise<NotificationDeliveryClaim | null> {
     const snapshot = await getBackgroundDatabase('notifications').transaction(
         readNotificationConfiguration,
@@ -155,6 +159,7 @@ export async function claimNextNotificationDelivery(): Promise<NotificationDeliv
     })
 }
 
+/** Apply a delivery result under its lease token and current configuration within notification SQL capacity, writing only changed durable state. */
 export async function acknowledgeNotificationDelivery(
     leaseToken: string,
     result: NotificationDeliveryResult,
@@ -179,6 +184,7 @@ export async function acknowledgeNotificationDelivery(
     })
 }
 
+/** Recheck live lease, channel revision, resource access, and owner permissions in a read-only notification transaction before transport. */
 export async function authorizeNotificationDelivery(
     claim: NotificationDeliveryClaim,
 ): Promise<NotificationDeliveryAuthorization | null> {

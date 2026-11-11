@@ -223,6 +223,7 @@ async function clearLease(
         .where(eq(hostCheckPolicies.id, policy.id))
 }
 
+/** Advance to the next future cadence boundary using the database clock, avoiding immediate catch-up work after release or completion. */
 function nextScheduledCheck(policy: HostMonitoringPolicy) {
     return sql`date_bin(${policy.intervalSeconds} * interval '1 second', clock_timestamp(), ${policy.nextCheckAt}::timestamptz) + ${policy.intervalSeconds} * interval '1 second'`
 }

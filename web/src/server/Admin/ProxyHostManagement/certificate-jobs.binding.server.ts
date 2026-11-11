@@ -116,6 +116,7 @@ export async function bindIssuedJobCertificate(
     )
 }
 
+/** Reconcile outside SQL admission, then verify the exact active revision again under the live job claim before committing applied state. */
 export async function confirmJobRuntime(
     job: CertificateJobRow,
     runtime = certificateJobRuntime,

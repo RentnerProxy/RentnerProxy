@@ -10,6 +10,7 @@ export class ResourceAdmissionError extends Error {
     }
 }
 
+/** Retain a permit until every tracked underlying operation settles, even when the public request already timed out or failed. */
 export function releaseAfterSettled(
     release: (() => void) | undefined,
     work: Iterable<Promise<unknown>>,
@@ -32,10 +33,12 @@ export function createResourceAdmission(
             const timer = setTimeout(callback, delayMs)
             return () => clearTimeout(timer)
         })
+    /** Keep admission diagnostics within the safe integer range without expanding the fixed reason catalog. */
     const count = (reason: keyof typeof counters) => {
         counters[reason] = Math.min(Number.MAX_SAFE_INTEGER, counters[reason] + 1)
     }
 
+    /** Detach a queued waiter and its timer/abort listener before resolving or rejecting its ownership. */
     function remove(waiter: ResourceWaiter) {
         const index = pending.indexOf(waiter)
         if (index >= 0) pending.splice(index, 1)
@@ -43,6 +46,7 @@ export function createResourceAdmission(
         waiter.signal?.removeEventListener('abort', waiter.abort)
     }
 
+    /** Return an idempotent release that hands capacity to live FIFO waiters and rejects expired/cancelled heads without exceeding the running limit. */
     function permit(): () => void {
         running++
         count('admitted')
@@ -67,6 +71,7 @@ export function createResourceAdmission(
         }
     }
 
+    /** Acquire before work hydration, preserving FIFO order; reject full queues, expired waits, and cancellation without starting the operation. */
     function acquire(signal?: AbortSignal): Promise<() => void> {
         if (signal?.aborted) {
             count('cancelled')
@@ -86,6 +91,7 @@ export function createResourceAdmission(
                 cancelTimer: () => {},
                 abort: () => {},
             }
+            /** Reject only a still-queued waiter so timeout and abort races cannot settle or remove another admission. */
             function fail(reason: 'deadline' | 'cancelled') {
                 if (!pending.includes(waiter)) return
                 remove(waiter)
@@ -101,6 +107,7 @@ export function createResourceAdmission(
 
     return {
         acquire,
+        /** Hold one permit through actual operation settlement and release in every outcome, including cancellation immediately after acquisition. */
         async run<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
             const release = await acquire(signal)
             try {
@@ -113,6 +120,7 @@ export function createResourceAdmission(
                 release()
             }
         },
+        /** Expose only bounded numeric admission evidence; reading metrics never acquires capacity or changes queue ownership. */
         snapshot() {
             return {
                 running,

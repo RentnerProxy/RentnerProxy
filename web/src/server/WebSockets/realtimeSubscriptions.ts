@@ -29,10 +29,12 @@ function unsubscribe(connection: LiveConnectionData, topic: LiveTopic): void {
     connection.subscriptions.delete(topic)
 }
 
+/** Own globally bounded realtime permits across handshakes and snapshots, retaining capacity until tracked underlying reads actually settle. */
 export function createSubscriptionManager(options: SubscriptionManagerOptions) {
     const admission = createResourceAdmission(BACKGROUND_RESOURCE_ENVELOPE.realtime)
     const outstanding = new Set<Promise<void>>()
     let pressureLoggedAt = -Infinity
+    /** Track each admitted permit through idempotent release and emit rate-limited numeric pressure diagnostics without swallowing admission errors. */
     async function acquireResource(signal?: AbortSignal) {
         try {
             const release = await admission.acquire(signal)
@@ -59,6 +61,7 @@ export function createSubscriptionManager(options: SubscriptionManagerOptions) {
             throw error
         }
     }
+    /** Coalesce per-subscription reads and defer overloaded admission to the periodic sampler; hold capacity past response timeout for tracked work. */
     async function sample(subscription: LiveTopicSubscription): Promise<void> {
         const { connection } = subscription
         if (!subscription.active || connection.closed) return
@@ -182,6 +185,7 @@ export function createSubscriptionManager(options: SubscriptionManagerOptions) {
     const connections = new Set<LiveConnectionData>()
 
     const manager: LiveSubscriptionManager = {
+        /** Wait until every admitted underlying read releases its permit; callers must stop admission before claiming a completed drain. */
         async drainResources() {
             while (outstanding.size > 0) {
                 // oxlint-disable-next-line no-await-in-loop -- All admitted reads must settle before claiming a completed drain.

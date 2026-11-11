@@ -16,6 +16,7 @@ import { DockerDiscoveryError } from './docker-discovery.errors.ts'
 import { observeWorkerOperation } from '@/server/Foundation/worker-operation.ts'
 import type { DockerDiscoverySnapshot } from '@/lib/DockerDiscovery/Types/docker-discovery.types.ts'
 
+/** Persist and audit one discovery failure under its SQL class, then announce only after commit. */
 async function recordDiscoveryFailure(): Promise<void> {
     await getBackgroundDatabase('discovery').transaction(async (transaction) => {
         markDiscoveryReconciliation(transaction)
@@ -58,6 +59,7 @@ export function createDockerDiscoveryWorker() {
         }
     }
 
+    /** Admit SQL by discovery class, preserve fair cursor progress, and perform controller reconciliation outside the transaction permit. */
     async function runDiscoveryCycle(
         snapshot: DockerDiscoverySnapshot,
         signal: AbortSignal,
