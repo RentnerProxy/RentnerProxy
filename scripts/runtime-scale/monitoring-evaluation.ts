@@ -83,7 +83,15 @@ export function monitoringRevocationCounterexample() {
 export function assessMonitoringMigration(evidence: readonly MonitoringEvaluationEvidence[]) {
     const failures = new Set<string>()
     const contract = monitoringEvaluationContract
-    for (const profile of ['mixed', 'all-3s-timeout'] as const) {
+    const profiles = ['mixed', 'all-3s-timeout'] as const
+    if (
+        evidence.length !== profiles.length ||
+        profiles.some(
+            (profile) => evidence.filter((entry) => entry.profile === profile).length !== 1,
+        )
+    )
+        failures.add('Exactly one evidence entry per reference profile is required')
+    for (const profile of profiles) {
         const item = evidence.find((entry) => entry.profile === profile)
         if (!item) {
             failures.add('Both reference latency profiles are required')

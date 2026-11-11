@@ -5,6 +5,10 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import { assertIsolatedMonitoringDatabase, monitoringDistribution } from './monitoring.ts'
+import {
+    runMonitoringEvaluationProbes,
+    cleanupMonitoringEvaluation,
+} from './monitoring-evaluation-lifecycle.ts'
 import { createMonitoringEvaluationOutbox } from './monitoring-evaluation-outbox.ts'
 import {
     monitoringEvaluationContract,
@@ -61,6 +65,8 @@ export async function runMonitoringAuthoritySlice(policies: 100 | 1000 = 100) {
         cleanupRelative.startsWith('rentnerproxy-monitoring-evaluation-')
     const store = createMonitoringEvaluationOutbox(join(directory, 'outbox.sqlite'), 'store-1')
     const samples: unknown[] = []
+    let executionFailed = false
+    let executionFailure: unknown
     let roleCreated = false
     let schemaCreated = false
     let networkActive = 0
@@ -130,66 +136,56 @@ export async function runMonitoringAuthoritySlice(policies: 100 | 1000 = 100) {
                 const cpu = process.cpuUsage()
                 const started = performance.now()
                 const latency: number[] = []
-                let next = 1
                 const results: MonitoringEvaluationResult[] = []
-                await Promise.all(
-                    Array.from({ length: Math.min(policies, 64) }, async () => {
-                        while (next <= policies) {
-                            if (performance.now() >= deadline)
-                                throw new Error('Authority slice budget exhausted')
-                            const id = next++
-                            const start = performance.now()
-                            const rows = await connection.unsafe<
-                                {
-                                    id: number
-                                    version: number
-                                    grant_version: number
-                                    epoch: string
-                                }[]
-                            >(`SELECT * FROM ${namespace}.effective_policies WHERE id = $1`, [id])
-                            const policy = rows[0]
-                            if (!policy) throw new Error('Unexpected missing synthetic authority')
-                            const response = await fetch(
-                                `http://127.0.0.1:${upstream.port}/${id}`,
-                                {
-                                    method: 'HEAD',
-                                    redirect: 'error',
-                                    headers: {
-                                        authorization:
-                                            'Bearer synthetic-monitoring-evaluation-only',
-                                    },
-                                    signal: AbortSignal.timeout(1000),
-                                },
-                            )
-                            if (response.status !== 200) throw new Error('Loopback probe failed')
-                            const now = Date.now()
-                            const result: MonitoringEvaluationResult = {
-                                storeId: 'store-1',
-                                controllerEpoch: policy.epoch,
-                                policyId: String(id),
-                                policyVersion: policy.version,
-                                grantVersion: policy.grant_version,
-                                revision: 'revision-1',
-                                hostProof: 'proof-1',
-                                leaseToken: `${pair}-${mode}-${id}`,
-                                leaseExpiresAtMs: now + monitoringEvaluationContract.leaseMs,
-                                enabled: true,
-                                paused: false,
-                                attemptId: `${pair}-${mode}-${id}`,
-                                checkedAtMs: now,
-                                outcome: 'healthy',
-                            }
-                            if (
-                                mode === 'restricted-view-outbox' &&
-                                store.append(result, now) !== 'recorded'
-                            )
-                                throw new Error('Outbox did not durably accept synthetic result')
-                            results.push(result)
-                            replayExample ??= result
-                            latency.push(performance.now() - start)
-                        }
-                    }),
-                )
+                await runMonitoringEvaluationProbes(policies, async (id) => {
+                    if (performance.now() >= deadline)
+                        throw new Error('Authority slice budget exhausted')
+                    const start = performance.now()
+                    const rows = await connection.unsafe<
+                        {
+                            id: number
+                            version: number
+                            grant_version: number
+                            epoch: string
+                        }[]
+                    >(`SELECT * FROM ${namespace}.effective_policies WHERE id = $1`, [id])
+                    const policy = rows[0]
+                    if (!policy) throw new Error('Unexpected missing synthetic authority')
+                    const response = await fetch(`http://127.0.0.1:${upstream.port}/${id}`, {
+                        method: 'HEAD',
+                        redirect: 'error',
+                        headers: {
+                            authorization: 'Bearer synthetic-monitoring-evaluation-only',
+                        },
+                        signal: AbortSignal.timeout(1000),
+                    })
+                    if (response.status !== 200) throw new Error('Loopback probe failed')
+                    const now = Date.now()
+                    const result: MonitoringEvaluationResult = {
+                        storeId: 'store-1',
+                        controllerEpoch: policy.epoch,
+                        policyId: String(id),
+                        policyVersion: policy.version,
+                        grantVersion: policy.grant_version,
+                        revision: 'revision-1',
+                        hostProof: 'proof-1',
+                        leaseToken: `${pair}-${mode}-${id}`,
+                        leaseExpiresAtMs: now + monitoringEvaluationContract.leaseMs,
+                        enabled: true,
+                        paused: false,
+                        attemptId: `${pair}-${mode}-${id}`,
+                        checkedAtMs: now,
+                        outcome: 'healthy',
+                    }
+                    if (
+                        mode === 'restricted-view-outbox' &&
+                        store.append(result, now) !== 'recorded'
+                    )
+                        throw new Error('Outbox did not durably accept synthetic result')
+                    results.push(result)
+                    replayExample ??= result
+                    latency.push(performance.now() - start)
+                })
                 const networkAndStoreMs = performance.now() - started
                 const replayStart = performance.now()
                 for (const result of results) {
@@ -289,17 +285,25 @@ export async function runMonitoringAuthoritySlice(policies: 100 | 1000 = 100) {
             throw new Error('Authority slice safety assertion failed')
         console.log(JSON.stringify(result))
         return result
+    } catch (error) {
+        executionFailed = true
+        executionFailure = error
+        throw error
     } finally {
-        upstream.stop(true)
-        store.close()
-        await worker.close()
-        try {
-            if (schemaCreated) await database.unsafe(`DROP SCHEMA ${namespace} CASCADE`)
-            if (roleCreated) await database.unsafe(`DROP ROLE ${role}`)
-        } finally {
-            await database.close()
-            if (cleanupIsOwned) await rm(directory, { recursive: true, force: true })
-        }
+        await cleanupMonitoringEvaluation(
+            [
+                () => upstream.stop(true),
+                () => store.close(),
+                () => worker.close(),
+                () =>
+                    schemaCreated ? database.unsafe(`DROP SCHEMA ${namespace} CASCADE`) : undefined,
+                () => (roleCreated ? database.unsafe(`DROP ROLE ${role}`) : undefined),
+                () => database.close(),
+                () =>
+                    cleanupIsOwned ? rm(directory, { recursive: true, force: true }) : undefined,
+            ],
+            executionFailed ? [executionFailure] : [],
+        )
     }
 }
 

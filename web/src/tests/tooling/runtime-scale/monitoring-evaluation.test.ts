@@ -185,6 +185,30 @@ describe('monitoring ownership investigation gates', () => {
             ).efficiencyJustified,
         ).toBe(false)
     })
+    test('duplicate and unexpected evidence profiles fail closed even when the first two runs pass', () => {
+        const mixed = evidence('mixed')
+        const timeout = evidence('all-3s-timeout')
+        const failedDuplicate = { ...evidence('mixed'), securityAndRestorePassed: false }
+        const unexpected = evidence('mixed')
+        Object.defineProperty(unexpected, 'profile', { value: 'unexpected-profile' })
+        for (const entries of [
+            [mixed, timeout, failedDuplicate],
+            [mixed, timeout, evidence('mixed')],
+            [mixed, mixed],
+            [mixed, timeout, unexpected],
+            [unexpected, timeout],
+        ]) {
+            const assessment = assessMonitoringMigration(entries)
+            expect(assessment.recommendation).toBe('keep-hybrid')
+            expect(assessment.efficiencyJustified).toBe(false)
+            expect(assessment.failures).toContain(
+                'Exactly one evidence entry per reference profile is required',
+            )
+        }
+        expect(assessMonitoringMigration([timeout, mixed]).recommendation).toBe(
+            'eligible-for-separate-design-review',
+        )
+    })
 })
 
 describe('bounded durable raw-result experiment', () => {
