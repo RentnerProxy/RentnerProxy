@@ -17,8 +17,8 @@ function owner(
     role: ApplianceProcess['role'],
 ): ApplianceProcess {
     const matches = snapshot.processes.filter((process) => process.role === role)
-    assert.equal(matches.length, 1, 'component recovery requires one process per role')
-    assert.notEqual(matches[0]!.state, 'Z', 'recovered owner must be live')
+    assert.equal(matches.length, 1, 'component recovery requires one ' + role + ' process')
+    assert.notEqual(matches[0]!.state, 'Z', 'recovered ' + role + ' owner must be live')
     return matches[0]!
 }
 

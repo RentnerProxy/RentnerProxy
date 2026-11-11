@@ -11,6 +11,8 @@ import {
     backgroundDistribution,
     backgroundMonitoringReport,
     backgroundResourceEvidence,
+    backgroundRecoveryBaseline,
+    backgroundFailureDiagnostic,
     backgroundSlo,
     parseBackgroundOptions,
 } from './background.ts'
@@ -218,6 +220,14 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
         reason: 'Explicit --extended-recovery true required for certificate interruption, active-work restore and audit replay',
     }
     let failure: string | undefined
+    let failureContext:
+        | (ReturnType<typeof backgroundFailureDiagnostic> & {
+              stage: string
+              component: 'web' | 'controller' | null
+          })
+        | undefined
+    let stage = 'setup'
+    let recoveryComponent: 'web' | 'controller' | null = null
     let trafficDiagnostic: TrafficDiagnostic | undefined
     let imagePlatform: string | undefined
     let proxyFailures = 0
@@ -269,6 +279,7 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
         await context.synced(await context.fixture('prepare'))
         await context.synced(await context.fixture('background-prepare', extra))
         origin = performance.now()
+        stage = 'workload'
         if (options.contention) {
             const result = await runContentionWindow(
                 harness,
@@ -341,15 +352,57 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
         receiptsOverflowed = receipts.overflowed
         monitoring = backgroundMonitoringReport(options, snapshot, receipts.receipts, elapsedMs)
         const before = snapshot.observations.length
+        stage = 'fences'
         fences = (await withPausedWeb(context, () => context.fixture('background-fences', extra)))
             .fences
+        stage = 'discovery'
         discovery = (await context.fixture('background-discovery', extra)).discovery
+        stage = 'notifications'
         notifications = (
             await withPausedWeb(context, () => context.fixture('background-notifications', extra))
         ).notifications
         for (const component of ['web', 'controller'] as const) {
             const started = performance.now()
-            await recoverReliabilityComponent(component, recoveryDependencies(context))
+            recoveryComponent = component
+            stage = 'recovery-revision'
+            await context.synced(await context.fixture('background-read', extra))
+            const dependencies = recoveryDependencies(context)
+            const deadline = started + backgroundSlo.recoveryMs
+            const withinBudget = () => {
+                if (performance.now() > deadline)
+                    throw new ReliabilityError('timeout', 'background component recovery budget')
+            }
+            const bounded = {
+                ...dependencies,
+                snapshot: async () => {
+                    withinBudget()
+                    const value = await dependencies.snapshot()
+                    withinBudget()
+                    return value
+                },
+                ready: async () => {
+                    withinBudget()
+                    const value = await dependencies.ready()
+                    withinBudget()
+                    return value
+                },
+            }
+            let initialSnapshot = true
+            await recoverReliabilityComponent(component, {
+                ...bounded,
+                snapshot: async () => {
+                    if (!initialSnapshot) return bounded.snapshot()
+                    initialSnapshot = false
+                    stage = 'recovery-baseline'
+                    const baseline = await backgroundRecoveryBaseline(
+                        bounded,
+                        Math.max(0, deadline - performance.now()),
+                    )
+                    stage = 'recovery-owners'
+                    return baseline
+                },
+            })
+            stage = 'recovery-durability'
             await context.synced(await context.fixture('background-read', extra))
             const final = backgroundSnapshotSchema.parse(
                 (await context.fixture('background-read', extra)).background,
@@ -369,8 +422,11 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
                 elapsedMs: duration,
                 passed: duration <= backgroundSlo.recoveryMs,
             })
+            stage = 'recovery-resources'
             await sample('recovered')
         }
+        recoveryComponent = null
+        stage = 'postgres-pause'
         const pauseStarted = performance.now()
         const pause = JSON.parse(
             await context.docker(
@@ -390,6 +446,7 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
         assert.equal(pause.resumed, true)
         const pauseElapsedMs = performance.now() - pauseStarted
         if (options.extendedRecovery) {
+            stage = 'extended-recovery'
             const policy = backgroundPolicies(options)[0]!
             const domain = `bg-${policy.index}-${policy.latency}-${context.domain}`
             extendedRecovery = await exerciseExtendedBackgroundRecovery(
@@ -410,7 +467,13 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
                 : error instanceof assert.AssertionError
                   ? 'assertion'
                   : 'unexpected'
+        failureContext = {
+            stage,
+            component: recoveryComponent,
+            ...backgroundFailureDiagnostic(error),
+        }
         console.error('Background scenarios failed: ' + failure)
+        console.error('Background failure location: ' + JSON.stringify(failureContext))
         trafficDiagnostic = await context
             .captureTrafficDiagnostic('background', failure)
             .catch(() => undefined)
@@ -487,7 +550,7 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
             capacity: 'insufficient',
             reason: 'A bounded first-cadence regression cannot establish sustained production capacity',
         },
-        ...(failure ? { failure } : {}),
+        ...(failure ? { failure, failureContext } : {}),
     }
     const path = resolve(
         options.reportPath ?? join(import.meta.dir, '../../tmp/runtime-background/report.json'),
