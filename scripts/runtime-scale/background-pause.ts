@@ -7,7 +7,7 @@ export function backgroundPauseMarker(runId: string) {
 }
 
 export function checkBackgroundCancellation(signal: AbortSignal) {
-    if (signal.aborted) throw new ReliabilityError('command', 'background scenario cancelled')
+    if (signal.aborted) throw new ReliabilityError('cancelled', 'background scenario cancelled')
 }
 
 export async function backgroundPauseGuard(

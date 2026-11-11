@@ -39,6 +39,7 @@ export type ReliabilityContext = {
     captureTrafficDiagnostic: (stage: string, category: string) => Promise<TrafficDiagnostic>
     recordTrafficFailure: (route: number | null, status: number | null) => void
     startFixtureTls: () => Promise<number>
+    refreshDns: (aliases?: readonly string[]) => Promise<void>
     runId: string
     container: string
     network: string

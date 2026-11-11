@@ -235,7 +235,9 @@ export function buildReliabilityReport(input: ReliabilityReportInput) {
         const { stage, category } = input.failure
         if (
             !['setup', 'warmup', 'cycle', 'resources', 'cleanup'].includes(stage) ||
-            !['assertion', 'timeout', 'command', 'telemetry', 'unexpected'].includes(category)
+            !['assertion', 'timeout', 'command', 'telemetry', 'unexpected', 'cancelled'].includes(
+                category,
+            )
         )
             throw new Error('Invalid report failure')
         failure = { stage, category }
