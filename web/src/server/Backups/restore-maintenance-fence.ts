@@ -42,6 +42,7 @@ export function createRestoreMaintenanceFence(dependencies: {
         return preparing
     }
 
+    /** Latch destructive fencing before draining requests and writers; acknowledge only the same operation after successful quiescence. */
     function enter(id: string): Promise<void> {
         if (operationId !== null && operationId !== id)
             return Promise.reject(new Error('Restore maintenance already entered'))
