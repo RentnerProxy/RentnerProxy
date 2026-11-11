@@ -11,6 +11,7 @@ import { synchronizeCertificateEventsOnce } from '../../web/src/server/Admin/Cer
 import type { FixtureContext } from '../runtime-reliability/Types/fixture.types.ts'
 import { executeFixture } from '../runtime-reliability/fixture.ts'
 
+/** Prepare/resume the same durable queued job or replay real certificate events, asserting exact cursor and audit idempotence. */
 export async function backgroundRecoveryFixture(context: FixtureContext) {
     const database = context.database
     if (context.command.phase === 'background-job-prepare') {
@@ -55,6 +56,7 @@ export async function backgroundRecoveryFixture(context: FixtureContext) {
     }
     assert.equal(context.command.phase, 'background-audit-replay')
     await synchronizeCertificateEventsOnce()
+    /** Read sorted durable cursor, receipt, and audit identities so replay assertions compare effects rather than insertion order. */
     const read = async () => {
         const [cursor] = await database
             .select()

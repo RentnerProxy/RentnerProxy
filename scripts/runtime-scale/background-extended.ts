@@ -10,6 +10,7 @@ import type { FixtureResult } from '../runtime-reliability/Types/harness.types.t
 import type { BackgroundOptions } from './Types/background.types.ts'
 import { backgroundSnapshotSchema } from './background.validation.ts'
 
+/** Check cancellation between restore stages and verify the same queued certificate, exact activation, stale-write fences, and audit replay within ten minutes. */
 export async function exerciseExtendedBackgroundRecovery(
     harness: Awaited<ReturnType<typeof createHarness>>,
     options: BackgroundOptions,

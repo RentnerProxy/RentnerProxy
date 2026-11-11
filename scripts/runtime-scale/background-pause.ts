@@ -2,14 +2,17 @@
 import { randomUUID } from 'node:crypto'
 import { ReliabilityError } from '../runtime-reliability/harness.ts'
 
+/** Allocate a unique run-scoped marker so a completed guard cannot accidentally resume a later pause. */
 export function backgroundPauseMarker(runId: string) {
     return '/tmp/background-resume-' + runId + '-' + randomUUID()
 }
 
+/** Preserve cancellation as its own failure category so scenario interruption cannot be retried or reported as success. */
 export function checkBackgroundCancellation(signal: AbortSignal) {
     if (signal.aborted) throw new ReliabilityError('cancelled', 'background scenario cancelled')
 }
 
+/** Own both stop and resume signals for one identity-checked process; always publish a terminal marker after the last possible resume. */
 export async function backgroundPauseGuard(
     dependencies: {
         identity: () => Promise<boolean>
@@ -41,6 +44,7 @@ export async function backgroundPauseGuard(
     }
 }
 
+/** Resume after every attempted arm, including cancellation and operation failure; cleanup errors never replace an earlier failure identity. */
 export async function withBackgroundPause<T>(
     signal: AbortSignal,
     arm: () => Promise<unknown>,

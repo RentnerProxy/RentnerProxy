@@ -499,6 +499,7 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
                 'timeout',
                 'telemetry',
                 'unexpected',
+                'cancelled',
             ].includes(category)
                 ? category
                 : 'unexpected',

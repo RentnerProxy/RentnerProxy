@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { createSeededRandom } from '../runtime-reliability/control.ts'
 
+/** Serve eight deterministic containers and 256 seeded events with forced stream reconnects; the caller owns server shutdown. */
 export function startBackgroundDockerEngine(seed: number) {
     const random = createSeededRandom(seed)
     const inventory = Array.from({ length: 8 }, (_, index) => ({
@@ -38,6 +39,7 @@ export function startBackgroundDockerEngine(seed: number) {
     const server = Bun.serve({
         hostname: '127.0.0.1',
         port: 0,
+        /** Expose only read-only fixture Docker routes and close the first three event streams to force bounded reconnect evidence. */
         fetch(request) {
             const path = new URL(request.url).pathname
             if (request.method !== 'GET') return new Response(null, { status: 403 })
@@ -85,6 +87,7 @@ export function startBackgroundDockerEngine(seed: number) {
     }
 }
 
+/** Require unused discovery configuration, verify bounded real connector reconnects, and restore configuration before stopping the fixture engine. */
 export async function runBackgroundDiscovery(seed: number) {
     const { dockerDiscoveryController } =
         await import('../../web/src/server/Controller/docker-discovery.server.ts')
