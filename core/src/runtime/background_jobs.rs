@@ -24,6 +24,7 @@ pub(super) struct BackgroundJobs {
 }
 
 impl BackgroundJobs {
+    /// Creates an open tracker with bounded admission for background jobs.
     pub(super) fn new() -> Self {
         Self {
             state: Arc::new(Mutex::new(State {
@@ -34,6 +35,11 @@ impl BackgroundJobs {
         }
     }
 
+    /// Admits a job and tracks it independently of the requesting future.
+    ///
+    /// Returns false without spawning when shutdown has closed admission or all job
+    /// slots are occupied. Registration shares the shutdown lock; slots for finished
+    /// jobs are reclaimed on the next admission, while a supervisor reports join failures.
     pub(super) fn spawn<F>(&self, operation: &'static str, future: F) -> bool
     where
         F: Future<Output = ()> + Send + 'static,
@@ -62,12 +68,19 @@ impl BackgroundJobs {
         true
     }
 
+    /// Closes admission and the task tracker under the shared shutdown gate.
+    ///
+    /// Already admitted jobs continue running until completion or a later abort.
     pub(super) fn stop_accepting(&self) {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         state.closed = true;
         self.tasks.close();
     }
 
+    /// Closes admission, waits until the deadline, then aborts remaining async jobs.
+    ///
+    /// Aborting their futures does not stop blocking I/O that has already started;
+    /// this method does not wait for aborted jobs to finish after the deadline.
     pub(super) async fn stop_until(&self, deadline: Instant) {
         self.stop_accepting();
         if timeout_at(deadline, self.tasks.wait()).await.is_ok() {

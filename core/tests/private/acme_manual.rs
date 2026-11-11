@@ -507,6 +507,8 @@ async fn setup() -> (
     )
 }
 
+/// Prepares a manual DNS order with the fixture CA's account and observer, preserving the runtime's
+/// normal preparation result and errors for each lifecycle scenario.
 async fn prepare(
     runtime: &Arc<ProxyRuntime>,
     request: &CertificateIssueRequest,

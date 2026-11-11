@@ -31,6 +31,9 @@ func run(args []string) error {
 	return validate(args[0], info)
 }
 
+// validate requires the selected profile's pinned compiler, modules, replacements
+// and build settings. It rejects missing or duplicate required entries, disallowed
+// replacements, obsolete dependencies and unknown profiles before image admission.
 func validate(profile string, info *debug.BuildInfo) error {
 	var expected map[string]string
 	var compiler string

@@ -223,6 +223,10 @@ impl ProxyRuntime {
         access_logs::read(&self.settings.state_dir, query, &self.access_log_snapshots).await
     }
 
+    /// Creates shared runtime state with lazy stores and bounded work admission.
+    ///
+    /// The engine starts unavailable and background task slots start empty;
+    /// construction does not initialize stores or launch background workers.
     pub(crate) fn new(
         settings: RuntimeSettings,
         engine: Option<Arc<dyn ProxyEngine>>,

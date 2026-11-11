@@ -57,6 +57,14 @@ impl ProxyRuntime {
             .await;
     }
 
+    /// Admits a manual-DNS continuation and returns its initial certificate metadata.
+    ///
+    /// An idempotent continuation returns current metadata without resuming the order.
+    /// Otherwise, the runtime-owned job keeps the permit and resumes even if the caller
+    /// stops waiting; success does not mean the certificate has been issued.
+    ///
+    /// # Errors
+    /// Returns admission/capacity errors or continuation validation and store failures.
     pub(crate) async fn start_manual_dns_continue(
         self: &Arc<Self>,
         id: String,
@@ -78,6 +86,11 @@ impl ProxyRuntime {
         }).await
     }
 
+    /// Expires stale orders and dispatches resumable manual-DNS work for recovery.
+    ///
+    /// Accepted jobs own their runtime and ACME permits while claiming persisted work.
+    /// Shutdown, exhausted permits, or closed admission stops dispatch; listing, expiry,
+    /// and per-order claim failures are ignored for a later recovery pass.
     pub(crate) async fn recover_manual_dns(self: &Arc<Self>) {
         if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
             return;
@@ -124,6 +137,11 @@ impl ProxyRuntime {
             .await;
     }
 
+    /// Applies an issuance outcome without overwriting a newer manual-DNS operation.
+    ///
+    /// Paused orders remain parked. Issued material is staged for activation; transient
+    /// failures in recoverable phases release the order for another attempt, while terminal
+    /// failures finish it. Store/activation failures are handled best-effort.
     async fn finish_manual_dns_result(
         self: &Arc<Self>,
         id: &str,
@@ -202,6 +220,13 @@ impl ProxyRuntime {
         }
     }
 
+    /// Records order creation and obtains an observed account before manual-DNS setup.
+    ///
+    /// The account step has its own timeout; subsequent order work runs in the caller's
+    /// issuance attempt. Returns a parked challenge set or issued certificate/key material.
+    ///
+    /// # Errors
+    /// Propagates store/account/order errors and maps account timeout to `AcmeFailed`.
     async fn prepare_manual_dns(
         self: &Arc<Self>,
         id: &str,
@@ -230,6 +255,14 @@ impl ProxyRuntime {
         .await
     }
 
+    /// Creates and persists a manual order before collecting its DNS instructions.
+    ///
+    /// Consumes the account connection. Orders requiring records are parked with their
+    /// earliest expiry and return `Paused`; already satisfied orders proceed to issuance.
+    /// Network requests remain outside the bounded persistence operations.
+    ///
+    /// # Errors
+    /// Propagates ACME, order-origin/expiry validation, record, and store failures.
     async fn prepare_manual_dns_with_account(
         self: &Arc<Self>,
         id: &str,
@@ -315,6 +348,14 @@ impl ProxyRuntime {
         .await
     }
 
+    /// Restores an order with its verified account and resumes its saved challenge set.
+    ///
+    /// Consumes the connection and saved state. Newly recovered instructions or retryable
+    /// propagation failures park the order; otherwise validation advances to issuance.
+    /// Network awaits run outside bounded persistence operations.
+    ///
+    /// # Errors
+    /// Propagates origin, expiry, challenge-set, ACME, DNS, and persistence failures.
     async fn resume_manual_dns_with_account(
         self: &Arc<Self>,
         id: &str,
@@ -378,6 +419,14 @@ impl ProxyRuntime {
             .await
     }
 
+    /// Persists a propagation result before requesting pending ACME validations.
+    ///
+    /// Returns `true` after parking a retryable DNS failure, or `false` after advancing
+    /// valid challenges. Updates the borrowed saved state with check time and phase;
+    /// validation requests occur only after that state is persisted.
+    ///
+    /// # Errors
+    /// Propagates expiry, permanent DNS, store, malformed-order, and ACME request errors.
     async fn validate_manual_dns_check(
         self: &Arc<Self>,
         id: &str,
@@ -432,6 +481,14 @@ impl ProxyRuntime {
         Ok(false)
     }
 
+    /// Advances an eligible manual order and returns its certificate and saved key.
+    ///
+    /// Persists the exact CSR and key before finalization so retries can reuse them.
+    /// ACME polling and finalization run outside the bounded local-store operations.
+    ///
+    /// # Errors
+    /// Returns invalid-order errors for terminal states, `StoreUnavailable` for missing
+    /// saved key/CSR or persistence failure, and ACME errors for unsuccessful requests.
     async fn finish_manual_order(
         self: &Arc<Self>,
         id: &str,

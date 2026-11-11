@@ -246,6 +246,8 @@ async fn begin_delegated(runtime: &ProxyRuntime) -> String {
         .id
 }
 
+/// Cancels after a provider has accepted a write, proving the operation retains authority until
+/// that write finishes and its exact committed proof can be cleaned up.
 #[test]
 fn cancellation_waits_for_accepted_provider_post_then_cleans_its_committed_value() {
     if !isolated("cancellation_waits_for_accepted_provider_post_then_cleans_its_committed_value") {
@@ -335,6 +337,8 @@ fn cancellation_waits_for_accepted_provider_post_then_cleans_its_committed_value
         });
 }
 
+/// Leaves a provider write outcome uncertain and verifies its persisted authority survives until
+/// a later committed proof can be removed without replaying the original write.
 #[test]
 fn uncertain_provider_write_retains_authority_until_late_commit_can_be_cleaned() {
     if !isolated("uncertain_provider_write_retains_authority_until_late_commit_can_be_cleaned") {
@@ -399,6 +403,8 @@ fn uncertain_provider_write_retains_authority_until_late_commit_can_be_cleaned()
         });
 }
 
+/// Restarts with an unresolved provider write and verifies later cleanup remains possible when
+/// the remote proof finally becomes visible.
 #[test]
 fn unknown_write_allows_later_proof_cleanup_and_survives_restart_until_late_commit() {
     if !isolated("unknown_write_allows_later_proof_cleanup_and_survives_restart_until_late_commit")
@@ -535,6 +541,8 @@ fn unrelated_read_or_confirmed_cleanup_failure_blocks_later_attempt() {
     });
 }
 
+/// Reuses an unresolved proof identity and checks that neither another provider write nor a
+/// duplicate cleanup-journal entry is created for it.
 #[test]
 fn unresolved_exact_same_proof_is_not_replayed_or_added_to_journal() {
     if !isolated("unresolved_exact_same_proof_is_not_replayed_or_added_to_journal") {

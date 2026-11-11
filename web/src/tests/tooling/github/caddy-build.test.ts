@@ -62,6 +62,7 @@ describe('upstream Caddy binary security metadata', () => {
             ).toBe(reviewedVersion?.slice(1))
     })
 
+    /** Compares both builder definitions with the shared script, including compiler and module pins. */
     test('both images use the same Caddy build while retaining pins, static ABI and licenses', async () => {
         const root = resolve(import.meta.dir, '../../../../..')
         const shared = await readFile(join(root, 'docker/caddy/tooling/build.sh'), 'utf8')

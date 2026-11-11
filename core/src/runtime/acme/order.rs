@@ -23,6 +23,14 @@ struct ChallengeRegistrations<'a> {
 }
 
 impl ProxyRuntime {
+    /// Validates DNS authority, opens an account, and issues an automatic ACME order.
+    ///
+    /// Returns certificate and private-key PEM. The caller owns cleanup registrations;
+    /// this function extends them as proofs are prepared, including on failure.
+    ///
+    /// # Errors
+    /// Propagates DNS/delegation, store, and issuance failures; account timeout maps to
+    /// `AcmeFailed`. Network work remains outside bounded store operations.
     pub(super) async fn issue_acme(
         self: &Arc<Self>,
         id: &str,
@@ -61,6 +69,16 @@ impl ProxyRuntime {
         .await
     }
 
+    /// Creates, validates, and finalizes an order using the supplied account.
+    ///
+    /// Consumes the account and records HTTP registrations and persisted DNS intents for
+    /// caller-owned cleanup. Returns certificate and private-key PEM on success.
+    /// Delegated cancellation is checked at proof checkpoints; provider side effects can
+    /// remain after cancellation or an interrupted request.
+    ///
+    /// # Errors
+    /// Propagates invalid identifiers, challenge/provider/delegation failures, cancellation,
+    /// store failures, and unsuccessful ACME order transitions.
     async fn issue_acme_with_account(
         self: &Arc<Self>,
         id: &str,

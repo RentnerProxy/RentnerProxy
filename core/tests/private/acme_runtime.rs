@@ -379,6 +379,8 @@ async fn scheduled_retry_resumes_due_stored_attempt_and_keeps_its_operation_kind
     assert!(failed.next_attempt_at.is_some());
 }
 
+/// Stops storage at an admitted issuance boundary and starts shutdown, optionally dropping the
+/// request waiter, to verify the owned preparation remains part of the shutdown drain.
 async fn blocked_preparation_survives_shutdown(disconnect: bool) {
     let runtime = runtime().await;
     fail_account_locally(&runtime).await;
@@ -439,16 +441,20 @@ async fn blocked_preparation_survives_shutdown(disconnect: bool) {
     );
 }
 
+/// Exercises the blocked-preparation shutdown scenario with the request waiter still attached.
 #[tokio::test]
 async fn shutdown_drains_an_issue_admitted_before_blocked_preparation() {
     blocked_preparation_survives_shutdown(false).await;
 }
 
+/// Exercises the same shutdown boundary after disconnecting the caller that admitted issuance.
 #[tokio::test]
 async fn disconnected_issue_caller_does_not_abandon_blocked_preparation() {
     blocked_preparation_survives_shutdown(true).await;
 }
 
+/// Occupies the slots reserved for long ACME/permission work and verifies both explicit renewal
+/// and direct retry still have tracked capacity to activate an already-staged certificate.
 #[tokio::test]
 async fn local_candidate_activation_has_capacity_while_acme_and_permission_jobs_are_busy() {
     for explicit_renewal in [true, false] {

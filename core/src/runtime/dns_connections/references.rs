@@ -28,6 +28,12 @@ impl Store {
             .await
     }
 
+    /// Reconciles one consumer type while retaining the registry lock through commit.
+    ///
+    /// `retain_existing` reserves additions without pruning; otherwise obsolete usage
+    /// of that type is removed. Strict mode requires readable credentials and, for
+    /// DNS-01, verified zones; non-strict mode skips missing connections and zones.
+    /// Only changed registries are persisted, with ambiguous failures invalidating cache.
     async fn reconcile_references(
         &self,
         consumer_type: ConsumerType,
