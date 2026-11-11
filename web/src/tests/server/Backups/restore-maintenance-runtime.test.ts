@@ -63,12 +63,13 @@ async function runtimeProbe(script: string) {
         const deleted = { ...original, id: '01900000-0000-7000-8000-000000000005', operation: 'delete', state: 'succeeded' }
         let observation = { maintenance: deleted, restoreResults: [unsafe] }
         const acknowledged = Promise.withResolvers()
+        let stopGate = null
         const calls = { reads: 0, stops: 0, closes: 0, prepares: 0, writes: 0, acknowledgements: [] }
         mock.module('./server/Backups/restore-maintenance-status.server.ts', () => ({
             readRestoreMaintenanceStatus: async () => { calls.reads++; return observation.maintenance },
             readRestoreMaintenanceObservation: async () => { calls.reads++; return observation },
         }))
-        mock.module('./server/Foundation/worker-lifecycle.server.ts', () => ({ stopWorkersForRestoreMaintenance: async () => { calls.stops++ } }))
+        mock.module('./server/Foundation/worker-lifecycle.server.ts', () => ({ stopWorkersForRestoreMaintenance: async () => { calls.stops++; await stopGate?.promise } }))
         mock.module('./db/index.ts', () => ({
             db: { execute: async () => { calls.prepares++; return [] } },
             closeDatabaseForRestoreMaintenance: async () => { calls.closes++ },
@@ -168,6 +169,79 @@ test('a new process prepares the replacement restore while restarting and releas
         writes: 2,
         stops: 0,
         closes: 0,
+    })
+})
+
+test.each(['succeeded', 'failed'] as const)(
+    'replacement bootstrap for a %s restore cannot suppress the next restore drain or acknowledgement',
+    async (terminalState) => {
+        const output = await runtimeProbe(`
+            const first = { ...recovery, state: 'running', phase: 'restarting' }
+            const ready = new Request('http://localhost/health/ready')
+            observation = { maintenance: first, restoreResults: [] }
+            await runtime.getActiveRestoreMaintenance()
+            await flush()
+            assert.equal((await runtime.withRestoreMaintenanceFence(ready, next)).status, 200)
+            assert.equal((await runtime.withRestoreMaintenanceFence(mutation, next)).status, 503)
+            const receipt = { ...first, state: '${terminalState}', phase: '${terminalState}' === 'succeeded' ? 'complete' : 'restarting' }
+            observation = { maintenance: original, restoreResults: [receipt] }
+            assert.equal((await runtime.getActiveRestoreMaintenance()).id, original.id)
+            await flush()
+            assert.equal((await runtime.withRestoreMaintenanceFence(ready, next)).status, 503)
+            assert.equal((await runtime.withRestoreMaintenanceFence(mutation, next)).status, 503)
+            assert.equal(calls.stops, 0)
+            assert.equal(calls.closes, 0)
+            assert.deepEqual(calls.acknowledgements, [])
+            stopGate = Promise.withResolvers()
+            observation.maintenance = { ...original, state: 'running', phase: 'quiescing' }
+            await runtime.getActiveRestoreMaintenance()
+            await flush()
+            assert.equal(calls.stops, 1)
+            assert.equal(calls.closes, 0)
+            assert.deepEqual(calls.acknowledgements, [])
+            stopGate.resolve()
+            await acknowledged.promise
+            await flush()
+            assert.equal(calls.closes, 1)
+            assert.deepEqual(calls.acknowledgements, [original.id])
+            await runtime.getActiveRestoreMaintenance()
+            assert.equal((await runtime.withRestoreMaintenanceFence(mutation, next)).status, 503)
+            observation = { maintenance: { ...original, state: 'succeeded', phase: 'complete' }, restoreResults: [receipt, { ...original, state: 'succeeded', phase: 'complete' }] }
+            assert.equal((await runtime.withRestoreMaintenanceFence(ready, next)).status, 503)
+            assert.equal((await runtime.withRestoreMaintenanceFence(mutation, next)).status, 503)
+            assert.equal(calls.stops, 1)
+            assert.equal(calls.closes, 1)
+            assert.deepEqual(calls.acknowledgements, [original.id])
+        `)
+        expect(JSON.parse(output.trim().split('\n').at(-1)!)).toMatchObject({
+            stops: 1,
+            closes: 1,
+            writes: 1,
+            acknowledgements: [initial.id],
+        })
+    },
+)
+
+test('a failed replacement bootstrap remains admission-fenced when the next restore fails preflight', async () => {
+    const output = await runtimeProbe(`
+        const first = { ...recovery, state: 'running', phase: 'restarting' }
+        observation = { maintenance: first, restoreResults: [] }
+        await runtime.getActiveRestoreMaintenance()
+        await flush()
+        observation = { maintenance: original, restoreResults: [{ ...first, state: 'failed' }] }
+        await runtime.getActiveRestoreMaintenance()
+        await flush()
+        observation.maintenance = { ...original, state: 'failed', phase: 'validating' }
+        assert.equal((await runtime.withRestoreMaintenanceFence(mutation, next)).status, 503)
+        assert.equal((await runtime.withRestoreMaintenanceFence(new Request('http://localhost/health/ready'), next)).status, 503)
+        assert.equal(calls.stops, 0)
+        assert.equal(calls.closes, 0)
+        assert.deepEqual(calls.acknowledgements, [])
+    `)
+    expect(JSON.parse(output.trim().split('\n').at(-1)!)).toMatchObject({
+        stops: 0,
+        closes: 0,
+        writes: 0,
     })
 })
 

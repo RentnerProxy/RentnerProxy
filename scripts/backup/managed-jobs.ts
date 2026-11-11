@@ -55,6 +55,35 @@ function trim(draft: ManagedBackupState, limit = 100) {
     }
 }
 
+/** Reserve one append slot without evicting the latest complete recovery or later unresolved destructive restores; retain original append order. */
+function compactMaintenanceJournal(history: readonly ManagedBackupMaintenance[]) {
+    const recovery = history.findLastIndex(
+        (receipt) =>
+            receipt.operation === 'restore' &&
+            receipt.state === 'succeeded' &&
+            receipt.phase === 'complete',
+    )
+    const protectedIndexes = new Set<number>()
+    for (let index = 0; index < history.length; index++) {
+        const receipt = history[index]!
+        if (
+            index === recovery ||
+            (index > recovery &&
+                receipt.operation === 'restore' &&
+                (receipt.state === 'queued' ||
+                    receipt.state === 'running' ||
+                    ((receipt.state === 'failed' || receipt.state === 'interrupted') &&
+                        !['queued', 'preparing', 'validating'].includes(receipt.phase))))
+        )
+            protectedIndexes.add(index)
+    }
+    // Check before identity generation, journal mutation, audit or filesystem execution.
+    if (protectedIndexes.size >= 100) throw new ManagedBackupError('capacity')
+    for (let index = history.length - 1; index >= 0 && protectedIndexes.size < 99; index--)
+        protectedIndexes.add(index)
+    return history.filter((_receipt, index) => protectedIndexes.has(index))
+}
+
 export async function createManagedBackupEngine(dependencies: ManagedBackupDependencies) {
     const loaded = await dependencies.read()
     let state: ManagedBackupState =
@@ -346,6 +375,7 @@ export async function createManagedBackupEngine(dependencies: ManagedBackupDepen
             )
                 throw new ManagedBackupError('artifact_invalid')
             if (!hasAuditRoom(draft, 4)) throw new ManagedBackupError('capacity')
+            const history = compactMaintenanceJournal(draft.maintenanceRequests ?? [])
             const receipt: ManagedBackupMaintenance = {
                 id: dependencies.id(),
                 requestId: request.requestId,
@@ -363,10 +393,7 @@ export async function createManagedBackupEngine(dependencies: ManagedBackupDepen
                 error: null,
             }
             draft.maintenance = receipt
-            draft.maintenanceRequests = [
-                ...(draft.maintenanceRequests ?? []),
-                structuredClone(receipt),
-            ].slice(-100)
+            draft.maintenanceRequests = [...history, structuredClone(receipt)]
             audit(
                 draft,
                 operation === 'restore' ? 'restore_requested' : 'delete_requested',
