@@ -93,8 +93,11 @@ export default function useRestoreProgress(beforeHide?: () => void) {
                 return
             const pendingRetry = retryOwner.current
             if (pendingRetry) {
-                if (pendingRetry.owner === previous &&
-                    JSON.stringify(pendingRetry.target) === JSON.stringify(next)) return
+                if (
+                    pendingRetry.owner === previous &&
+                    JSON.stringify(pendingRetry.target) === JSON.stringify(next)
+                )
+                    return
                 if (previous?.id !== next.id && pendingRetry.target.id !== next.id)
                     retireOperation(pendingRetry.target.id)
                 cancelRefreshRetry(pendingRetry.target.id !== next.id)
@@ -165,8 +168,7 @@ export default function useRestoreProgress(beforeHide?: () => void) {
                 historicalBlocker.current = next.id
                 refreshRequired.current = true
                 setRefreshPending(true)
-            }
-            else if (previous?.id !== next.id) historicalBlocker.current = null
+            } else if (previous?.id !== next.id) historicalBlocker.current = null
             current.current = next
             setMaintenance(next)
             if (next.state !== 'succeeded' || completing.current === next.id) return
