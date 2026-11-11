@@ -241,47 +241,68 @@ describe('live WebSocket transport', () => {
     })
 })
 
-
-test.each(['resolve', 'reject'] as const)('late response body cancellation retains all permits and shutdown ownership until cancel %s', async (outcome) => {
-    const slots = BACKGROUND_RESOURCE_ENVELOPE.realtime.running
-    const responses = Array.from({ length: slots }, () => Promise.withResolvers<Response>())
-    const cancel = Promise.withResolvers<void>()
-    const cancelled = Promise.withResolvers<void>()
-    let reads = 0, cancellations = 0, nextSettled = false, drained = false
-    const runtime = createLiveWebSocketRuntime({
-        allowedOrigin: 'http://allowed.test', snapshotTimeoutMs: 5,
-        readSnapshot: () => responses[reads++]?.promise ?? Response.json({ revision: 'unexpected fresh read' }),
-    })
-    const request = () => runtime.handle(new Request('http://localhost/api/live', {
-        headers: { upgrade: 'websocket', origin: 'http://allowed.test' },
-    }), { upgrade: () => false } as unknown as Bun.Server<RuntimeSocketData>)
-    const initial = await Promise.all(Array.from({ length: slots }, request))
-    expect(initial.every(result => result.response?.status === 503)).toBe(true)
-    try {
-        for (const response of responses) response.resolve(new Response(new ReadableStream({
-            cancel() {
-                if (++cancellations === slots) cancelled.resolve()
-                return cancel.promise
-            },
-        })))
-        await cancelled.promise
-        const next = request().then(result => { nextSettled = true; return result })
-        await new Promise<void>(resolve => setImmediate(resolve))
-        await new Promise<void>(resolve => setImmediate(resolve))
-        expect(reads).toBe(slots)
-        expect(nextSettled).toBe(false)
-        const shutdown = runtime.shutdown().then(() => { drained = true })
-        expect((await next).response?.status).toBe(503)
-        await new Promise<void>(resolve => setImmediate(resolve))
-        expect(drained).toBe(false)
-        if (outcome === 'reject') cancel.reject(new Error('ignored body cancellation failure'))
-        else cancel.resolve()
-        await shutdown
-        expect(drained).toBe(true)
-        expect(cancellations).toBe(slots)
-    } finally {
-        cancel.resolve()
-        for (const response of responses) response.resolve(new Response(null))
-        await runtime.shutdown()
-    }
-})
+test.each(['resolve', 'reject'] as const)(
+    'late response body cancellation retains all permits and shutdown ownership until cancel %s',
+    async (outcome) => {
+        const slots = BACKGROUND_RESOURCE_ENVELOPE.realtime.running
+        const responses = Array.from({ length: slots }, () => Promise.withResolvers<Response>())
+        const cancel = Promise.withResolvers<void>()
+        const cancelled = Promise.withResolvers<void>()
+        let reads = 0,
+            cancellations = 0,
+            nextSettled = false,
+            drained = false
+        const runtime = createLiveWebSocketRuntime({
+            allowedOrigin: 'http://allowed.test',
+            snapshotTimeoutMs: 5,
+            readSnapshot: () =>
+                responses[reads++]?.promise ?? Response.json({ revision: 'unexpected fresh read' }),
+        })
+        const request = () =>
+            runtime.handle(
+                new Request('http://localhost/api/live', {
+                    headers: { upgrade: 'websocket', origin: 'http://allowed.test' },
+                }),
+                { upgrade: () => false } as unknown as Bun.Server<RuntimeSocketData>,
+            )
+        const initial = await Promise.all(Array.from({ length: slots }, request))
+        expect(initial.every((result) => result.response?.status === 503)).toBe(true)
+        try {
+            for (const response of responses)
+                response.resolve(
+                    new Response(
+                        new ReadableStream({
+                            cancel() {
+                                if (++cancellations === slots) cancelled.resolve()
+                                return cancel.promise
+                            },
+                        }),
+                    ),
+                )
+            await cancelled.promise
+            const next = request().then((result) => {
+                nextSettled = true
+                return result
+            })
+            await new Promise<void>((resolve) => setImmediate(resolve))
+            await new Promise<void>((resolve) => setImmediate(resolve))
+            expect(reads).toBe(slots)
+            expect(nextSettled).toBe(false)
+            const shutdown = runtime.shutdown().then(() => {
+                drained = true
+            })
+            expect((await next).response?.status).toBe(503)
+            await new Promise<void>((resolve) => setImmediate(resolve))
+            expect(drained).toBe(false)
+            if (outcome === 'reject') cancel.reject(new Error('ignored body cancellation failure'))
+            else cancel.resolve()
+            await shutdown
+            expect(drained).toBe(true)
+            expect(cancellations).toBe(slots)
+        } finally {
+            cancel.resolve()
+            for (const response of responses) response.resolve(new Response(null))
+            await runtime.shutdown()
+        }
+    },
+)

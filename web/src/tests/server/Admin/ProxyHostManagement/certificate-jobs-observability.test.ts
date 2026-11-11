@@ -4,7 +4,8 @@ import { runBunScript } from '@/tests/Helpers/runBunScript.ts'
 test.each(['in-flight', 'late claims'] as const)(
     'cancelled certificate cleanup retains SQL admission, claim fences and all sibling drains: %s',
     async (phase) => {
-        const output = await runBunScript(`
+        const output = await runBunScript(
+            `
             import assert from 'node:assert/strict'
             import { mock } from 'bun:test'
             import { admitDatabaseTransaction, withBackgroundDatabaseContext } from './db/background-admission.ts'
@@ -86,9 +87,13 @@ test.each(['in-flight', 'late claims'] as const)(
             assert.equal(reads, '${phase}' === 'in-flight' ? 4 : 0)
             assert.equal(signals.every(signal => signal.aborted), true)
             console.log(JSON.stringify({ stopped, released: releaseSql.length, claims, validations, reads }))
-        `, { cwd: new URL('../../../..', import.meta.url) })
+        `,
+            { cwd: new URL('../../../..', import.meta.url) },
+        )
         expect(JSON.parse(output.trim().split('\n').at(-1)!)).toEqual({
-            stopped: true, released: 4, claims: 4,
+            stopped: true,
+            released: 4,
+            claims: 4,
             validations: phase === 'in-flight' ? 4 : 0,
             reads: phase === 'in-flight' ? 4 : 0,
         })
