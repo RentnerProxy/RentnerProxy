@@ -10,12 +10,30 @@ import type { FixtureResult } from '../runtime-reliability/Types/harness.types.t
 import type { BackgroundOptions } from './Types/background.types.ts'
 import { backgroundSnapshotSchema } from './background.validation.ts'
 
+export type ExtendedRecoveryStage =
+    | 'certificate-prepare'
+    | 'certificate-exercise'
+    | 'monitoring-start'
+    | 'job-queue'
+    | 'backup-restore'
+    | 'origin-restore'
+    | 'job-resume'
+    | 'job-applied'
+    | 'runtime-sync'
+    | 'certificate-metadata'
+    | 'certificate-tls'
+    | 'monitoring-quiesce'
+    | 'monitoring-final-fence'
+    | 'audit-replay'
+    | 'budget'
+
 /** Check cancellation between restore stages and verify the same queued certificate, exact activation, stale-write fences, and audit replay within ten minutes. */
 export async function exerciseExtendedBackgroundRecovery(
     harness: Awaited<ReturnType<typeof createHarness>>,
     options: BackgroundOptions,
     paused: (operation: () => Promise<FixtureResult>) => Promise<FixtureResult>,
     checkCancellation: () => void = () => {},
+    onStage: (stage: ExtendedRecoveryStage) => void = () => {},
 ) {
     checkCancellation()
     const context = harness.context
@@ -27,19 +45,25 @@ export async function exerciseExtendedBackgroundRecovery(
     }
     const started = performance.now()
     checkCancellation()
+    onStage('certificate-prepare')
     await prepareCertificateFixture(context)
     checkCancellation()
+    onStage('certificate-exercise')
     await exerciseCertificates(context, 0)
     checkCancellation()
+    onStage('monitoring-start')
     const workload = backgroundSnapshotSchema.parse(
         (await context.fixture('background-start', extra)).background,
     )
+    onStage('job-queue')
     const queued = (await paused(() => context.fixture('background-job-prepare', extra)))
         .recovery as { jobId?: string; queuedForRestore?: boolean }
     assert.ok(queued.jobId && queued.queuedForRestore)
     checkCancellation()
+    onStage('backup-restore')
     await harness.backupRestore()
     checkCancellation()
+    onStage('origin-restore')
     await context.docker([
         'exec',
         context.container,
@@ -49,6 +73,7 @@ export async function exerciseExtendedBackgroundRecovery(
         `await Bun.write(${JSON.stringify('/tmp/background-origin-' + context.runId)},${JSON.stringify(String(workload.origin))});await import('node:fs/promises').then(fs=>fs.chmod(${JSON.stringify('/tmp/background-origin-' + context.runId)},0o600))`,
     ])
     checkCancellation()
+    onStage('job-resume')
     const resumed = (await context.fixture('background-job-resume', extra)).recovery as {
         jobId?: string
         leaseCleared?: boolean
@@ -57,6 +82,7 @@ export async function exerciseExtendedBackgroundRecovery(
     assert.equal(resumed.leaseCleared, true)
     let final: FixtureResult | undefined
     checkCancellation()
+    onStage('job-applied')
     await context.waitFor(
         async () => {
             checkCancellation()
@@ -69,14 +95,17 @@ export async function exerciseExtendedBackgroundRecovery(
     )
     assert.ok(final?.currentJob?.certificateId)
     checkCancellation()
+    onStage('runtime-sync')
     await context.synced(await context.fixture('snapshot'))
     checkCancellation()
+    onStage('certificate-metadata')
     const metadata = await context.controller(
         '/internal/v1/certificates/' + final.currentJob.certificateId,
     )
     assert.equal(metadata.status, 200)
     assert.equal(typeof metadata.body.fingerprint, 'string')
     checkCancellation()
+    onStage('certificate-tls')
     const tls = await requestHttp3Client(context.command, {
         image: context.http3Image,
         caFile: join(context.temp, 'reliability-issuance-ca.pem'),
@@ -93,12 +122,14 @@ export async function exerciseExtendedBackgroundRecovery(
         'Restored job activates its exact durable certificate',
     )
     checkCancellation()
+    onStage('monitoring-quiesce')
     const quiescent = backgroundSnapshotSchema.parse(
         (await context.fixture('background-quiesce', extra)).background,
     )
     checkCancellation()
     await Bun.sleep(3500)
     checkCancellation()
+    onStage('monitoring-final-fence')
     const stable = backgroundSnapshotSchema.parse(
         (await context.fixture('background-read', extra)).background,
     )
@@ -108,8 +139,10 @@ export async function exerciseExtendedBackgroundRecovery(
         quiescent.observations.length,
         'Cancelled pre-maintenance probes cannot append stale outcomes after the final fence',
     )
+    onStage('audit-replay')
     const audit = (await paused(() => context.fixture('background-audit-replay', extra))).recovery
     checkCancellation()
+    onStage('budget')
     const elapsedMs = performance.now() - started
     assert.ok(
         elapsedMs <= 600000,

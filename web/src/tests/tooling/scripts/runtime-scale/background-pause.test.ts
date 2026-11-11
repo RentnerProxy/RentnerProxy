@@ -3,9 +3,37 @@ import { ReliabilityError } from '../../../../../../scripts/runtime-reliability/
 import {
     backgroundPauseGuard,
     backgroundPauseMarker,
+    backgroundPauseProcessGuard,
+    backgroundPauseDetachedScript,
     checkBackgroundCancellation,
     withBackgroundPause,
 } from '../../../../../../scripts/runtime-scale/background-pause.ts'
+
+test('detached entrypoint keeps PID, identity ticks and marker entirely in argv and rejects code-like arguments', async () => {
+    const script = `await (${backgroundPauseProcessGuard.toString()})(async d=>{if(await d.identity())process.exit(2);if(await d.requested())process.exit(3)}).catch(()=>process.exit(1))`
+    const marker = backgroundPauseMarker('fixture')
+    const valid = Bun.spawn(
+        [process.execPath, '--no-env-file', '-e', script, '999999999', '123456', marker],
+        { stdout: 'ignore', stderr: 'ignore' },
+    )
+    expect(await valid.exited).toBe(0)
+    const invalid = await Promise.all(
+        [
+            ['2);process.exit(0)//', '123456', marker],
+            ['999999999', '0;process.exit(0)', marker],
+            ['999999999', '123456', marker + ';process.exit(0)//'],
+        ].map(async (args) => {
+            const child = Bun.spawn(
+                [process.execPath, '--no-env-file', '-e', backgroundPauseDetachedScript, ...args],
+                { stdout: 'ignore', stderr: 'ignore' },
+            )
+            return child.exited
+        }),
+    )
+    expect(invalid).toEqual([1, 1, 1])
+    expect(backgroundPauseDetachedScript).not.toContain(marker)
+    expect(backgroundPauseDetachedScript).not.toContain('123456')
+})
 
 function guardFixture() {
     let now = 0

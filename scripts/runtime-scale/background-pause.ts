@@ -44,6 +44,45 @@ export async function backgroundPauseGuard(
     }
 }
 
+/** Standalone detached entry point: process identity and private paths are data arguments. */
+export async function backgroundPauseProcessGuard(guard: typeof backgroundPauseGuard) {
+    const [pidText, startTicks, marker] = process.argv.slice(1)
+    if (
+        !pidText ||
+        !/^\d{1,10}$/u.test(pidText) ||
+        !Number.isSafeInteger(Number(pidText)) ||
+        Number(pidText) <= 1 ||
+        !startTicks ||
+        !/^\d{1,20}$/u.test(startTicks) ||
+        !marker ||
+        !/^\/tmp\/background-resume-[a-zA-Z0-9_-]{1,64}-[a-f0-9-]{36}$/u.test(marker)
+    )
+        throw new Error('Invalid background guard arguments')
+    const pid = Number(pidText)
+    await guard({
+        identity: async () => {
+            try {
+                const stat = await Bun.file('/proc/' + pid + '/stat').text()
+                return (
+                    stat
+                        .slice(stat.lastIndexOf(')') + 2)
+                        .trim()
+                        .split(/\s+/u)[19] === startTicks
+                )
+            } catch {
+                return false
+            }
+        },
+        signal: (signal) => process.kill(pid, signal),
+        write: (state) => Bun.write(marker, state),
+        requested: () => Bun.file(marker + '.resume').exists(),
+        now: () => performance.now(),
+        sleep: () => Bun.sleep(100),
+    })
+}
+
+export const backgroundPauseDetachedScript = `await (${backgroundPauseProcessGuard.toString()})(${backgroundPauseGuard.toString()}).catch(()=>process.exit(1))`
+
 /** Resume after every attempted arm, including cancellation and operation failure; cleanup errors never replace an earlier failure identity. */
 export async function withBackgroundPause<T>(
     signal: AbortSignal,

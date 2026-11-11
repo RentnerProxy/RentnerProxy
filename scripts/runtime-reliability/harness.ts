@@ -679,15 +679,6 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
         ])
         await docker(['cp', statePath, container + ':/tmp/rentnerproxy-reliability-fixture.json'])
         const fixtureStatePath = '/tmp/rentnerproxy-reliability-fixture.json'
-        const copiedOwner = await docker([
-            'exec',
-            container,
-            'stat',
-            '--format=%u:%g:%a',
-            fixtureStatePath,
-        ])
-        assert.match(copiedOwner, /^\d+:\d+:[0-7]{3,4}$/u)
-        console.log('Restored private fixture state owner/mode: ' + copiedOwner)
         // The maintenance fixture runs as root; match its original private file ownership.
         await docker(['exec', container, 'chown', '0:0', fixtureStatePath])
         await docker([
@@ -701,6 +692,7 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
             await docker(['exec', container, 'stat', '--format=%u:%g:%a', fixtureStatePath]),
             '0:0:600',
         )
+        console.log('Restored fixture state verified private (owner 0:0, mode 600)')
         await ready()
         const after = await fixture('durability-read')
         assert.deepEqual(after.durableCounts, before.durableCounts)

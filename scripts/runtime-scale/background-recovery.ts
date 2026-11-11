@@ -10,6 +10,7 @@ import {
 import { synchronizeCertificateEventsOnce } from '../../web/src/server/Admin/CertificateManagement/certificate-events.worker.ts'
 import type { FixtureContext } from '../runtime-reliability/Types/fixture.types.ts'
 import { executeFixture } from '../runtime-reliability/fixture.ts'
+import { assertCertificateReplayEvidence } from './background.ts'
 
 /** Prepare/resume the same durable queued job or replay real certificate events, asserting exact cursor and audit idempotence. */
 export async function backgroundRecoveryFixture(context: FixtureContext) {
@@ -85,15 +86,8 @@ export async function backgroundRecoveryFixture(context: FixtureContext) {
         }
     }
     const before = await read()
-    assert.ok(
-        before.cursor && before.receiptIds.length > 0,
-        'Actual controller events are required to establish replay evidence',
-    )
-    assert.equal(
-        new Set(before.auditEventIds).size,
-        before.auditEventIds.length,
-        'Every certificate event has at most one audit effect',
-    )
+    assertCertificateReplayEvidence(before)
+    assert.ok(before.cursor)
     await database
         .update(certificateEventCursor)
         .set({ cursor: before.cursor.split(':')[0] + ':0' })

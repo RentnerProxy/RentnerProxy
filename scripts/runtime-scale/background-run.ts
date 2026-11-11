@@ -17,7 +17,7 @@ import {
     parseBackgroundOptions,
 } from './background.ts'
 import {
-    backgroundPauseGuard,
+    backgroundPauseDetachedScript,
     backgroundPauseMarker,
     checkBackgroundCancellation,
     withBackgroundPause,
@@ -98,8 +98,7 @@ async function withPausedWeb<T>(
     assert.ok(web?.length === 1)
     const target = web[0]!
     const guardPath = backgroundPauseMarker(context.runId)
-    const identity = `async()=>{try{const stat=await Bun.file('/proc/${target.pid}/stat').text();return stat.slice(stat.lastIndexOf(')')+2).trim().split(/\\s+/)[19]===${JSON.stringify(target.startTicks)}}catch{return false}}`
-    const exec = (script: string, detached = false) =>
+    const exec = (script: string, detached = false, args: readonly string[] = []) =>
         context.docker([
             'exec',
             ...(detached ? ['--detach'] : []),
@@ -108,18 +107,20 @@ async function withPausedWeb<T>(
             '--no-env-file',
             '-e',
             script,
+            ...args,
         ])
     const state = () =>
-        exec(
-            `try{process.stdout.write(await Bun.file(${JSON.stringify(guardPath)}).text())}catch{}`,
-        )
+        exec('try{process.stdout.write(await Bun.file(process.argv[1]).text())}catch{}', false, [
+            guardPath,
+        ])
     return withBackgroundPause(
         signal,
         async () => {
-            await exec(
-                `await (${backgroundPauseGuard.toString()})({identity:${identity},signal:s=>process.kill(${target.pid},s),write:s=>Bun.write(${JSON.stringify(guardPath)},s),requested:()=>Bun.file(${JSON.stringify(guardPath + '.resume')}).exists(),now:()=>performance.now(),sleep:()=>Bun.sleep(100)}).catch(()=>process.exit(1))`,
-                true,
-            )
+            await exec(backgroundPauseDetachedScript, true, [
+                String(target.pid),
+                target.startTicks,
+                guardPath,
+            ])
             await context.waitFor(
                 async () => {
                     checkBackgroundCancellation(signal)
@@ -139,7 +140,7 @@ async function withPausedWeb<T>(
             return operation()
         },
         async () => {
-            await exec(`await Bun.write(${JSON.stringify(guardPath + '.resume')},'resume')`)
+            await exec("await Bun.write(process.argv[1]+'.resume','resume')", false, [guardPath])
             await context.waitFor(
                 async () => (await state()) === 'resumed',
                 'web resume guard completed',
@@ -192,7 +193,10 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
     let discovery: unknown
     let extendedRecovery: unknown = {
         status: 'insufficient',
-        reason: 'Explicit --extended-recovery true required for certificate interruption, active-work restore and audit replay',
+        selected: options.extendedRecovery === true,
+        reason: options.extendedRecovery
+            ? 'Selected extended recovery has not completed'
+            : 'Explicit --extended-recovery true required for certificate interruption, active-work restore and audit replay',
     }
     let failure: string | undefined
     let failureContext:
@@ -438,6 +442,7 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
                 options,
                 (operation) => withPausedWeb(context, operation, abort.signal, domain),
                 () => checkBackgroundCancellation(abort.signal),
+                (step) => enter('extended-recovery:' + step),
             )
         }
         checkBackgroundCancellation(abort.signal)

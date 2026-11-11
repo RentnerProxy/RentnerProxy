@@ -58,7 +58,7 @@ export function backgroundFailureDiagnostic(error: unknown) {
     if (!(error instanceof Error)) return { frames: [] as string[] }
     const frames = [
         ...(error.stack ?? '').matchAll(
-            /[\\/](background-run|background|component-recovery)\.ts:(\d{1,7}):(\d{1,7})\b/gu,
+            /[\\/](background-run|background|background-extended|background-recovery|component-recovery)\.ts:(\d{1,7}):(\d{1,7})\b/gu,
         ),
     ].map((match) => match[1] + '.ts:' + match[2] + ':' + match[3])
     const role =
@@ -75,6 +75,38 @@ export function backgroundFailureDiagnostic(error: unknown) {
               )
             : undefined
     return { frames: [...new Set(frames)].slice(0, 4), ...(role ? { role } : {}) }
+}
+
+/** A replay comparison is meaningful only after nonempty, one-to-one durable audit effects. */
+export function assertCertificateReplayEvidence(evidence: {
+    cursor: string | null | undefined
+    receiptIds: readonly string[]
+    auditIds: readonly string[]
+    auditEventIds: readonly string[]
+}) {
+    assert.ok(
+        evidence.cursor && evidence.receiptIds.length > 0,
+        'Actual controller events are required to establish replay evidence',
+    )
+    assert.ok(
+        evidence.auditIds.length > 0,
+        'Nonempty actual certificate audit effects are required to establish replay evidence',
+    )
+    assert.equal(
+        evidence.auditIds.length,
+        evidence.auditEventIds.length,
+        'Every observed audit row must carry its event identity',
+    )
+    assert.equal(
+        new Set(evidence.auditEventIds).size,
+        evidence.auditEventIds.length,
+        'Every certificate event has at most one audit effect',
+    )
+    assert.deepEqual(
+        [...evidence.auditEventIds].toSorted(),
+        [...evidence.receiptIds].toSorted(),
+        'Every actual certificate receipt must have exactly one durable audit effect',
+    )
 }
 
 export const backgroundSlo = {
