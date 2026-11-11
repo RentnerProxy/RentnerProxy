@@ -4,6 +4,7 @@ use super::{
     dns::DnsProviderConfig,
     dns_connections::{self, Consumer, ConsumerType, Reference},
 };
+use std::sync::Arc;
 
 fn reference(id: &str, config: &DnsProviderConfig) -> Option<Reference> {
     config
@@ -32,8 +33,16 @@ impl ProxyRuntime {
     // Callers hold Store::bindings across reference reservation and certificate
     // persistence. A reconciliation cannot prune another request's reservation.
     pub(crate) async fn reconcile_provider_connections(
-        &self,
+        self: &Arc<Self>,
     ) -> Result<(), dns_connections::Error> {
+        self.storage_async(
+            |runtime| async move { runtime.reconcile_provider_connections_inner().await },
+        )
+        .await
+        .map_err(|_| dns_connections::Error::StoreUnavailable)?
+    }
+
+    async fn reconcile_provider_connections_inner(&self) -> Result<(), dns_connections::Error> {
         let configurations = self
             .certificate_store
             .dns_configurations()
@@ -81,6 +90,22 @@ impl ProxyRuntime {
     }
 
     pub(super) async fn reserve_certificate_connection(
+        self: &Arc<Self>,
+        id: &str,
+        request: &super::certificates::CertificateIssueRequest,
+    ) -> Result<(), CertificateError> {
+        let id = id.to_owned();
+        let request = request.clone();
+        self.storage_async(move |runtime| async move {
+            runtime
+                .reserve_certificate_connection_inner(&id, &request)
+                .await
+        })
+        .await
+        .map_err(|_| CertificateError::StoreUnavailable)?
+    }
+
+    async fn reserve_certificate_connection_inner(
         &self,
         id: &str,
         request: &super::certificates::CertificateIssueRequest,

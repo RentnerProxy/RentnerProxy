@@ -279,7 +279,7 @@ async function waitForWakeOrDelay(milliseconds: number): Promise<void> {
     if (wakeResolver !== null) wakeResolver = null
 }
 
-/** Observe committed event batches with cancellation and bounded wakeable retries; timers alone never establish progress. */
+/** Observe committed event changes with owned cancellation and bounded wakeable retry timing when synchronization fails. */
 async function runWorker(): Promise<void> {
     let retryDelay = CERTIFICATE_EVENT_INITIAL_RETRY_DELAY_MS
     // oxlint-disable-next-line no-unmodified-loop-condition -- stopCertificateEventsSynchronization changes this lifecycle flag.

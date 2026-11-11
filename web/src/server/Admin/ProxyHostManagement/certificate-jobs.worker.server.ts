@@ -145,7 +145,7 @@ async function loadOrIssueJobCertificate(
     return metadata
 }
 
-/** Fence context before controller work, release unfinished leases durably, and count success only after binding/runtime confirmation. */
+/** Fence job context before controller work, release deferred/failed/cancelled leases durably, and count success only after binding/runtime confirmation. */
 async function processCertificateJob(
     job: CertificateJobRow,
     controller = certificateJobController,
@@ -264,7 +264,7 @@ let stopped = true
 let controller = new AbortController()
 let unavailable = false
 
-/** Start one nonoverlapping batch chain with fresh cancellation, five-second post-settlement spacing and rate-limited outage logging. */
+/** Start one nonoverlapping observed batch chain with fresh cancellation, five-second spacing after settlement, and bounded unavailable logging. */
 export function startCertificateJobWorker(): void {
     if (!stopped || running) return
     stopped = false
@@ -301,7 +301,7 @@ export function startCertificateJobWorker(): void {
     tick()
 }
 
-/** Latch stop, abort controller I/O and cancel the retry timer before awaiting the bounded current batch drain. */
+/** Latch stop, cancel the pending timer and abort controller I/O before awaiting the bounded current batch drain. */
 export async function stopCertificateJobWorker(): Promise<void> {
     stopped = true
     controller.abort()
