@@ -258,6 +258,12 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
         await context.synced(await context.fixture('prepare'))
         checkBackgroundCancellation(abort.signal)
         await context.synced(await context.fixture('background-prepare', extra))
+        if (options.policies === 1000)
+            await context.refreshDns(
+                backgroundPolicies(options)
+                    .slice(-2)
+                    .map((item) => `bg-${item.index}-${item.latency}-${context.domain}`),
+            )
         origin = performance.now()
         enter('workload')
         snapshot = backgroundSnapshotSchema.parse(
