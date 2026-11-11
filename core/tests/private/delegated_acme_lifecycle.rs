@@ -661,6 +661,20 @@ fn cleanup_recovery_keeps_authority_when_connection_is_missing_and_releases_work
                     .unwrap()
                     .is_some()
             );
+            let observed_before = serde_json::to_value(runtime.background.snapshot()).unwrap();
+            runtime.recover_dns_cleanup_one(ID).await;
+            let observed_after = serde_json::to_value(runtime.background.snapshot()).unwrap();
+            let orders_before = &observed_before["workers"][4];
+            let orders_after = &observed_after["workers"][4];
+            assert_eq!(orders_after["id"], "acme_orders");
+            assert_eq!(orders_after["failures"], orders_before["failures"]);
+            assert_eq!(orders_after["successes"], orders_before["successes"]);
+            assert_eq!(orders_after["runningCount"], 0);
+            assert_eq!(
+                runtime.certificate_store.begin_dns_cleanup(ID).await,
+                Err(CertificateError::OperationInProgress),
+                "a competing cleanup pass must not release the owner's live lease"
+            );
             runtime.certificate_store.finish_dns_cleanup(ID).await;
             runtime.recover_dns_cleanup().await;
             timeout(Duration::from_secs(3), async {
