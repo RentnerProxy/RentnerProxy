@@ -16,6 +16,7 @@ export function createRestoreMaintenanceFence(dependencies: {
     let validUntil = 0
     let entering: Promise<void> | null = null
     let preparing: Promise<void> | null = null
+    let destructive = false
 
     function cacheSessions(
         id: string,
@@ -44,6 +45,7 @@ export function createRestoreMaintenanceFence(dependencies: {
         if (operationId !== null && operationId !== id)
             return Promise.reject(new Error('Restore maintenance already entered'))
         operationId = id
+        destructive = true
         entering ??= (async () => {
             if (preparing) await preparing
             await Promise.allSettled(pending)
@@ -87,6 +89,7 @@ export function createRestoreMaintenanceFence(dependencies: {
     }
 
     function release(): void {
+        if (destructive) return
         operationId = null
         viewers.clear()
         validUntil = 0

@@ -3,12 +3,12 @@ import type { BackgroundWorkerId } from './worker-observability.types.ts'
 
 export interface RuntimeReconcileDependencies<T> {
     readonly enabled?: boolean
-    readonly load: () => Promise<T>
+    readonly load: (signal?: AbortSignal) => Promise<T>
     readonly revision: (snapshot: T) => string
-    readonly apply: (snapshot: T) => Promise<boolean | RuntimeApplyFailure>
+    readonly apply: (snapshot: T, signal?: AbortSignal) => Promise<boolean | RuntimeApplyFailure>
     readonly drift?:
-        | { readonly check: () => Promise<boolean> }
-        | { readonly matches: (snapshot: T) => Promise<boolean> }
+        | { readonly check: (signal?: AbortSignal) => Promise<boolean> }
+        | { readonly matches: (snapshot: T, signal?: AbortSignal) => Promise<boolean> }
 }
 
 export interface RuntimeApplyFailure {

@@ -43,10 +43,10 @@ export const reconcileProxyConfigurationService = createProxyReconciler({
     enabled: isProxyRuntimeReconciliationEnabled(),
     loadSnapshot: getBackgroundProxyRuntimeSnapshotService,
     applySnapshot: applyProxyRuntimeConfigurationResult,
-    checkDrift: async () => {
+    checkDrift: async (signal) => {
         const [snapshot, runtime] = await Promise.all([
             getBackgroundProxyRuntimeSnapshotService(),
-            getProxyRuntimeStatus(),
+            getProxyRuntimeStatus(signal),
         ])
         return compareProxyRuntimeStatus(snapshot.revision, runtime).state !== 'synced'
     },

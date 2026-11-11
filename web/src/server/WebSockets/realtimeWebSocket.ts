@@ -25,7 +25,11 @@ import { createSubscriptionManager } from './realtimeSubscriptions.ts'
 import type { LiveConnectionData } from './Types/realtime-subscriptions.types.ts'
 import { createRealtimeLifecycle } from './realtimeLifecycle.ts'
 import { createRealtimeHandler } from './realtimeHandler.ts'
-import { ResourceAdmissionError } from '@/server/Foundation/resource-admission.ts'
+import {
+    ResourceAdmissionError,
+    releaseAfterSettled,
+} from '@/server/Foundation/resource-admission.ts'
+import { drainWorker } from '@/server/Foundation/worker-drain.ts'
 
 export function createLiveWebSocketRuntime(
     options: LiveWebSocketRuntimeOptions,
@@ -39,6 +43,7 @@ export function createLiveWebSocketRuntime(
     const pending = new Set<LiveConnectionData>()
     let pendingReservations = 0
     let shuttingDown = false
+    let shutdownResult: Promise<void> | null = null
 
     async function expectedOrigin(request: Request): Promise<string | null> {
         const value =
@@ -52,7 +57,7 @@ export function createLiveWebSocketRuntime(
     const manager = createSubscriptionManager({
         maxPayloadBytes,
         snapshotTimeoutMs,
-        readSnapshot: (subscription, signal) =>
+        readSnapshot: (subscription, signal, trackWork) =>
             readSubscriptionSnapshot(
                 subscription,
                 signal,
@@ -65,6 +70,7 @@ export function createLiveWebSocketRuntime(
                         current.queryText,
                     ),
                 maxPayloadBytes,
+                trackWork,
             ),
         closeUnauthorized: (connection) => lifecycle.unauthorized(connection),
         closeUnavailable: (connection, status) => {
@@ -109,6 +115,7 @@ export function createLiveWebSocketRuntime(
         try {
             const origin = normalizeOrigin(request.headers.get('origin'))
             const configuredOrigin = await expectedOrigin(request)
+            if (shuttingDown) return { handled: true, response: statusResponse(503) }
             if (!origin || !configuredOrigin || origin !== configuredOrigin) {
                 return { handled: true, response: statusResponse(403) }
             }
@@ -130,6 +137,7 @@ export function createLiveWebSocketRuntime(
             reservation.handshakeAbortController = waiting
             let release: (() => void) | undefined
             let authStatus: number
+            const actualWork = new Set<Promise<unknown>>()
             try {
                 release = await manager.acquireResource(waiting.signal)
                 if (reservation.closed || shuttingDown)
@@ -140,12 +148,13 @@ export function createLiveWebSocketRuntime(
                     snapshotTimeoutMs,
                     maxPayloadBytes,
                     options.readSnapshot,
+                    (work) => actualWork.add(work),
                 )
             } catch (error) {
                 if (!(error instanceof ResourceAdmissionError)) throw error
                 return { handled: true, response: statusResponse(503) }
             } finally {
-                release?.()
+                releaseAfterSettled(release, actualWork)
                 if (reservation.handshakeAbortController === waiting)
                     reservation.handshakeAbortController = null
             }
@@ -168,8 +177,8 @@ export function createLiveWebSocketRuntime(
 
     const unsubscribeFromChanges = subscribeToApplicationChanges(() => manager.sampleAll())
 
-    async function shutdown(): Promise<void> {
-        if (shuttingDown) return
+    function shutdown(): Promise<void> {
+        if (shutdownResult) return shutdownResult
         shuttingDown = true
         unsubscribeFromChanges()
         for (const connection of [...pending, ...manager.connections]) {
@@ -177,6 +186,8 @@ export function createLiveWebSocketRuntime(
         }
         pending.clear()
         manager.connections.clear()
+        shutdownResult = drainWorker(manager.drainResources())
+        return shutdownResult
     }
 
     return {

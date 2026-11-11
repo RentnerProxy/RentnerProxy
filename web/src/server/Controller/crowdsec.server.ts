@@ -114,8 +114,11 @@ export async function enrollCrowdSecConsole(
     return 'unavailable'
 }
 
-export async function getCrowdSecRuntimeStatus(): Promise<CrowdSecRuntimeStatus | null> {
+export async function getCrowdSecRuntimeStatus(
+    signal?: AbortSignal,
+): Promise<CrowdSecRuntimeStatus | null> {
     const payload = await controllerRequest('/internal/v1/crowdsec/status', {
+        ...(signal ? { signal } : {}),
         timeoutMs: CROWDSEC_STATUS_TIMEOUT_MS,
         privileged: true,
     })
@@ -155,8 +158,10 @@ export async function getCrowdSecDashboard(
 
 export async function applyCrowdSecConfiguration(
     request: CrowdSecControllerRequest,
+    signal?: AbortSignal,
 ): Promise<CrowdSecRuntimeStatus | null> {
     const payload = await controllerRequest('/internal/v1/crowdsec/config', {
+        ...(signal ? { signal } : {}),
         timeoutMs: CROWDSEC_APPLY_TIMEOUT_MS,
         privileged: true,
         confidential: request.mode === 'external',

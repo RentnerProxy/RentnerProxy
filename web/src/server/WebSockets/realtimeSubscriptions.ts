@@ -10,6 +10,7 @@ import { BACKGROUND_RESOURCE_ENVELOPE } from '@/config/background-resources.conf
 import {
     createResourceAdmission,
     ResourceAdmissionError,
+    releaseAfterSettled,
 } from '@/server/Foundation/resource-admission.ts'
 import type { LiveTopic } from '@/lib/Live/Types/realtime.types.ts'
 import { comparisonKey, snapshotMessage } from '@/lib/Live/snapshot.ts'
@@ -30,10 +31,21 @@ function unsubscribe(connection: LiveConnectionData, topic: LiveTopic): void {
 
 export function createSubscriptionManager(options: SubscriptionManagerOptions) {
     const admission = createResourceAdmission(BACKGROUND_RESOURCE_ENVELOPE.realtime)
+    const outstanding = new Set<Promise<void>>()
     let pressureLoggedAt = -Infinity
     async function acquireResource(signal?: AbortSignal) {
         try {
-            return await admission.acquire(signal)
+            const release = await admission.acquire(signal)
+            const completion = Promise.withResolvers<void>()
+            outstanding.add(completion.promise)
+            let released = false
+            return () => {
+                if (released) return
+                released = true
+                release()
+                outstanding.delete(completion.promise)
+                completion.resolve()
+            }
         } catch (error) {
             if (
                 error instanceof ResourceAdmissionError &&
@@ -60,6 +72,7 @@ export function createSubscriptionManager(options: SubscriptionManagerOptions) {
         subscription.abortController = controller
         let release: (() => void) | undefined
         let deferred = false
+        const actualWork = new Set<Promise<unknown>>()
         try {
             release = await acquireResource(controller.signal)
             if (!subscription.active || connection.closed) return
@@ -67,7 +80,9 @@ export function createSubscriptionManager(options: SubscriptionManagerOptions) {
                 () => controller.abort(),
                 options.snapshotTimeoutMs,
             )
-            const result = await options.readSnapshot(subscription, controller.signal)
+            const result = await options.readSnapshot(subscription, controller.signal, (work) =>
+                actualWork.add(work),
+            )
             if (!subscription.active || connection.closed) return
             if (result.kind === 'failure') {
                 if (result.status === 401 || result.status === 403) {
@@ -111,7 +126,7 @@ export function createSubscriptionManager(options: SubscriptionManagerOptions) {
             // The existing periodic sampler retries; no additional callback/retry timer is queued.
             deferred = true
         } finally {
-            release?.()
+            releaseAfterSettled(release, actualWork)
             subscription.inflight = false
             if (subscription.abortTimer !== null) clearTimeout(subscription.abortTimer)
             subscription.abortTimer = null
@@ -167,6 +182,12 @@ export function createSubscriptionManager(options: SubscriptionManagerOptions) {
     const connections = new Set<LiveConnectionData>()
 
     const manager: LiveSubscriptionManager = {
+        async drainResources() {
+            while (outstanding.size > 0) {
+                // oxlint-disable-next-line no-await-in-loop -- All admitted reads must settle before claiming a completed drain.
+                await Promise.allSettled(outstanding)
+            }
+        },
         connections,
         sample,
         sampleAll,

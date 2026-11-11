@@ -1,3 +1,4 @@
+import { drainWorker, settleWorkerTasks } from '@/server/Foundation/worker-lifecycle.server.ts'
 import { HOST_MONITORING_LIMITS } from '@/config/host-monitoring.config.ts'
 import type { HostMonitoringWorkerDependencies } from './Types/host-monitoring-worker.types.ts'
 
@@ -173,9 +174,18 @@ export function createHostMonitoringWorker<Claim>(
             unsubscribe = undefined
             controller.abort()
             stopping = (async () => {
-                await Promise.all([admission, pruning])
-                await Promise.all(running)
-            })().finally(() => {
+                await drainWorker(
+                    (async () => {
+                        const admitted = await Promise.allSettled([admission, pruning])
+                        await settleWorkerTasks([
+                            ...running,
+                            ...admitted.map((result) =>
+                                result.status === 'rejected' ? Promise.reject(result.reason) : null,
+                            ),
+                        ])
+                    })(),
+                )
+            })().then(() => {
                 stopping = null
             })
             return stopping

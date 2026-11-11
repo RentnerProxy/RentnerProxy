@@ -69,13 +69,29 @@ export function planBackupAuditBatch(cursor: BackupAuditCursor, status: ManagedB
     }
 }
 
+class BackupAuditCursorChanged extends Error {}
+
 export function createBackupAuditIngestor(dependencies: BackupAuditDependencies) {
-    return async (signal: AbortSignal) => {
+    async function ingest(signal: AbortSignal) {
+        signal.throwIfAborted()
+        const expectedCursor = await dependencies.transaction(async (transaction) => {
+            signal.throwIfAborted()
+            return { ...transaction.cursor }
+        })
+        // Fetch without an SQL permit or cursor lock. A concurrent consumer may
+        // advance or rebase the cursor while this root snapshot is in flight.
+        const status = await dependencies.status(signal)
+        signal.throwIfAborted()
         const committed = await dependencies.transaction(async (transaction) => {
             signal.throwIfAborted()
-            // Read under the cursor lock: snapshots from different root stores must not overtake each other.
-            const status = await dependencies.status(signal)
-            signal.throwIfAborted()
+            if (
+                transaction.cursor.storeId !== expectedCursor.storeId ||
+                transaction.cursor.sequence !== expectedCursor.sequence ||
+                transaction.cursor.restorePending !== expectedCursor.restorePending
+            )
+                throw new BackupAuditCursorChanged(
+                    'Backup audit cursor changed during snapshot read',
+                )
             const planned = planBackupAuditBatch(transaction.cursor, status)
             const admission = await transaction.enqueue(planned.sourceEvents)
             if (
@@ -119,5 +135,15 @@ export function createBackupAuditIngestor(dependencies: BackupAuditDependencies)
                 signal,
             )
         return committed.count
+    }
+    return async (signal: AbortSignal) => {
+        try {
+            return await ingest(signal)
+        } catch (error) {
+            if (!(error instanceof BackupAuditCursorChanged)) throw error
+            // One fresh snapshot retry; further contention returns to the
+            // owner's periodic pass rather than creating an unbounded loop.
+            return ingest(signal)
+        }
     }
 }

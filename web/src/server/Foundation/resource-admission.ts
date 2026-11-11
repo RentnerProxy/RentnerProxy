@@ -10,6 +10,13 @@ export class ResourceAdmissionError extends Error {
     }
 }
 
+export function releaseAfterSettled(
+    release: (() => void) | undefined,
+    work: Iterable<Promise<unknown>>,
+): void {
+    if (release) void Promise.allSettled(work).then(release)
+}
+
 /** Bounded FIFO permits, acquired before hydration/SQL. Pending jobs remain in their durable owner. */
 export function createResourceAdmission(
     policy: ResourceAdmissionPolicy,

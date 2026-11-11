@@ -59,12 +59,70 @@ test('handshake storms share the sampling budget and shutdown aborts queued admi
     await Bun.sleep(0)
     expect(reads).toBe(4)
     expect(runtime.connectionCount).toBe(36)
-    await runtime.shutdown()
+    let drained = false
+    const stopping = runtime.shutdown().then(() => {
+        drained = true
+    })
     const results = await Promise.all(requests)
+    expect(drained).toBe(false)
     finish.resolve()
+    await stopping
     expect(reads).toBe(4)
     expect(results.every((result) => result.response?.status === 503)).toBe(true)
     expect(runtime.connectionCount).toBe(0)
+})
+
+test('timed-out hydration retains its permit and shutdown waits for actual reader settlement', async () => {
+    const finish = Promise.withResolvers<void>()
+    let reads = 0
+    let active = 0
+    let peak = 0
+    const runtime = createLiveWebSocketRuntime({
+        allowedOrigin: 'https://proxy.example',
+        snapshotTimeoutMs: 10,
+        readSnapshot: async () => {
+            reads++
+            active++
+            peak = Math.max(peak, active)
+            try {
+                await finish.promise
+                return Response.json({})
+            } finally {
+                active--
+            }
+        },
+    })
+    const wave = () =>
+        Promise.all(
+            Array.from({ length: 4 }, () =>
+                runtime.handle(
+                    new Request('https://proxy.example/api/live', {
+                        headers: { upgrade: 'websocket', origin: 'https://proxy.example' },
+                    }),
+                    { upgrade: () => false } as unknown as Bun.Server<LiveSocketData>,
+                ),
+            ),
+        )
+    try {
+        expect((await wave()).every((result) => result.response?.status === 503)).toBe(true)
+        expect((await wave()).every((result) => result.response?.status === 503)).toBe(true)
+        expect(reads).toBe(4)
+        expect(active).toBe(4)
+        expect(peak).toBe(4)
+        let drained = false
+        const stopping = runtime.shutdown().then(() => {
+            drained = true
+        })
+        await Bun.sleep(0)
+        expect(drained).toBe(false)
+        finish.resolve()
+        await stopping
+        expect(active).toBe(0)
+        expect(drained).toBe(true)
+    } finally {
+        finish.resolve()
+        await runtime.shutdown()
+    }
 })
 
 test('realtime storms are admitted before snapshot hydration with bounded FIFO waits and coalesced pending hints', async () => {

@@ -35,6 +35,7 @@ export interface SubscriptionManagerOptions {
     readonly readSnapshot: (
         subscription: LiveTopicSubscription,
         signal: AbortSignal,
+        trackWork?: (work: Promise<unknown>) => void,
     ) => Promise<{
         readonly kind: 'success' | 'failure'
         readonly data?: unknown
@@ -48,6 +49,7 @@ export interface SubscriptionManagerOptions {
 }
 
 export interface LiveSubscriptionManager {
+    readonly drainResources: () => Promise<void>
     readonly acquireResource: (signal?: AbortSignal) => Promise<() => void>
     readonly resourceUsage: () => {
         readonly running: number

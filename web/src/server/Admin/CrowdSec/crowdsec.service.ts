@@ -98,13 +98,13 @@ function controllerResponseMatches(
 export const reconcileCrowdSecConfiguration = createCrowdSecReconciler({
     enabled: isProxyRuntimeReconciliationEnabled(),
     load: loadReconcileSnapshot,
-    apply: async (snapshot) =>
+    apply: async (snapshot, signal) =>
         controllerResponseMatches(
             snapshot.request,
-            await applyCrowdSecConfiguration(snapshot.request),
+            await applyCrowdSecConfiguration(snapshot.request, signal),
         ),
-    hasDrift: async (snapshot) => {
-        const runtime = await getCrowdSecRuntimeStatus()
+    hasDrift: async (snapshot, signal) => {
+        const runtime = await getCrowdSecRuntimeStatus(signal)
         if (!runtime || runtime.mode !== snapshot.request.mode) return true
         if (snapshot.request.mode === 'disabled') return runtime.enforcementActive
         if (!runtime.enforcementActive || runtime.state !== 'connected') return true

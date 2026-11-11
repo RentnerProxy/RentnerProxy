@@ -58,6 +58,7 @@ export async function readSubscriptionSnapshot(
     ) => Response | Promise<Response>,
     getSnapshotUrl: (subscription: LiveTopicSubscription) => string,
     maxPayloadBytes = LIVE_MAX_PAYLOAD_BYTES,
+    trackWork?: (work: Promise<unknown>) => void,
 ): Promise<LiveReadResult> {
     const headers = new Headers()
     if (subscription.connection.cookie !== null) {
@@ -68,16 +69,20 @@ export async function readSubscriptionSnapshot(
     let response: Response
     const responseAbort = abortable<Response>(signal, () => undefined)
     try {
-        const responsePromise = Promise.resolve(
-            readSnapshot(request, {
-                request,
-                topic: subscription.topic,
-                query: subscription.query,
-            }),
-        ).then((result) => {
-            if (signal.aborted) void result.body?.cancel().catch(() => undefined)
-            return result
-        })
+        const responsePromise = Promise.resolve()
+            .then(() => {
+                signal.throwIfAborted()
+                return readSnapshot(request, {
+                    request,
+                    topic: subscription.topic,
+                    query: subscription.query,
+                })
+            })
+            .then((result) => {
+                if (signal.aborted) void result.body?.cancel().catch(() => undefined)
+                return result
+            })
+        trackWork?.(responsePromise)
         response = await Promise.race([responsePromise, responseAbort.promise])
     } catch {
         responseAbort.cleanup()
@@ -92,10 +97,9 @@ export async function readSubscriptionSnapshot(
         void response.body?.cancel().catch(() => undefined)
     })
     try {
-        const data = await Promise.race([
-            readBoundedJson(response, maxPayloadBytes, signal),
-            bodyAbort.promise,
-        ])
+        const reading = readBoundedJson(response, maxPayloadBytes, signal)
+        trackWork?.(reading)
+        const data = await Promise.race([reading, bodyAbort.promise])
         return { kind: 'success', data }
     } catch {
         void response.body?.cancel().catch(() => undefined)
@@ -111,6 +115,7 @@ export async function readLiveHandshake(
     snapshotTimeoutMs: number,
     maxPayloadBytes: number,
     readSnapshot: LiveSnapshotReader,
+    trackWork?: (work: Promise<unknown>) => void,
 ): Promise<number> {
     const controller = new AbortController()
     connection.handshakeAbortController = controller
@@ -124,6 +129,7 @@ export async function readLiveHandshake(
             (current) =>
                 snapshotUrl(connection.requestUrl, snapshotPath, current.topic, current.queryText),
             maxPayloadBytes,
+            trackWork,
         )
         return result.kind === 'failure' ? (result.status ?? 503) : 200
     } finally {
