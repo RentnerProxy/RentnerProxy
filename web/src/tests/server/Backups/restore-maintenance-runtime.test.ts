@@ -112,12 +112,14 @@ test.each(['fresh delete', 'fresh preflight', 'observed delete'] as const)(
             await acknowledged.promise
             assert.deepEqual(calls.acknowledgements, [unsafe.id])
             if ('${scenario}' === 'observed delete') assert.equal(active.id, unsafe.id)
-            else assert.equal(active, null) // An ID-only receipt cannot invent the old actor/artifact.
+            else assert.deepEqual(active, { ...unsafe, detailsUnavailable: true })
             observation = { maintenance: { ...recovery, state: 'failed', phase: 'validating' }, restoreResults: [unsafe] }
             assert.equal((await runtime.withRestoreMaintenanceFence(mutation, next)).status, 503)
             observation = { maintenance: recovery, restoreResults: [unsafe, recovery] }
             assert.equal((await runtime.withRestoreMaintenanceFence(mutation, next)).status, 503)
             assert.equal(runtime.isRestoreMaintenanceFenced(), true) // This old process already closed SQL.
+            if ('${scenario}' !== 'observed delete')
+                assert.deepEqual(await runtime.getActiveRestoreMaintenance(), { ...unsafe, detailsUnavailable: true })
             assert.equal(calls.writes, 0)
         `)
         expect(JSON.parse(output.trim().split('\n').at(-1)!)).toMatchObject({

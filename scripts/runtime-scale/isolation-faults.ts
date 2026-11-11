@@ -19,6 +19,19 @@ interface FaultContext {
     snapshotPath: string
 }
 
+/** A completed HTTP request is not proof that every requested saturation query succeeded. */
+export async function assertIsolationPoolSaturation(response: Response): Promise<void> {
+    if (response.status !== 200) {
+        await response.body?.cancel()
+        throw new Error('Isolation pool saturation failed')
+    }
+    assert.deepEqual(await response.json(), {
+        requested: isolationContract.workerConnections,
+        succeeded: isolationContract.workerConnections,
+        failed: 0,
+    })
+}
+
 /** Poll a durable checkpoint every 25 milliseconds until its deadline; propagate checkpoint failures and reject an unmet deadline. */
 async function waitFor(test: () => Promise<boolean>, limit: number) {
     const deadline = performance.now() + limit
@@ -151,7 +164,7 @@ export async function runIsolationFaults(context: FaultContext) {
             background = await spawn('background')
         const saturation = request(background, '/pool', 'POST')
         const latency = await ssr(foreground, 100)
-        await saturation
+        await assertIsolationPoolSaturation(await saturation)
         assert.ok(latency.p99 !== null && latency.p99 <= isolationContract.thresholds.ssrP99Ms)
         let denied = false
         try {
