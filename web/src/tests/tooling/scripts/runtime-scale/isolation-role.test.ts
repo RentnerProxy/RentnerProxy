@@ -15,12 +15,15 @@ test('the bounded pool fault admits the worst threshold-compliant sequential SSR
     expect(budget.samples).toBe(100)
     expect(worst).toBe(65_500)
     expect(budget.measurementMs).toBeGreaterThan(worst + budget.activityReadMs)
-    expect(budget.poolClientMs).toBeGreaterThanOrEqual(budget.readinessMs + budget.measurementMs + 5_000)
+    expect(budget.poolClientMs).toBeGreaterThanOrEqual(
+        budget.readinessMs + budget.measurementMs + 5_000,
+    )
     expect(budget.poolServerSeconds * 1_000).toBeGreaterThan(budget.poolClientMs)
 })
 
 test('an aborted activity read cancels its exact SQL query and awaits actual settlement and connection release', async () => {
-    const output = await runBunScript(`
+    const output = await runBunScript(
+        `
         import assert from 'node:assert/strict'
         import { activeIsolationPoolQueries } from './scripts/runtime-scale/isolation-faults.ts'
         const started = Promise.withResolvers(), completed = Promise.withResolvers(), released = Promise.withResolvers()
@@ -49,8 +52,14 @@ test('an aborted activity read cancels its exact SQL query and awaits actual set
             assert.equal((await operation).error, reason)
             console.log(JSON.stringify({ cancels, releases, settled }))
         } finally { completed.resolve([{ active: 8, pids: 8 }]); released.resolve(); await operation }
-    `, { cwd: new URL('../../../../../..', import.meta.url) })
-    expect(JSON.parse(output.trim().split('\n').at(-1)!)).toEqual({ cancels: 1, releases: 1, settled: true })
+    `,
+        { cwd: new URL('../../../../../..', import.meta.url) },
+    )
+    expect(JSON.parse(output.trim().split('\n').at(-1)!)).toEqual({
+        cancels: 1,
+        releases: 1,
+        settled: true,
+    })
 })
 
 test('pool client requests retain the outer abort signal and use only the declared path-specific deadline', async () => {
@@ -60,10 +69,15 @@ test('pool client requests retain the outer abort signal and use only the declar
         deadlines.push(milliseconds)
         return new AbortController().signal
     })
-    const fetcher = spyOn(globalThis, 'fetch').mockImplementation(Object.assign(async (_input: RequestInfo | URL, options?: RequestInit) => {
-        captured.push(options!.signal!)
-        return new Response()
-    }, { preconnect: globalThis.fetch.preconnect }))
+    const fetcher = spyOn(globalThis, 'fetch').mockImplementation(
+        Object.assign(
+            async (_input: RequestInfo | URL, options?: RequestInit) => {
+                captured.push(options!.signal!)
+                return new Response()
+            },
+            { preconnect: globalThis.fetch.preconnect },
+        ),
+    )
     const owner = new AbortController()
     try {
         const child = { ready: { port: 12345, pid: 1, uid: 20004 } }
@@ -71,12 +85,16 @@ test('pool client requests retain the outer abort signal and use only the declar
         await requestIsolationRole(child, '/ssr', 'GET', owner.signal)
         expect(deadlines).toEqual([80_000, 16_000])
         owner.abort()
-        expect(captured.every(signal => signal.aborted)).toBe(true)
-    } finally { timeout.mockRestore(); fetcher.mockRestore() }
+        expect(captured.every((signal) => signal.aborted)).toBe(true)
+    } finally {
+        timeout.mockRestore()
+        fetcher.mockRestore()
+    }
 })
 
 test('the actual pool route extends only its own Bun request timeout before dispatching SQL', async () => {
-    const output = await runBunScript(`
+    const output = await runBunScript(
+        `
         import assert from 'node:assert/strict'
         import { mock } from 'bun:test'
         const isolation = await import('./scripts/runtime-scale/isolation.ts')
@@ -116,12 +134,15 @@ test('the actual pool route extends only its own Bun request timeout before disp
         assert.deepEqual(timeouts, [85])
         assert.equal(calls, 8)
         console.log(JSON.stringify({ timeouts, calls }))
-    `, { cwd: new URL('../../../../../..', import.meta.url) })
+    `,
+        { cwd: new URL('../../../../../..', import.meta.url) },
+    )
     expect(JSON.parse(output.trim().split('\n').at(-1)!)).toEqual({ timeouts: [85], calls: 8 })
 })
 
 test('settled activity reads remove cancellation ownership and pre-aborted reads never reserve', async () => {
-    const output = await runBunScript(`
+    const output = await runBunScript(
+        `
         import assert from 'node:assert/strict'
         import { activeIsolationPoolQueries } from './scripts/runtime-scale/isolation-faults.ts'
         const owner = new AbortController()
@@ -135,12 +156,15 @@ test('settled activity reads remove cancellation ownership and pre-aborted reads
         await assert.rejects(activeIsolationPoolQueries(database, owner.signal), error => error === owner.signal.reason)
         assert.deepEqual({ reserves, cancels, releases }, { reserves: 1, cancels: 0, releases: 1 })
         console.log('settled')
-    `, { cwd: new URL('../../../../../..', import.meta.url) })
+    `,
+        { cwd: new URL('../../../../../..', import.meta.url) },
+    )
     expect(output.trim()).toBe('settled')
 })
 
 test('activity reservation cancellation preserves the phase deadline before any SQL can start', async () => {
-    const output = await runBunScript(`
+    const output = await runBunScript(
+        `
         import assert from 'node:assert/strict'
         import { activeIsolationPoolQueries } from './scripts/runtime-scale/isolation-faults.ts'
         const owner = new AbortController(), reason = new Error('phase deadline')
@@ -154,12 +178,15 @@ test('activity reservation cancellation preserves the phase deadline before any 
         await rejection
         assert.equal(cancels, 1)
         console.log('cancelled')
-    `, { cwd: new URL('../../../../../..', import.meta.url) })
+    `,
+        { cwd: new URL('../../../../../..', import.meta.url) },
+    )
     expect(output.trim()).toBe('cancelled')
 })
 
 test('the activity read deadline cancels at two seconds and still owns delayed query settlement', async () => {
-    const output = await runBunScript(`
+    const output = await runBunScript(
+        `
         import assert from 'node:assert/strict'
         import { jest } from 'bun:test'
         import { activeIsolationPoolQueries } from './scripts/runtime-scale/isolation-faults.ts'
@@ -189,7 +216,9 @@ test('the activity read deadline cancels at two seconds and still owns delayed q
             assert.equal(releases, 1)
             console.log('bounded')
         } finally { AbortSignal.timeout = originalTimeout; completed.resolve([{ active: 8, pids: 8 }]); await operation; jest.useRealTimers() }
-    `, { cwd: new URL('../../../../../..', import.meta.url) })
+    `,
+        { cwd: new URL('../../../../../..', import.meta.url) },
+    )
     expect(output.trim()).toBe('bounded')
 })
 

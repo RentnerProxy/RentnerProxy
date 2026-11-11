@@ -295,7 +295,9 @@ test.each([
             await cancelled.promise
             expect(
                 (await initial).every(
-                    (result) => result.response?.status === (phase === 'late' ? 503 : phase === 'overflow' ? 413 : 403),
+                    (result) =>
+                        result.response?.status ===
+                        (phase === 'late' ? 503 : phase === 'overflow' ? 413 : 403),
                 ),
             ).toBe(true)
             const next = request().then((result) => {
