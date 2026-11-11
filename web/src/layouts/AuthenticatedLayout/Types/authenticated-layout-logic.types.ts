@@ -1,6 +1,6 @@
 import type { InputMessages } from '@rentnerkev/inputs'
 import type { SelectMessages } from '@rentnerkev/select'
-import type { ManagedBackupMaintenance } from '@/lib/Backups/Types/backups.types.ts'
+import type { RestoreMaintenanceDisplay } from '@/lib/Backups/Types/backups.types.ts'
 
 import type { AppLanguage } from '@/shared/Language/Types/language.types.ts'
 import type {
@@ -11,7 +11,7 @@ import type { UserThemeMode } from '@/config/Types/theme-config.types.ts'
 
 export interface AuthenticatedLayoutLogicResult {
     readonly state: {
-        readonly restoreMaintenance: ManagedBackupMaintenance | null
+        readonly restoreMaintenance: RestoreMaintenanceDisplay | null
         readonly restoreDisconnected: boolean
         readonly isIdentityPending: boolean
         readonly identityGeneration: number
