@@ -361,6 +361,7 @@ describe('durable scheduled monitoring repository', () => {
             const claimWithAdmissionRetry = async (): Promise<HostMonitoringClaim[]> => {
                 for (let attempt = 1; attempt <= 7; attempt++) {
                     try {
+                        // oxlint-disable-next-line no-await-in-loop -- Retry only after this bounded admission attempt settles.
                         return await claimDueHostMonitoringPolicies(16)
                     } catch (error) {
                         if (
