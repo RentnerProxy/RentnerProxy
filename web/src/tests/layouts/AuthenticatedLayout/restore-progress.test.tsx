@@ -695,33 +695,48 @@ test('failed hidden-recovery refresh retains the blocker and retries the same ro
 test.each(['failed complete refresh', 'historical blocker'] as const)(
     'a newer restore inherits the refresh obligation from %s before any preflight dismissal',
     async (origin) => {
-        const blocked = origin === 'historical blocker' ? await recoveryPreflightSnapshot(false) : null
+        const blocked =
+            origin === 'historical blocker' ? await recoveryPreflightSnapshot(false) : null
         await mount()
         const gate = Promise.withResolvers<void>()
         const success = spyOn(toast, 'success').mockReturnValue('unused')
         const invalidate = spyOn(router, 'invalidate')
-        if (origin === 'failed complete refresh') invalidate.mockRejectedValueOnce(new Error('Refresh failed'))
+        if (origin === 'failed complete refresh')
+            invalidate.mockRejectedValueOnce(new Error('Refresh failed'))
         invalidate.mockImplementation(() => gate.promise)
-        restorers.push(() => { success.mockRestore(); invalidate.mockRestore() })
+        restorers.push(() => {
+            success.mockRestore()
+            invalidate.mockRestore()
+        })
         if (blocked) await deliver(blocked.maintenance)
         else await deliver(running)
         jest.useFakeTimers()
         try {
             if (!blocked) {
-                await deliver({ ...running, state: 'succeeded', phase: 'complete', progressPercent: 100 })
+                await deliver({
+                    ...running,
+                    state: 'succeeded',
+                    phase: 'complete',
+                    progressPercent: 100,
+                })
                 expect(invalidate).toHaveBeenCalledTimes(1)
             }
             const newer = { ...running, id: uuid(97), phase: 'validating', progressPercent: 5 }
             await deliver(newer)
             await deliver({ ...newer, state: 'failed', error: 'artifact_invalid' })
             expect(container.querySelector('main button') === null).toBe(true)
-            expect(container.querySelector('[data-route-state]')?.closest('[hidden]')).not.toBeNull()
+            expect(
+                container.querySelector('[data-route-state]')?.closest('[hidden]'),
+            ).not.toBeNull()
             expect(invalidate).toHaveBeenCalledTimes(blocked ? 1 : 2)
             expect(success).not.toHaveBeenCalled()
             await act(async () => gate.resolve())
             expect(container.querySelector('main button')).not.toBeNull()
             expect(success).not.toHaveBeenCalled()
-        } finally { gate.resolve(); jest.useRealTimers() }
+        } finally {
+            gate.resolve()
+            jest.useRealTimers()
+        }
     },
 )
 
