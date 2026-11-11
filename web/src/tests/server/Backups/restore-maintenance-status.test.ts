@@ -15,7 +15,7 @@ const close = mock(async () => undefined)
 const file = { stat, read, close }
 mock.module('node:fs/promises', () => ({ open }))
 
-const { readRestoreMaintenanceStatus } =
+const { readRestoreMaintenanceStatus, readRestoreMaintenanceObservation } =
     await import('@/server/Backups/restore-maintenance-status.server.ts')
 
 beforeEach(() => {
@@ -41,6 +41,61 @@ test('reads only the root-owned fixed maintenance file with no symlink following
         constants.O_RDONLY | constants.O_NOFOLLOW,
     )
     expect(close).toHaveBeenCalledTimes(1)
+})
+
+test('reads ID-bound restore results from the same root-verified publication', async () => {
+    const result = {
+        id: '01900000-0000-7000-8000-000000000001',
+        operation: 'restore',
+        state: 'failed',
+        phase: 'validating',
+    } as const
+    contents = JSON.stringify({ maintenance: null, restoreResults: [result] })
+    expect(await readRestoreMaintenanceObservation()).toEqual({
+        maintenance: null,
+        restoreResults: [result],
+    })
+    expect(open).toHaveBeenCalledTimes(1)
+    expect(close).toHaveBeenCalledTimes(1)
+})
+
+test.each([
+    { id: '../untrusted', operation: 'restore', state: 'failed', phase: 'validating' },
+    {
+        id: '01900000-0000-7000-8000-000000000001',
+        operation: 'restore',
+        state: 'running',
+        phase: 'validating',
+    },
+    {
+        id: '01900000-0000-7000-8000-000000000001',
+        operation: 'delete',
+        state: 'failed',
+        phase: 'validating',
+    },
+    {
+        id: '01900000-0000-7000-8000-000000000001',
+        operation: 'restore',
+        state: 'failed',
+        phase: 'validating',
+        secret: 'forbidden',
+    },
+])('rejects invalid or nonterminal restore evidence: %j', async (result) => {
+    contents = JSON.stringify({ maintenance: null, restoreResults: [result] })
+    await expect(readRestoreMaintenanceObservation()).rejects.toThrow()
+})
+
+test('rejects a history beyond the authoritative 100-entry horizon', async () => {
+    contents = JSON.stringify({
+        maintenance: null,
+        restoreResults: Array.from({ length: 101 }, () => ({
+            id: '01900000-0000-7000-8000-000000000001',
+            operation: 'restore',
+            state: 'failed',
+            phase: 'validating',
+        })),
+    })
+    await expect(readRestoreMaintenanceObservation()).rejects.toThrow()
 })
 
 test.each([
