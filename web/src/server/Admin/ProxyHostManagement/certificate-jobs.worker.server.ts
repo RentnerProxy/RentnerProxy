@@ -51,7 +51,10 @@ class CertificateJobCleanupError extends Error {
 
 const pendingReleases = new Map<
     CertificateJobRow,
-    { changes: Parameters<typeof releaseClaimedCertificateJob>[1]; error: CertificateJobCleanupError }
+    {
+        changes: Parameters<typeof releaseClaimedCertificateJob>[1]
+        error: CertificateJobCleanupError
+    }
 >()
 
 /** Release an owned lease after worker cancellation while retaining SQL admission and the original token fence. */

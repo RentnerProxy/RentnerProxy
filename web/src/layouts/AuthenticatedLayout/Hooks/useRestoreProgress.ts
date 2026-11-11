@@ -55,9 +55,16 @@ export default function useRestoreProgress(beforeHide?: () => void) {
             if (retiredOperations.current.has(next.id)) return
             const previous = current.current
             const historical = 'detailsUnavailable' in next
-            if ((completing.current !== null || retryTimer.current !== null) && historical && previous &&
-                'detailsUnavailable' in previous && previous.id === next.id &&
-                previous.state === next.state && previous.phase === next.phase) return
+            if (
+                (completing.current !== null || retryTimer.current !== null) &&
+                historical &&
+                previous &&
+                'detailsUnavailable' in previous &&
+                previous.id === next.id &&
+                previous.state === next.state &&
+                previous.phase === next.phase
+            )
+                return
             if (previous?.id === next.id && !('detailsUnavailable' in previous)) {
                 if (historical || next.progressPercent < previous.progressPercent) return
             }
@@ -66,14 +73,19 @@ export default function useRestoreProgress(beforeHide?: () => void) {
             const blockedByHistory = previous !== null && historicalBlocker.current === previous.id
             const completedRecovery =
                 blockedByHistory &&
-                !historical && next.state === 'succeeded' && next.phase === 'complete'
+                !historical &&
+                next.state === 'succeeded' &&
+                next.phase === 'complete'
             // A fenced server retains its destructive blocker instead of exposing a later preflight failure.
-            const preflightRecovery = !historical &&
+            const preflightRecovery =
+                !historical &&
                 (next.state === 'failed' || next.state === 'interrupted') &&
                 ['queued', 'preparing', 'validating'].includes(next.phase) &&
                 ((blockedByHistory && previous?.id !== next.id) || refreshRequired.current)
             if (
-                !historical && !completedRecovery && !preflightRecovery &&
+                !historical &&
+                !completedRecovery &&
+                !preflightRecovery &&
                 next.state !== 'queued' &&
                 next.state !== 'running' &&
                 current.current?.id !== next.id
@@ -87,7 +99,8 @@ export default function useRestoreProgress(beforeHide?: () => void) {
             }
             // One timer owns one failed refresh. Identical server snapshots need not be republished.
             const scheduleRefreshRetry = (owner: RestoreMaintenanceDisplay | null) => {
-                if (!mounted.current || current.current !== owner || retryTimer.current !== null) return
+                if (!mounted.current || current.current !== owner || retryTimer.current !== null)
+                    return
                 const waitMs = retryDelay.current
                 retryDelay.current = Math.min(waitMs * 2, 30_000)
                 retryOwner.current = { target: next, owner }
@@ -95,12 +108,20 @@ export default function useRestoreProgress(beforeHide?: () => void) {
                     const retry = retryOwner.current
                     retryTimer.current = null
                     retryOwner.current = null
-                    if (retry && mounted.current && current.current === retry.owner &&
-                        !retiredOperations.current.has(retry.target.id))
+                    if (
+                        retry &&
+                        mounted.current &&
+                        current.current === retry.owner &&
+                        !retiredOperations.current.has(retry.target.id)
+                    )
                         void handleRestoreSnapshot({ maintenance: retry.target })
                 }, waitMs)
             }
-            if (previous?.id !== next.id && completing.current !== null && completing.current !== next.id)
+            if (
+                previous?.id !== next.id &&
+                completing.current !== null &&
+                completing.current !== next.id
+            )
                 retireOperation(completing.current)
             if (preflightRecovery) {
                 refreshRequired.current = true
@@ -112,7 +133,11 @@ export default function useRestoreProgress(beforeHide?: () => void) {
                     queryClient.clear()
                     await router.invalidate({ sync: true })
                     // Keep the blocker until refresh succeeds; a newer ordered snapshot owns the screen now.
-                    if (mounted.current && current.current === previous && completing.current === next.id) {
+                    if (
+                        mounted.current &&
+                        current.current === previous &&
+                        completing.current === next.id
+                    ) {
                         if (previous && previous.id !== next.id) retireOperation(previous.id)
                         cancelRefreshRetry()
                         historicalBlocker.current = null

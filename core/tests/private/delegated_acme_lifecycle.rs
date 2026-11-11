@@ -259,7 +259,9 @@ fn late_delegated_cancellation_uses_settled_store_outcome() {
         .build()
         .unwrap()
         .block_on(async {
-            for (persist, shutting_down) in [(true, false), (false, false), (true, true), (false, true)] {
+            for (persist, shutting_down) in
+                [(true, false), (false, false), (true, true), (false, true)]
+            {
                 let runtime = runtime().await;
                 let operation_id = begin_delegated(&runtime).await;
                 let (entered, started) = tokio::sync::oneshot::channel();

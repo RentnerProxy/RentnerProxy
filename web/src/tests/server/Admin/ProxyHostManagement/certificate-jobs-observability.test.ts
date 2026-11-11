@@ -2,12 +2,15 @@ import { expect, test } from 'bun:test'
 import { runBunScript } from '@/tests/Helpers/runBunScript.ts'
 
 test.each([
-    ['in-flight', 'admission'], ['late claims', 'admission'],
-    ['in-flight', 'sql'], ['late claims', 'sql'],
+    ['in-flight', 'admission'],
+    ['late claims', 'admission'],
+    ['in-flight', 'sql'],
+    ['late claims', 'sql'],
 ] as const)(
     'owned certificate cleanup failure fences restore and recovers only after the original SQL fence: %s / %s',
     async (phase, failureKind) => {
-        const output = await runBunScript(`
+        const output = await runBunScript(
+            `
             import assert from 'node:assert/strict'
             import { mock } from 'bun:test'
             process.env.DATABASE_URL = 'postgresql://unit:unit@127.0.0.1:1/rentnerproxy_unit'
@@ -72,9 +75,13 @@ test.each([
             await assert.rejects(stopped, error => error.cause === failure)
             assert.deepEqual([...leases], [[jobs[0].id, 'newer-token']])
             console.log(JSON.stringify({ claims, releases, originalStopFailed: true }))
-        `, { cwd: new URL('../../../..', import.meta.url) })
+        `,
+            { cwd: new URL('../../../..', import.meta.url) },
+        )
         expect(JSON.parse(output.trim().split('\n').at(-1)!)).toEqual({
-            claims: 8, releases: 6, originalStopFailed: true,
+            claims: 8,
+            releases: 6,
+            originalStopFailed: true,
         })
     },
 )
