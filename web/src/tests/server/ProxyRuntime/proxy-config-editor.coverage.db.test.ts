@@ -121,6 +121,7 @@ integrationTest(
             .select()
             .from(auditEvents)
             .where(eq(auditEvents.actorUserId, actor))
+            .orderBy(auditEvents.createdAt, auditEvents.id)
         expect(
             audits
                 .filter((event) => event.resource === 'proxy-runtime-settings')

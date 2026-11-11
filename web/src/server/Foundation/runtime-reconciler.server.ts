@@ -148,7 +148,8 @@ export function createRuntimeReconciler<T>(
     function enqueue(): void {
         requested += 1
         if (!worker && !stopped) {
-            worker = withBackgroundDatabaseContext(runWorker).finally(() => {
+            // This shared worker outlives the discovery/request scope that first wakes it.
+            worker = withBackgroundDatabaseContext(runWorker, null).finally(() => {
                 worker = null
             })
         }
@@ -193,7 +194,7 @@ export function createRuntimeReconciler<T>(
         const drift = dependencies.drift
         if (!drift || stopped || dependencies.enabled === false) return Promise.resolve()
         if (driftFlight) return driftFlight
-        driftFlight = withBackgroundDatabaseContext(() => observeDrift(drift)).finally(() => {
+        driftFlight = withBackgroundDatabaseContext(() => observeDrift(drift), null).finally(() => {
             driftFlight = null
         })
         return driftFlight

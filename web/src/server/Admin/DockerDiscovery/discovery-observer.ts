@@ -9,6 +9,13 @@ import { createDiscoveryWorker } from './discovery-scheduler.ts'
 
 export class DiscoverySuperseded extends Error {}
 
+/** A controller apply lacks its durable receipt; cancellation cannot establish a clean drain. */
+export class DiscoveryFinalizationError extends Error {
+    constructor(cause: unknown) {
+        super('discovery_finalization_failed', { cause })
+    }
+}
+
 function equal(left: DockerDiscoveryCursor | null, right: DockerDiscoveryCursor | null) {
     return left?.runtimeId === right?.runtimeId && left?.generation === right?.generation
 }
@@ -41,6 +48,7 @@ export function createDiscoveryObserver(dependencies: DiscoveryObserverDependenc
     let watching: Promise<void> | null = null
     let lastReconciled: DockerDiscoveryCursor | null = null
     let watchUnavailable = false
+    let finalizationFailure: DiscoveryFinalizationError | null = null
     const retired = new Map<string, number>()
 
     function accept(observation: DiscoveryObservation, requestEpoch: number): boolean {
@@ -137,12 +145,17 @@ export function createDiscoveryObserver(dependencies: DiscoveryObserverDependenc
                     assertCurrent,
                     force || !equal(lastReconciled, observation.cursor),
                 )
+                if (result.receiptSettled) finalizationFailure = null
                 lastReconciled = observation.cursor
                 enabled = result.enabled
                 if (!enabled) stopWatch()
                 else startWatch()
                 if (result.again) scheduler.request(false, limits.continuationMs)
             } catch (error) {
+                if (error instanceof DiscoveryFinalizationError) {
+                    finalizationFailure = error
+                    if (signal.aborted) throw error
+                }
                 if (error instanceof DiscoverySuperseded || signal.aborted) {
                     if (!signal.aborted) scheduler.request(pending === null)
                     return
@@ -174,6 +187,7 @@ export function createDiscoveryObserver(dependencies: DiscoveryObserverDependenc
             stopWatch()
             await scheduler.stop()
             await watching
+            if (finalizationFailure) throw finalizationFailure
         },
     }
 }

@@ -12,8 +12,10 @@ type Sample = {
     explicitLockStatementWallMs: number[]
     lockStatementToTransactionSettlementMs: number[]
     sqlstates: string[]
-    transactionAcquireAndBeginMs: number[]
-    transactionCallbackMs: number[]
+    rootTransactionAcquireAndBeginMs: number[]
+    rootTransactionCallbackMs: number[]
+    nestedSavepointEnterMs: number[]
+    nestedSavepointCallbackMs: number[]
     returnedRows: number
     affectedRows: number
     rows: unknown[]
@@ -40,7 +42,11 @@ async function sourceStamp() {
         .split('\n')
         .filter((path) => path.endsWith('.ts'))
     const digest = crypto.createHash('sha256')
-    for (const path of paths) digest.update(path).update(await readFile(path))
+    for (let offset = 0; offset < paths.length; offset += 32) {
+        const batch = paths.slice(offset, offset + 32)
+        const contents = await Promise.all(batch.map((path) => readFile(path)))
+        for (const [index, path] of batch.entries()) digest.update(path).update(contents[index]!)
+    }
     return {
         head: git('rev-parse', 'HEAD'),
         productionSha256: digest.digest('hex'),
@@ -195,12 +201,23 @@ function instrumentClient(
                     return async (transaction: SQL) => {
                         instrumentClient(transaction, restores, seen, lockCompletions)
                         const entered = performance.now()
-                        if (sample) sample.transactionAcquireAndBeginMs.push(entered - started)
+                        if (sample) {
+                            const entry =
+                                key === 'begin'
+                                    ? sample.rootTransactionAcquireAndBeginMs
+                                    : sample.nestedSavepointEnterMs
+                            entry.push(entered - started)
+                        }
                         try {
                             return await argument(transaction)
                         } finally {
-                            if (sample)
-                                sample.transactionCallbackMs.push(performance.now() - entered)
+                            if (sample) {
+                                const callbackDurations =
+                                    key === 'begin'
+                                        ? sample.rootTransactionCallbackMs
+                                        : sample.nestedSavepointCallbackMs
+                                callbackDurations.push(performance.now() - entered)
+                            }
                         }
                     }
                 })
@@ -348,6 +365,9 @@ const enabled = process.env.RENTNERPROXY_POSTGRES_PROFILE === '1'
         })
         const restores: Array<() => void> = []
         const reports: unknown[] = []
+        const scopeDatabase = 'worker_profile_scope_' + crypto.randomBytes(6).toString('hex')
+        let scopeCreated = false
+        let scopeClient: SQL | undefined
         try {
             const [server] = await observer`select current_setting('server_version') version,
                 current_setting('max_connections') max_connections, current_setting('track_io_timing') track_io_timing`
@@ -356,6 +376,41 @@ const enabled = process.env.RENTNERPROXY_POSTGRES_PROFILE === '1'
             (select count(*) from rentnerproxy.certificate_binding_jobs) as count`
             expect(Number(occupied!.count)).toBe(0)
             await observer`create extension if not exists pg_stat_statements`
+            const [statisticsIdentity] = await observer<
+                { database_oid: number; reset_arguments: string }[]
+            >`
+                select (select oid::int from pg_database where datname=current_database()) database_oid,
+                    pg_get_function_identity_arguments(oid) reset_arguments
+                from pg_proc where proname='pg_stat_statements_reset'`
+            if (
+                !statisticsIdentity ||
+                !statisticsIdentity.reset_arguments.startsWith(
+                    'userid oid, dbid oid, queryid bigint',
+                )
+            )
+                throw new Error('Unsupported PostgreSQL statistics reset API')
+            const databaseOid = statisticsIdentity.database_oid
+            await observer.unsafe('create database "' + scopeDatabase + '"')
+            scopeCreated = true
+            const scopeUrl = new URL(url)
+            scopeUrl.pathname = '/' + scopeDatabase
+            const scope = new SQL(scopeUrl.href, {
+                max: 1,
+                connection: { application_name: 'worker-profile-stat-sentinel' },
+            })
+            scopeClient = scope
+            await scope`create table profile_scope_sentinel (value integer not null)`
+            await scope`insert into profile_scope_sentinel values (1), (2), (3)`
+            await scope`select sum(value)::integer as sentinel from profile_scope_sentinel`
+            const [scopeIdentity] = await observer<
+                { oid: number }[]
+            >`select oid::int oid from pg_database where datname=${scopeDatabase}`
+            if (!scopeIdentity) throw new Error('Owned statistics sentinel database unavailable')
+            /** Read only the freshly owned second database's shared statistics; never reset its counters. */
+            const scopeStatistics = () => observer`
+                select queryid::text queryid, calls::float8 calls, rows::float8 rows, total_exec_time
+                from pg_stat_statements where dbid=${scopeIdentity.oid}::oid order by queryid`
+            expect((await scopeStatistics()).length).toBeGreaterThan(0)
             await installWriteVolumeObserver(observer)
             instrumentClient(db.$client, restores)
             instrumentSynchronousWork(restores)
@@ -367,7 +422,11 @@ const enabled = process.env.RENTNERPROXY_POSTGRES_PROFILE === '1'
             /** Run one real production operation with no overlapping producer, then read numeric observer evidence outside its wall/CPU window. */
             async function measure<T>(name: string, operation: () => Promise<T>): Promise<T> {
                 await observer`update worker_profile.phase set name=${name}`
-                await observer`select pg_stat_statements_reset()`
+                const scopeBeforeReset = await scopeStatistics()
+                await observer`select pg_stat_statements_reset(0::oid, ${databaseOid}::oid, 0::bigint)`
+                expect(await scopeStatistics()).toEqual(scopeBeforeReset)
+                await scope`select sum(value)::integer as sentinel from profile_scope_sentinel`
+                const scopeBeforeOperation = await scopeStatistics()
                 const sample: Sample = {
                     name,
                     queries: 0,
@@ -375,8 +434,10 @@ const enabled = process.env.RENTNERPROXY_POSTGRES_PROFILE === '1'
                     explicitLockStatementWallMs: [],
                     lockStatementToTransactionSettlementMs: [],
                     sqlstates: [],
-                    transactionAcquireAndBeginMs: [],
-                    transactionCallbackMs: [],
+                    rootTransactionAcquireAndBeginMs: [],
+                    rootTransactionCallbackMs: [],
+                    nestedSavepointEnterMs: [],
+                    nestedSavepointCallbackMs: [],
                     returnedRows: 0,
                     affectedRows: 0,
                     rows: [],
@@ -418,9 +479,18 @@ const enabled = process.env.RENTNERPROXY_POSTGRES_PROFILE === '1'
                 await sampling
                 const [pg] = await observer`select coalesce(sum(calls),0)::float8 calls,
                 coalesce(sum(total_exec_time),0)::float8 exec_ms, coalesce(sum(rows),0)::float8 rows,
-                coalesce(sum(wal_bytes),0)::float8 wal_bytes from pg_stat_statements
-                where query not like '%pg_stat%' and query not like '%worker_profile%'
+                coalesce(sum(wal_bytes),0)::float8 wal_bytes,
+                count(distinct dbid)::int database_count from pg_stat_statements
+                where dbid=${databaseOid}::oid and query not like '%pg_stat%' and query not like '%worker_profile%'
                 and query not in ('BEGIN', 'COMMIT', 'ROLLBACK')`
+                expect(pg!.database_count).toBe(1)
+                expect(await scopeStatistics()).toEqual(scopeBeforeOperation)
+                if (name === 'monitoring-complete16') {
+                    expect(sample.rootTransactionAcquireAndBeginMs).toHaveLength(1)
+                    expect(sample.rootTransactionCallbackMs).toHaveLength(1)
+                    expect(sample.nestedSavepointEnterMs).toHaveLength(16)
+                    expect(sample.nestedSavepointCallbackMs).toHaveLength(16)
+                }
                 const [writes] =
                     await observer`select coalesce(sum(bytes),0)::float8 jsonb_text_bytes_written,
                 coalesce(sum(jsonb_columns),0)::int jsonb_column_write_occurrences from worker_profile.writes where operation=${name}`
@@ -747,11 +817,17 @@ const enabled = process.env.RENTNERPROXY_POSTGRES_PROFILE === '1'
             expect(after.head).toBe(before.head)
             console.info(
                 JSON.stringify({
-                    kind: 'worker-postgres-profile-v1',
+                    kind: 'worker-postgres-profile-v2',
                     source: before,
                     sourceAfter: after,
                     bun: Bun.version,
                     postgres: server,
+                    statisticsScope: {
+                        databaseOid,
+                        resetArguments: statisticsIdentity.reset_arguments,
+                        untouchedSentinelDatabaseOid: scopeIdentity.oid,
+                        sentinelStatisticsPreserved: true,
+                    },
                     platform: process.platform,
                     architecture: process.arch,
                     semantics: {
@@ -765,7 +841,7 @@ const enabled = process.env.RENTNERPROXY_POSTGRES_PROFILE === '1'
                             'Logical UTF-8 JSONB text per written row and column; not WAL or physical TOAST bytes',
                         cpu: 'Process CPU includes instrumentation; JSON and node:crypto/Bun CryptoHasher update/digest counters cover JS entrypoints only, excluding native SQL JSON decoding',
                         transactionTiming:
-                            'Pool acquisition plus BEGIN and callback lifetime; explicit lock completion to transaction settlement is a client-observed hold interval, not exact server lock hold',
+                            'Root BEGIN arrays exclude nested SAVEPOINTs, which have separate entry/callback arrays; explicit lock completion to transaction settlement is a client-observed hold interval, not exact server lock hold',
                         waits: '5ms sampled Lock waits and connection counts; client-minus-PG is a residual, not attributed pool/network wait. Failed SQL execution time is not attributed by pg_stat_statements',
                         observerOverhead:
                             'JSONB AFTER triggers add PostgreSQL CPU/WAL and retain transaction atomicity; observer SQL excluded from counters',
@@ -782,8 +858,10 @@ const enabled = process.env.RENTNERPROXY_POSTGRES_PROFILE === '1'
             active = undefined
             for (const restore of restores.toReversed()) restore()
             await db.$client.close()
+            await scopeClient?.close()
+            if (scopeCreated) await observer.unsafe('drop database "' + scopeDatabase + '"')
             await observer.close()
         }
     },
-    60_000,
+    20_000,
 )

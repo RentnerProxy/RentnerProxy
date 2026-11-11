@@ -72,34 +72,46 @@ export async function prunePolicyHistoryInTransaction(
 }
 
 export async function pruneHistoryInTransaction(transaction: AuthTransaction): Promise<void> {
+    // Fix each policy's cutoff and overflow boundary before scanning its oldest page.
+    // The extra time bound keeps a settled policy from scanning its retained samples.
+    // A bounded ID array lets deletion use the primary key instead of joining the whole history.
     await transaction.execute(sql`
-        delete from "rentnerproxy"."host_check_observations" as observation
-        using (
-            select expired.id
+        with policy as materialized (
+            select budget.id, budget.policy_count,
+                clock_timestamp() - budget.retention_days * interval '1 day' as cutoff,
+                boundary.checked_at as boundary_at, boundary.id as boundary_id
             from (
                 select id, retention_days, count(*) over () as policy_count,
                     least(sample_limit, greatest(${HOST_MONITORING_LIMITS.maxObservations} / count(*) over (), 1)) as sample_budget
                 from "rentnerproxy"."host_check_policies"
-            ) policy
+            ) budget
+            left join lateral (
+                select checked_at, id
+                from "rentnerproxy"."host_check_observations"
+                where policy_id = budget.id
+                order by checked_at desc, id desc
+                offset budget.sample_budget limit 1
+            ) boundary on true
+        )
+        delete from "rentnerproxy"."host_check_observations" as observation
+        where observation.id = any(array(
+            select expired.id
+            from policy
             cross join lateral (
                 select o.id, row_number() over (order by o.checked_at, o.id) as slot
                 from "rentnerproxy"."host_check_observations" o
-                where o.policy_id = policy.id and (
-                    o.checked_at < clock_timestamp() - policy.retention_days * interval '1 day'
-                    or (o.checked_at, o.id) <= (
-                        select boundary.checked_at, boundary.id
-                        from "rentnerproxy"."host_check_observations" boundary
-                        where boundary.policy_id = policy.id
-                        order by boundary.checked_at desc, boundary.id desc
-                        offset policy.sample_budget limit 1
+                where o.policy_id = policy.id
+                    and o.checked_at <= greatest(policy.cutoff, policy.boundary_at)
+                    and (
+                        o.checked_at < policy.cutoff
+                        or (o.checked_at, o.id) <= (policy.boundary_at, policy.boundary_id)
                     )
-                )
                 order by o.checked_at, o.id
                 limit greatest(${HOST_MONITORING_LIMITS.retentionPolicyPageSize}, ${HOST_MONITORING_LIMITS.retentionDeleteLimit} / policy.policy_count)
             ) expired
             order by expired.slot, policy.id
             limit ${HOST_MONITORING_LIMITS.retentionDeleteLimit}
-        ) expired where observation.id = expired.id
+        ))
     `)
     // Open incidents consume their policy's share but are never selected for deletion.
     await transaction.execute(sql`
