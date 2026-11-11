@@ -4,6 +4,8 @@ import '@tanstack/react-start/server-only'
 import type { ProxyRuntimeMutationStatus } from '@/lib/ProxyRuntime/Types/proxy-runtime.types.ts'
 import { workerObservability } from './worker-observability.ts'
 import { drainWorker, settleWorkerTasks } from './worker-lifecycle.server.ts'
+import { withBackgroundDatabaseContext } from '@/db/background-admission.ts'
+import { ResourceAdmissionError } from './resource-admission.ts'
 import type {
     RuntimeReconcileDependencies,
     RuntimeReconcileOptions,
@@ -124,8 +126,16 @@ export function createRuntimeReconciler<T>(
                 retryDelay = INITIAL_RETRY_DELAY_MS
                 finish('success')
                 resolveWaiters('applied')
-            } catch {
-                finish(stopped ? 'cancelled' : 'failure')
+            } catch (error) {
+                finish(
+                    stopped ||
+                        (error instanceof ResourceAdmissionError && error.reason === 'cancelled')
+                        ? 'cancelled'
+                        : error instanceof ResourceAdmissionError
+                          ? 'deferred'
+                          : 'failure',
+                    { recoverLane: false },
+                )
                 if (stopped) break
                 resolveWaiters('pending')
                 console.warn(`[${options.name}] reconcile unavailable`)
@@ -141,7 +151,7 @@ export function createRuntimeReconciler<T>(
     function enqueue(): void {
         requested += 1
         if (!worker && !stopped) {
-            worker = runWorker().finally(() => {
+            worker = withBackgroundDatabaseContext(runWorker, controller.signal).finally(() => {
                 worker = null
             })
         }
@@ -188,7 +198,10 @@ export function createRuntimeReconciler<T>(
         const drift = dependencies.drift
         if (!drift || stopped || dependencies.enabled === false) return Promise.resolve()
         if (driftFlight) return driftFlight
-        driftFlight = observeDrift(drift).finally(() => {
+        driftFlight = withBackgroundDatabaseContext(
+            () => observeDrift(drift),
+            controller.signal,
+        ).finally(() => {
             driftFlight = null
         })
         return driftFlight
@@ -198,6 +211,9 @@ export function createRuntimeReconciler<T>(
     async function observeDrift(
         drift: NonNullable<RuntimeReconcileDependencies<T>['drift']>,
     ): Promise<void> {
+        const finish = options.workerId
+            ? workerObservability.begin(options.workerId, 'collection')
+            : () => {}
         try {
             let hasDrift: boolean
             if ('check' in drift) {
@@ -207,9 +223,20 @@ export function createRuntimeReconciler<T>(
                 if (stopped) return
                 hasDrift = await drift.matches(snapshot, controller.signal)
             }
+            finish(stopped ? 'cancelled' : 'deferred')
             if (!stopped && hasDrift) enqueue()
-        } catch {
+        } catch (error) {
+            finish(
+                stopped || (error instanceof ResourceAdmissionError && error.reason === 'cancelled')
+                    ? 'cancelled'
+                    : error instanceof ResourceAdmissionError
+                      ? 'deferred'
+                      : 'failure',
+                { recoverLane: false },
+            )
             console.warn(`[${options.name}] drift check unavailable`)
+        } finally {
+            finish('cancelled')
         }
     }
 

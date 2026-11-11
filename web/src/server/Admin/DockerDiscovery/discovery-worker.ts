@@ -130,8 +130,22 @@ export function createDockerDiscoveryWorker() {
                     accessMode: 'read only',
                 })
             ).enabled,
-        read: readObservation,
-        watch: (cursor, signal) => dockerDiscoveryController.watch(cursor, signal),
+        read: (signal) =>
+            observeWorkerOperation(
+                'docker_discovery',
+                () => readObservation(signal),
+                signal,
+                undefined,
+                'collection',
+            ),
+        watch: (cursor, signal) =>
+            observeWorkerOperation(
+                'docker_discovery',
+                () => dockerDiscoveryController.watch(cursor, signal),
+                signal,
+                (reply) => (reply.snapshot ? 'success' : 'deferred'),
+                'collection',
+            ),
         reconcile: (snapshot, signal, assertCurrent, resetBudget) =>
             observeWorkerOperation(
                 'docker_discovery',

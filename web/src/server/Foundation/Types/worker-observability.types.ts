@@ -8,6 +8,12 @@ export type BackgroundWorkerId = (typeof backgroundWorkerIds)[number]
 export type BackgroundWorkerState = (typeof backgroundWorkerStates)[number]
 export type BackgroundWorkerLane = (typeof backgroundWorkerMetricsConfig.lanes)[number]
 export type WorkerOutcome = 'success' | 'failure' | 'cancelled' | 'deferred'
+export interface WorkerCompletionOptions {
+    recoverLane?: boolean
+}
+export interface WorkerOperationCompletion extends WorkerCompletionOptions {
+    outcome: WorkerOutcome
+}
 export type WorkerCountEvent =
     'retry' | 'exhausted' | 'admissionRejected' | 'leaseRecovered' | 'drainTimeout'
 
@@ -69,7 +75,7 @@ export interface WorkerObservability {
     begin: (
         id: BackgroundWorkerId,
         lane?: BackgroundWorkerLane,
-    ) => (outcome: WorkerOutcome, options?: { recoverLane?: boolean }) => void
+    ) => (outcome: WorkerOutcome, options?: WorkerCompletionOptions) => void
     sample: (id: BackgroundWorkerId, sample: WorkerSample) => void
     snapshot: () => WorkerObservabilitySnapshot
     reset: () => void

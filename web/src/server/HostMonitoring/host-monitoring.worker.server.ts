@@ -135,7 +135,7 @@ export const hostMonitoringWorker = createHostMonitoringWorker({
             'host_monitoring',
             () => execute(claim, signal),
             signal,
-            () => progress,
+            () => ({ outcome: progress, recoverLane: progress !== 'deferred' }),
         )
     },
     releaseCancelled: async (claim) => {

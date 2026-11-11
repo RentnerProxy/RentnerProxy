@@ -372,7 +372,10 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
         const receipts = backgroundReceiptsSchema.parse(await harness.backgroundReceipts())
         receiptsOverflowed = receipts.overflowed
         monitoring = backgroundMonitoringReport(options, snapshot, receipts.receipts, elapsedMs)
-        const before = snapshot.observations.length
+        const quiescent = backgroundSnapshotSchema.parse(
+            (await context.fixture('background-quiesce', extra)).background,
+        )
+        const before = quiescent.observations.length
         enter('fences')
         fences = (
             await withPausedWeb(

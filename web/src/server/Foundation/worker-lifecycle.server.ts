@@ -203,16 +203,20 @@ export function createWorkerLifecycleSupervisor() {
         /** Abort initialization first, drain both existing and late-loaded workers, and record success only after every admitted task settles. */
         const stop = (pending: Array<Promise<void>>) => {
             controller.abort()
-            if (!stopping) state(maintenanceStopped ? 'maintenance_paused' : 'stopping')
+            if (!stopping) state('stopping')
             stopping ??= drainWorker(
                 settleWorkerTasks([stopLoaded(), initializing.then(stopLoaded)]),
                 options.drainTimeoutMs,
             ).then(
                 () => state(maintenanceStopped ? 'maintenance_paused' : 'stopped'),
                 (error: unknown) => {
-                    state('failed')
-                    if (id && error instanceof WorkerDrainTimeoutError)
-                        workerObservability.count(id, 'drainTimeout')
+                    if (error instanceof WorkerDrainTimeoutError) {
+                        if (id) workerObservability.count(id, 'drainTimeout')
+                        void error.drained.then(
+                            () => state(maintenanceStopped ? 'maintenance_paused' : 'stopped'),
+                            () => state('failed'),
+                        )
+                    } else state('failed')
                     throw error
                 },
             )
