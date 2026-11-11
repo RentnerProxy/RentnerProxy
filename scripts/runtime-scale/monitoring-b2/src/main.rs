@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{sync::Semaphore, task::JoinSet};
-use tokio_postgres::{Client, NoTls, Statement};
+use tokio_postgres::{Client, NoTls, Statement, config::Host};
 
 /// Bounds a single PostgreSQL future, including connection establishment, to three seconds.
 async fn database<T>(
@@ -80,8 +80,67 @@ impl Admission {
     }
 }
 
+/// Parses the exact driver configuration used for the isolated database connection.
+fn isolated_database(value: &str, appliance: bool) -> Result<tokio_postgres::Config, Error> {
+    let url = reqwest::Url::parse(value)?;
+    let expected_database = if appliance {
+        "rentnerproxy"
+    } else {
+        "rentnerproxy_upstream_test"
+    };
+    // Driver URL query parameters can override the path/credentials or add hostaddr.
+    // Only the fixture's optional explicit NoTls setting is supported.
+    if !matches!(url.scheme(), "postgres" | "postgresql")
+        || url.host_str() != Some("127.0.0.1")
+        || url.path() != format!("/{expected_database}")
+        || url.fragment().is_some()
+        || url
+            .query_pairs()
+            .any(|(key, value)| key != "sslmode" || value != "disable")
+    {
+        return Err("B2 database outside isolated fixture".into());
+    }
+    let driver: tokio_postgres::Config = value.parse()?;
+    if !matches!(driver.get_hosts(), [Host::Tcp(host)] if host == "127.0.0.1")
+        || !driver.get_hostaddrs().is_empty()
+        || driver.get_dbname() != Some(expected_database)
+        || driver.get_ports() != [url.port().unwrap_or(5432)]
+        || driver.get_options().is_some()
+    {
+        return Err("B2 effective database configuration outside isolated fixture".into());
+    }
+    Ok(driver)
+}
+
+/// Finishes each admitted completion before considering another startup recovery call.
+async fn recover_completed<T, F: std::future::Future<Output = Result<(), Error>>>(
+    claims: impl IntoIterator<Item = T>,
+    mut complete: impl FnMut(T) -> F,
+    mut interrupt: std::pin::Pin<&mut impl std::future::Future<Output = std::io::Result<()>>>,
+) -> Result<bool, Error> {
+    for claim in claims {
+        if stop_requested(interrupt.as_mut()).await? {
+            return Ok(true);
+        }
+        // Never drop an admitted SQL future as evidence of a clean drain.
+        complete(claim).await?;
+    }
+    stop_requested(interrupt).await
+}
+
+/// Polls the persistent receiver without abandoning any admitted operation.
+async fn stop_requested(
+    interrupt: std::pin::Pin<&mut impl std::future::Future<Output = std::io::Result<()>>>,
+) -> Result<bool, Error> {
+    tokio::select! {
+        biased;
+        result = interrupt => { result?; Ok(true) }
+        _ = std::future::ready(()) => Ok(false)
+    }
+}
+
 struct Config {
-    database: String,
+    database: tokio_postgres::Config,
     namespace: String,
     controller: String,
     token: String,
@@ -130,7 +189,7 @@ impl Config {
             return Err("B2 configuration is not the isolated bounded fixture".into());
         }
         Ok(Self {
-            database,
+            database: isolated_database(&database, appliance)?,
             namespace,
             controller,
             token,
@@ -276,19 +335,43 @@ async fn run(config: Config) -> Result<(), Error> {
         result = &mut interrupt => { result?; return Ok(()); }
         _ = std::future::ready(()) => {}
     }
-    let (client, connection) = database(tokio_postgres::connect(&config.database, NoTls)).await?;
+    let (client, connection) = database(config.database.connect(NoTls)).await?;
     let pg = tokio::spawn(connection);
+    let result = run_session(config, client, interrupt.as_mut()).await;
+    // run_session owns all client/statement/task handles. Even a startup stop must
+    // close the session and join the actual connection before reporting success.
+    tokio::time::timeout(Duration::from_secs(3), pg).await???;
+    if let Some(summary) = result? {
+        println!("{summary}");
+    }
+    Ok(())
+}
+
+async fn run_session(
+    config: Config,
+    client: Client,
+    mut interrupt: std::pin::Pin<&mut impl std::future::Future<Output = std::io::Result<()>>>,
+) -> Result<Option<Value>, Error> {
     let query = format!(
         "SELECT claim::text FROM {}.claim($1, $2, $3)",
         config.namespace
     );
+    if stop_requested(interrupt.as_mut()).await? {
+        return Ok(None);
+    }
     let statement = database(client.prepare(&query)).await?;
+    if stop_requested(interrupt.as_mut()).await? {
+        return Ok(None);
+    }
     let begin = database(client.prepare(&format!(
         "SELECT {}.begin_check($1::text::uuid,$2::text::uuid,$3::text::uuid,$4,$5,$6)",
         config.namespace
     )))
     .await?;
     let client = Arc::new(client);
+    if stop_requested(interrupt.as_mut()).await? {
+        return Ok(None);
+    }
     let completed = database(client.prepare(&format!(
         "SELECT {}.record_raw_complete($1::text::uuid,$2::text::uuid,$3::text::uuid,$4,$5,$6)",
         config.namespace
@@ -299,6 +382,9 @@ async fn run(config: Config) -> Result<(), Error> {
         statement: begin,
         completed,
     };
+    if stop_requested(interrupt.as_mut()).await? {
+        return Ok(None);
+    }
     let store = Arc::new(Mutex::new(Outbox::open(
         &config.outbox,
         &config.store,
@@ -309,8 +395,17 @@ async fn run(config: Config) -> Result<(), Error> {
         owner.completed_claims()
     })
     .await?;
-    for claim in recovered {
-        admission.raw_completed(&claim).await?;
+    if recover_completed(
+        recovered,
+        |claim| {
+            let admission = &admission;
+            async move { admission.raw_completed(&claim).await }
+        },
+        interrupt.as_mut(),
+    )
+    .await?
+    {
+        return Ok(None);
     }
     let http = reqwest::Client::builder()
         .no_proxy()
@@ -326,6 +421,9 @@ async fn run(config: Config) -> Result<(), Error> {
     let mut admitted = 0usize;
     let mut deferred = 0usize;
     while Instant::now() < deadline {
+        if stop_requested(interrupt.as_mut()).await? {
+            break;
+        }
         while let Some(result) = tasks.try_join_next() {
             admitted += usize::from(result??);
             finished += 1;
@@ -367,7 +465,7 @@ async fn run(config: Config) -> Result<(), Error> {
         }
         tokio::select! {
             biased;
-            result = &mut interrupt => { result?; break; }
+            result = interrupt.as_mut() => { result?; break; }
             _ = tokio::time::sleep(Duration::from_millis(250)) => {}
         }
     }
@@ -375,14 +473,9 @@ async fn run(config: Config) -> Result<(), Error> {
         admitted += usize::from(result??);
         finished += 1;
     }
-    drop(client);
-    drop(admission);
-    tokio::time::timeout(Duration::from_secs(3), pg).await???;
-    println!(
-        "{}",
-        json!({"runtime":"rust", "reserved":started, "durableResults":finished, "admitted":admitted, "deferred":deferred, "scheduledSlots":64, "interactiveSlotsReserved":2, "claimBatch":16, "databaseConnections":1})
-    );
-    Ok(())
+    Ok(Some(
+        json!({"runtime":"rust", "reserved":started, "durableResults":finished, "admitted":admitted, "deferred":deferred, "scheduledSlots":64, "interactiveSlotsReserved":2, "claimBatch":16, "databaseConnections":1}),
+    ))
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
@@ -397,5 +490,116 @@ async fn main() {
             "B2 experiment failed closed; inspect isolated fixture state (no credentials logged)"
         );
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn database_rejects_effective_destination_and_identity_overrides() {
+        let base = "postgres://fixture:synthetic@127.0.0.1:5432/rentnerproxy_upstream_test";
+        assert!(isolated_database(base, false).is_ok());
+        assert!(
+            isolated_database(
+                "postgresql://fixture:synthetic@127.0.0.1/rentnerproxy",
+                true
+            )
+            .is_ok()
+        );
+        assert!(isolated_database(&format!("{base}?sslmode=disable"), false).is_ok());
+        for query in [
+            "hostaddr=203.0.113.7",
+            "dbname=other",
+            "user=other",
+            "password=other",
+            "host=127.0.0.2",
+            "port=5433",
+            "options=-csearch_path=other",
+            "hostaddr=127.0.0.1,203.0.113.7",
+            "sslmode=require",
+            "%64bname=other",
+        ] {
+            assert!(
+                isolated_database(&format!("{base}?{query}"), false).is_err(),
+                "override accepted: {query}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn recovery_checks_stop_before_first_call_and_preserves_signal_failure() {
+        let calls = AtomicUsize::new(0);
+        let interrupt = std::future::ready(Ok(()));
+        tokio::pin!(interrupt);
+        assert!(
+            recover_completed(
+                [1],
+                |_| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    std::future::ready(Ok(()))
+                },
+                interrupt.as_mut()
+            )
+            .await
+            .unwrap()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let interrupt = std::future::ready(Err(std::io::Error::other("synthetic signal failure")));
+        tokio::pin!(interrupt);
+        assert!(
+            recover_completed([1], |_| std::future::ready(Ok(())), interrupt.as_mut())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn recovery_stop_settles_inflight_without_admitting_another_completion() {
+        let (stop, interrupted) = tokio::sync::oneshot::channel::<()>();
+        let (release, released) = tokio::sync::oneshot::channel::<()>();
+        let (started, running) = tokio::sync::oneshot::channel::<()>();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let settled = Arc::new(AtomicUsize::new(0));
+        let observed_calls = calls.clone();
+        let observed_settled = settled.clone();
+        let owner = tokio::spawn(async move {
+            let interrupt = async { interrupted.await.map_err(std::io::Error::other) };
+            tokio::pin!(interrupt);
+            let mut first = Some((started, released));
+            recover_completed(
+                [1, 2, 3],
+                move |_| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    let gate = first.take();
+                    let settled = settled.clone();
+                    async move {
+                        if let Some((started, released)) = gate {
+                            started.send(()).unwrap();
+                            released.await.unwrap();
+                        }
+                        settled.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    }
+                },
+                interrupt.as_mut(),
+            )
+            .await
+        });
+        running.await.unwrap();
+        stop.send(()).unwrap();
+        tokio::task::yield_now().await;
+        assert!(!owner.is_finished(), "inflight SQL was abandoned");
+        release.send(()).unwrap();
+        let stopped = tokio::time::timeout(Duration::from_secs(1), owner)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(stopped);
+        assert_eq!(observed_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(observed_settled.load(Ordering::SeqCst), 1);
     }
 }
