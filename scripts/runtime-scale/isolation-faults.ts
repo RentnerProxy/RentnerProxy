@@ -19,6 +19,7 @@ interface FaultContext {
     snapshotPath: string
 }
 
+/** Poll a durable checkpoint every 25 milliseconds until its deadline; propagate checkpoint failures and reject an unmet deadline. */
 async function waitFor(test: () => Promise<boolean>, limit: number) {
     const deadline = performance.now() + limit
     while (performance.now() < deadline) {
@@ -28,19 +29,23 @@ async function waitFor(test: () => Promise<boolean>, limit: number) {
     throw new Error('Isolation fault checkpoint timed out')
 }
 
+/** Exercise disposable role failures and writer drains, recording only completed assertions and leaving production parity explicitly unproven. */
 export async function runIsolationFaults(context: FaultContext) {
     const { database, seed, spawnRole, request, stopChild, bounded } = context
     const roles = new Set<IsolationChild>()
+    /** Track every successfully started role so each fault case owns its emergency cleanup. */
     async function spawn(role: 'foreground' | 'combined' | 'background') {
         const child = await spawnRole(role)
         roles.add(child)
         return child
     }
+    /** Remove a role from cleanup ownership only after its graceful shutdown succeeds. */
     async function stop(child: IsolationChild) {
         const duration = await stopChild(child)
         roles.delete(child)
         return duration
     }
+    /** Read durable observation totals, unique policies, and expected healthy outcomes for exact-progress assertions. */
     async function progress() {
         const rows = await database.unsafe(
             "select count(*)::int as total,count(distinct policy_id)::int as unique,count(*) filter(where status='healthy' and code='expected_status')::int as healthy from rentnerproxy.host_check_observations",
@@ -51,12 +56,14 @@ export async function runIsolationFaults(context: FaultContext) {
             healthy: Number(rows[0]?.healthy),
         }
     }
+    /** Count currently leased policies rather than infer in-flight work from process-local counters. */
     async function active() {
         const rows = await database.unsafe(
             'select count(*)::int as total from rentnerproxy.host_check_policies where lease_token is not null',
         )
         return Number(rows[0]?.total)
     }
+    /** Measure sequential successful foreground responses; fail the case on a bad status or missing rendered fixture content. */
     async function ssr(child: IsolationChild, count: number) {
         const values: number[] = []
         for (let index = 0; index < count; index++) {
@@ -74,6 +81,7 @@ export async function runIsolationFaults(context: FaultContext) {
         elapsedMs: number
         detail: Record<string, number | boolean | string | null>
     }[] = []
+    /** Record a fault only after its assertions succeed; rethrow failures and always kill/reap roles still owned by that case. */
     async function record(
         name: string,
         operation: () => Promise<Record<string, number | boolean | string | null>>,

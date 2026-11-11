@@ -13,6 +13,7 @@ import type {
 } from '../../web/src/server/HostMonitoring/Types/host-monitoring.repository.types.ts'
 import type { HostMonitoringProbeContext } from '../../web/src/server/HostMonitoring/Types/host-monitoring-probe.types.ts'
 
+/** Validate the unprivileged fixture identity before imports, then own role-local workers, metrics, and the loopback control server. */
 export async function runIsolationRole(
     role: 'foreground' | 'combined' | 'background',
     networkPort: number,
@@ -140,6 +141,7 @@ export async function runIsolationRole(
     )
     let renderer: Promise<typeof import('./isolation-ssr.ts')> | null = null
     let snapshotTimer: ReturnType<typeof setInterval> | null = null
+    /** Snapshot process-local resource and committed-progress counters; commit lag remains null until a claim is durably acknowledged. */
     async function metrics(): Promise<IsolationRoleMetrics> {
         const usage = process.cpuUsage(cpu)
         return {
@@ -154,6 +156,7 @@ export async function runIsolationRole(
             commitLagMaxMs,
         }
     }
+    /** Share one shutdown promise, stop timers, await both workers, then close the database only after successful worker drain. */
     const stop = () => {
         stopping ??= (async () => {
             if (snapshotTimer) clearInterval(snapshotTimer)
@@ -171,6 +174,7 @@ export async function runIsolationRole(
         hostname: '127.0.0.1',
         port: 0,
         maxRequestBodySize: 1024,
+        /** Serve bounded SSR rows for foreground roles and fixture-marked controls; reject new writes as soon as shutdown starts. */
         async fetch(request) {
             const path = new URL(request.url).pathname
             if (path === '/ssr' && role !== 'background' && request.method === 'GET') {
@@ -246,6 +250,7 @@ export async function runIsolationRole(
             return new Response(null, { status: 404 })
         },
     })
+    /** Drain before stopping the server and exit nonzero if shutdown fails; repeated signals reuse the same drain promise. */
     const terminate = () => {
         void stop()
             .then(() => server.stop(true))

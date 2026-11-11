@@ -2,6 +2,7 @@ import { createElement } from 'react'
 import { renderToReadableStream } from 'react-dom/server'
 import PageHeader from '../../web/src/shared/Management/PageHeader.tsx'
 
+/** Stream fixture rows through React SSR with the shared header; this workload deliberately excludes routing and authentication. */
 export async function renderIsolationRows(
     rows: readonly { id: string; name: string; enabled: boolean }[],
 ) {

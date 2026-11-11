@@ -21,6 +21,7 @@ import type {
 
 const root = resolve(import.meta.dir, '../..')
 const controlHeaders = { 'x-isolation-control': 'fixture' }
+/** Reject at the deadline and clear the timer on either outcome; the caller retains responsibility for cancelling the operation. */
 async function bounded<T>(operation: Promise<T>, milliseconds: number): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
@@ -37,6 +38,7 @@ async function bounded<T>(operation: Promise<T>, milliseconds: number): Promise<
         clearTimeout(timer)
     }
 }
+/** Run an owned tool with bounded output completion; failures kill and reap the child and bound inherited-pipe cleanup before rethrowing. */
 export async function command(args: string[], timeoutMs = 30_000): Promise<string> {
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
         throw new Error('Invalid isolation command timeout')
@@ -67,10 +69,12 @@ export async function command(args: string[], timeoutMs = 30_000): Promise<strin
     }
 }
 
+/** Decode streaming UTF-8 and emit complete lines; discard an entire overlong line above 4096 characters until its newline. */
 export function createIsolationLineReader(onLine: (line: string) => void) {
     const decoder = new TextDecoder()
     let pending = ''
     let discarding = false
+    /** Accumulate fragments across chunks, dropping oversized lines without treating their suffix as a fresh readiness message. */
     function read(text: string) {
         let offset = 0
         while (offset < text.length) {
@@ -90,9 +94,11 @@ export function createIsolationLineReader(onLine: (line: string) => void) {
         }
     }
     return {
+        /** Preserve partial UTF-8 sequences between chunks before framing newline-delimited messages. */
         write(chunk: Uint8Array) {
             read(decoder.decode(chunk, { stream: true }))
         },
+        /** Flush decoder state and emit a final unterminated line only when it stayed within the framing bound. */
         finish() {
             read(decoder.decode())
             if (!discarding && pending.length > 0) onLine(pending)
@@ -102,8 +108,10 @@ export function createIsolationLineReader(onLine: (line: string) => void) {
     }
 }
 
+/** Hash sorted TypeScript source paths and contents plus package metadata so reports identify the measured source snapshot. */
 async function sourceHash() {
     const hash = createHash('sha256')
+    /** Traverse directories in sorted order and hash only TypeScript files, including each relative path to distinguish identical contents. */
     async function add(directory: string) {
         const entries = await readdir(join(root, directory), { withFileTypes: true })
         for (const entry of entries.toSorted((a, b) => a.name.localeCompare(b.name))) {
@@ -131,6 +139,7 @@ async function sourceHash() {
     }
     return hash.digest('hex')
 }
+/** Read current fixture resource usage and reject missing finite CPU, memory, or PID enforcement beyond the declared envelope. */
 async function cgroup() {
     const [memory, pids, cpu, limit, quota, pidLimit] = await Promise.all(
         ['memory.current', 'pids.current', 'cpu.stat', 'memory.max', 'cpu.max', 'pids.max'].map(
@@ -155,6 +164,7 @@ async function cgroup() {
 }
 type Child = IsolationChild
 
+/** Start an unprivileged role with fixture-only environment; readiness must arrive within ten seconds or the owned child is killed and reaped. */
 async function spawnRole(
     role: 'foreground' | 'combined' | 'background',
     networkPort: number,
@@ -223,6 +233,7 @@ async function spawnRole(
         throw error
     }
 }
+/** Send a control-marked request only to the owned role loopback port, with a sixteen-second deadline and redirects disabled. */
 async function request(child: Child, path: string, method = 'GET') {
     return fetch('http://127.0.0.1:' + child.ready.port + path, {
         method,
@@ -231,6 +242,7 @@ async function request(child: Child, path: string, method = 'GET') {
         redirect: 'error',
     })
 }
+/** Require successful drain and a zero exit after SIGTERM; always kill and reap a still-running child when shutdown fails. */
 async function stopChild(child: Child) {
     const start = performance.now()
     try {
@@ -248,12 +260,14 @@ async function stopChild(child: Child) {
     }
 }
 
+/** Refuse cleanup outside the fixture temporary-directory prefix before recursively removing disposable state. */
 async function removeFixtureDirectory(directory: string) {
     if (!directory.startsWith('/tmp/rentnerproxy-isolation-'))
         throw new Error('Unsafe isolation fixture cleanup')
     await rm(directory, { recursive: true, force: true })
 }
 
+/** Create and migrate a fresh disposable database with connection-limited roles; return the admin connection that the caller must close. */
 async function prepareDatabase(url: string) {
     const admin = new SQL('postgresql://postgres@127.0.0.1:55439/postgres', { max: 4 })
     await admin.unsafe('create database rentnerproxy_upstream_test')
@@ -278,6 +292,7 @@ async function prepareDatabase(url: string) {
     )
     return database
 }
+/** Replace fixture hosts and insert the selected load atomically with deterministic identities and a shared future due time. */
 async function seed(load: IsolationLoad, database: SQL) {
     await database.unsafe('delete from rentnerproxy.proxy_hosts')
     const [{ db }, schema] = await Promise.all([
@@ -317,6 +332,7 @@ async function seed(load: IsolationLoad, database: SQL) {
     })
 }
 
+/** Measure one freshly seeded topology under bounded traffic, drain pending samples, and reap owned roles even if measurement fails. */
 async function measure(
     mode: IsolationMode,
     load: IsolationLoad,
@@ -482,6 +498,7 @@ async function measure(
     }
 }
 
+/** Require the explicit root Linux fixture and enforced envelope; own the disposable database/network lifecycle and emit source-bound evidence. */
 export async function runIsolationEvaluation(options: IsolationOptions) {
     if (
         process.platform !== 'linux' ||
@@ -516,6 +533,7 @@ export async function runIsolationEvaluation(options: IsolationOptions) {
         hostname: '127.0.0.1',
         port: 0,
         maxRequestBodySize: 32 * 1024 ** 2,
+        /** Serve delayed loopback probes and revision-checked snapshots while counting accepted and invalid fixture traffic. */
         async fetch(incoming) {
             const path = new URL(incoming.url).pathname
             if (incoming.method === 'HEAD' && /^\/probe\/\d{1,4}$/u.test(path)) {

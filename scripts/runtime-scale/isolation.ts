@@ -10,6 +10,7 @@ import { domainDiagnosticsResultSchema } from '../../web/src/lib/RuntimeDiagnost
 import type { DomainDiagnosticsControllerInput } from '../../web/src/lib/RuntimeDiagnostics/Types/domain-diagnostics.types.ts'
 import { simulatedMonitoringResult } from './monitoring.ts'
 
+/** Validate a synthetic healthy probe through the production diagnostics schema; duration is rounded to milliseconds. */
 export function isolationDiagnosticResult(
     input: DomainDiagnosticsControllerInput,
     durationMs: number,
@@ -19,12 +20,14 @@ export function isolationDiagnosticResult(
     )
 }
 
+/** Accept only fixture domains with a canonical index from 0 through 999; reject all other probe targets. */
 export function isolationProbeIndex(domain: string): number {
     const match = /^isolation-(0|[1-9]\d{0,2})\.example\.test$/u.exec(domain)
     if (!match) throw new Error('Invalid isolation probe domain')
     return Number(match[1])
 }
 
+/** Reject privileged or non-fixture roles before runtime imports; database identity must match the fixed local fixture and role. */
 export function assertIsolationRole(
     flag: string | undefined,
     platform: string,
@@ -52,6 +55,7 @@ export function assertIsolationRole(
         throw new Error('Isolated role database required')
 }
 
+/** Parse unique flag/value pairs within the predeclared load and duration bounds; fault-only runs must enable faults. */
 export function parseIsolationOptions(args: string[]): IsolationOptions {
     const flags = new Map<string, string>()
     for (let index = 0; index < args.length; index += 2) {
@@ -88,6 +92,7 @@ export function parseIsolationOptions(args: string[]): IsolationOptions {
     }
 }
 
+/** Return nearest-rank percentiles without mutating samples; reject negative/nonfinite values and use null for empty samples. */
 export function isolationDistribution(values: readonly number[]): IsolationDistribution {
     if (values.some((value) => !Number.isFinite(value) || value < 0))
         throw new Error('Invalid isolation measurement')
@@ -100,9 +105,11 @@ export function isolationDistribution(values: readonly number[]): IsolationDistr
     }
 }
 
+/** Select the upper middle sample from the nonempty repetition sets validated by assessIsolation. */
 const median = (values: number[]) =>
     values.toSorted((a, b) => a - b)[Math.floor(values.length / 2)]!
 
+/** Require complete, healthy matched repetitions before comparing noise and resource overhead; this assessment never authorizes migration. */
 export function assessIsolation(
     measurements: readonly IsolationMeasurement[],
     maintenanceProven: boolean,
@@ -183,6 +190,7 @@ export function assessIsolation(
     }
 }
 
+/** Require complete healthy progress, bounded foreground latency and recovery, and the shared resource envelope for one repetition. */
 export function meetsIsolationSlo(item: IsolationMeasurement): boolean {
     return (
         item.ssr.count >= contract.thresholds.minimumSamples &&
