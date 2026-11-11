@@ -410,6 +410,48 @@ test_process_status_visibility() (
     printf 'PASS: vanished processes are tolerated; surviving unreadable or uninspectable identities fail closed in every UID field\n'
 )
 
+# Model a status read racing with process exit or PID reuse without relying on scheduler timing.
+# A retry must obtain new identity evidence; waiting alone never admits a surviving writer.
+test_process_status_retry() (
+    setup
+    local variant
+    for variant in safe writer vanished unreadable; do
+        mkdir "$scratch/transient"
+        : > "$scratch/transient/status"
+        : > "$scratch/retries"
+        sleep() {
+            [[ $1 == 0.1 ]] || fail 'unexpected identity retry delay'
+            printf 'retry\n' >> "$scratch/retries"
+            case $variant in
+                safe) printf 'State:\tS (sleeping)\nUid:\t10001\t10001\t10001\t10001\n' > "$scratch/transient/status" ;;
+                writer) printf 'State:\tS (sleeping)\nUid:\t10002\t10002\t10002\t10002\n' > "$scratch/transient/status" ;;
+                vanished) rm "$scratch/transient/status"; rmdir "$scratch/transient" ;;
+                unreadable) : ;;
+            esac
+        }
+        case $variant in
+            safe|vanished) assert_web_process_stopped "$scratch/transient/status" ;;
+            writer)
+                expect_rejected assert_web_process_stopped "$scratch/transient/status"
+                [[ $(cat "$scratch/rejection") == 'a web writer survived isolated recovery' ]] \
+                    || fail 'retried web identity bypassed the writer fence'
+                ;;
+            unreadable)
+                expect_rejected assert_web_process_stopped "$scratch/transient/status"
+                [[ $(cat "$scratch/rejection") == 'web recovery cannot inspect a surviving process identity' ]] \
+                    || fail 'persistent unreadable identity bypassed the visibility fence'
+                ;;
+        esac
+        if [[ $variant == unreadable ]]; then
+            [[ $(wc -l < "$scratch/retries") == 2 ]] || fail 'identity retries are not bounded'
+        else
+            [[ $(wc -l < "$scratch/retries") == 1 ]] || fail 'identity retry did not inspect fresh evidence'
+        fi
+        [[ ! -d $scratch/transient ]] || { rm "$scratch/transient/status"; rmdir "$scratch/transient"; }
+    done
+    printf 'PASS: transient status races require fresh proof; writers and persistently hidden identities still fail closed\n'
+)
+
 [[ $(uname -s) == Linux ]] || { printf 'SKIP: fault supervisor fixtures require Linux /proc\n'; exit 77; }
 test_real_termination
 test_recovery_fences
@@ -420,4 +462,5 @@ test_health
 test_dependency_health
 test_monitor_lifecycle
 test_orphan_writer
+test_process_status_retry
 test_process_status_visibility

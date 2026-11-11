@@ -31,8 +31,10 @@ func run(args []string) error {
 	return validate(args[0], info)
 }
 
-// validate enforces each shipped binary's own compiler, dependency and CGO policy;
-// approval of one profile never permits the other profile's toolchain or forks.
+// validate checks the profile's pinned compiler, required modules and build settings.
+// Caddy must declare its approved local source replacement; CrowdSec's reviewed forks
+// are optional and validated when present. Missing or duplicate required entries,
+// disallowed replacements, obsolete dependencies and unknown profiles are rejected.
 func validate(profile string, info *debug.BuildInfo) error {
 	var expected map[string]string
 	var compiler string

@@ -23,7 +23,13 @@ fn certificate_work_outcome<T>(
 }
 
 impl ProxyRuntime {
-    /// Start one resident minute scheduler, skip missed ticks, and retain failures from bounded recovery and renewal scans.
+    /// Starts the single minute-based certificate recovery and renewal loop.
+    ///
+    /// Returns without spawning when already started or stopping. The runtime retains
+    /// the task handle for shutdown; each tick dispatches bounded ACME work and at most
+    /// one concurrent permission-recovery job. Missed ticks are skipped, expiry/scan
+    /// failures retain failure evidence, and cancellation stays distinct from idle
+    /// or busy admission. Stopping checks prevent further scheduled dispatch.
     pub(crate) async fn start_renewal_scheduler(
         self: &Arc<Self>,
         challenges: crate::server::challenges::ChallengeStore,
