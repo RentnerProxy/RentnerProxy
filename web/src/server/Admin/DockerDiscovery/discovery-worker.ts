@@ -14,6 +14,7 @@ import { appendAuditEventInTransactionService } from '@/server/Audit/audit.servi
 import { createDiscoveryObserver, DiscoverySuperseded } from './discovery-observer.ts'
 import { DockerDiscoveryError } from './docker-discovery.errors.ts'
 import { observeWorkerOperation } from '@/server/Foundation/worker-operation.ts'
+import { withBackgroundDatabaseContext } from '@/db/background-admission.ts'
 import type { DockerDiscoverySnapshot } from '@/lib/DockerDiscovery/Types/docker-discovery.types.ts'
 
 async function recordDiscoveryFailure(): Promise<void> {
@@ -97,25 +98,29 @@ export function createDockerDiscoveryWorker() {
             return { enabled: result.enabled, again: result.enabled && remaining > 0 }
         const runtimeStatus = await reconcileProxyConfigurationService()
         if (runtimeStatus === 'applied') {
-            // An admitted apply can finish during stop; preserve its truthful receipt.
-            await getAuthDatabase().transaction(async (transaction) => {
-                markDiscoveryReconciliation(transaction)
-                await lockProxyRuntimeSettings(transaction)
-                const registry = await readDiscoveryRegistry(transaction)
-                if (registry.revision !== result.revision) return
-                registry.runtimeStatus = 'applied'
-                registry.revision += 1
-                await writeDiscoveryRegistry(transaction, registry)
-                await appendAuditEventInTransactionService(transaction, {
-                    actorUserId: registry.actorUserId,
-                    actorKind: 'user',
-                    action: 'apply',
-                    resource: 'proxy-runtime',
-                    targetId: null,
-                    result: 'success',
-                    metadata: { runtimeStatus: 'applied' },
-                })
-            })
+            // Finish an admitted apply under the same SQL budget after stop cancels collection.
+            await withBackgroundDatabaseContext(
+                () =>
+                    getAuthDatabase().transaction(async (transaction) => {
+                        markDiscoveryReconciliation(transaction)
+                        await lockProxyRuntimeSettings(transaction)
+                        const registry = await readDiscoveryRegistry(transaction)
+                        if (registry.revision !== result.revision) return
+                        registry.runtimeStatus = 'applied'
+                        registry.revision += 1
+                        await writeDiscoveryRegistry(transaction, registry)
+                        await appendAuditEventInTransactionService(transaction, {
+                            actorUserId: registry.actorUserId,
+                            actorKind: 'user',
+                            action: 'apply',
+                            resource: 'proxy-runtime',
+                            targetId: null,
+                            result: 'success',
+                            metadata: { runtimeStatus: 'applied' },
+                        })
+                    }),
+                null,
+            )
         }
         publishApplicationChange()
         return { enabled: result.enabled, again: remaining > 0 || runtimeStatus !== 'applied' }
