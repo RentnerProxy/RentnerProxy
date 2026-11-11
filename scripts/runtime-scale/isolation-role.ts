@@ -25,7 +25,7 @@ export async function runIsolationRole(
         role,
     )
     const [
-        { eq },
+        { eq, sql },
         { HOST_MONITORING_LIMITS: limits },
         { db, closeDatabaseForRestoreMaintenance },
         { proxyHosts },
@@ -207,6 +207,24 @@ export async function runIsolationRole(
                     .update(proxyHosts)
                     .set({ forwardPort: 9000 })
                     .where(eq(proxyHosts.id, '00000000-0000-4000-8000-000000000001'))
+                return new Response(null, { status: 204 })
+            }
+            if (path === '/hold-write' && request.method === 'POST') {
+                if (stopping) return new Response(null, { status: 503 })
+                await db.transaction(async (transaction) => {
+                    await transaction
+                        .update(proxyHosts)
+                        .set({ forwardPort: 9000 })
+                        .where(
+                            eq(
+                                proxyHosts.id,
+                                role === 'background'
+                                    ? '00000000-0000-4000-8000-000000000002'
+                                    : '00000000-0000-4000-8000-000000000001',
+                            ),
+                        )
+                    await transaction.execute(sql`select pg_sleep(2)`)
+                })
                 return new Response(null, { status: 204 })
             }
             if (path === '/pool' && request.method === 'POST') {

@@ -15,6 +15,8 @@ interface FaultContext {
     request: (child: IsolationChild, path: string, method?: string) => Promise<Response>
     stopChild: (child: IsolationChild) => Promise<number>
     bounded: <T>(operation: Promise<T>, milliseconds: number) => Promise<T>
+    command: (args: string[], timeoutMs?: number) => Promise<string>
+    snapshotPath: string
 }
 
 async function waitFor(test: () => Promise<boolean>, limit: number) {
@@ -264,6 +266,81 @@ export async function runIsolationFaults(context: FaultContext) {
             databaseSessionsAfterDrain: 0,
             oldRoleWritesRejected: true,
             foregroundP99Ms: latency.p99,
+            productionRootMaintenanceIntegrated: false,
+        }
+    })
+    await record('active-two-writer-logical-restore', async () => {
+        await seed(100)
+        const connection = ['--host=127.0.0.1', '--port=55439', '--username=postgres']
+        await context.command([
+            'pg_dump',
+            ...connection,
+            '--format=custom',
+            '--schema=rentnerproxy',
+            '--file=' + context.snapshotPath,
+            'rentnerproxy_upstream_test',
+        ])
+        const foreground = await spawn('combined'),
+            background = await spawn('background')
+        await Promise.all([
+            request(foreground, '/start', 'POST'),
+            request(background, '/start', 'POST'),
+        ])
+        const writes = Promise.allSettled([
+            request(foreground, '/hold-write', 'POST'),
+            request(background, '/hold-write', 'POST'),
+        ])
+        await waitFor(async () => {
+            const rows = await database.unsafe(
+                "select count(distinct usename)::int as total from pg_stat_activity where usename in ('isolation_foreground','isolation_worker') and state='active' and backend_xid is not null and query like '%pg_sleep(2)%'",
+            )
+            return Number(rows[0]?.total) === 2
+        }, 5_000)
+        const drains = await Promise.all([
+            request(foreground, '/stop', 'POST'),
+            request(background, '/stop', 'POST'),
+        ])
+        assert.ok(drains.every((response) => response.ok))
+        const written = await writes
+        assert.ok(
+            written.every((result) => result.status === 'fulfilled' && result.value.status === 204),
+        )
+        const sessions = await database.unsafe(
+            "select count(*)::int as total from pg_stat_activity where usename in ('isolation_foreground','isolation_worker')",
+        )
+        assert.equal(Number(sessions[0]?.total), 0)
+        const changed = await database.unsafe(
+            'select count(*)::int as total from rentnerproxy.proxy_hosts where forward_port=9000',
+        )
+        assert.equal(Number(changed[0]?.total), 2)
+        await context.command([
+            'pg_restore',
+            ...connection,
+            '--dbname=rentnerproxy_upstream_test',
+            '--clean',
+            '--if-exists',
+            '--single-transaction',
+            '--exit-on-error',
+            context.snapshotPath,
+        ])
+        const restored = await database.unsafe(
+            'select count(*)::int as total from rentnerproxy.proxy_hosts where forward_port=9',
+        )
+        assert.equal(Number(restored[0]?.total), 100)
+        const late = await Promise.all([
+            request(foreground, '/hold-write', 'POST'),
+            request(background, '/write-after-fence', 'POST'),
+        ])
+        assert.ok(late.every((response) => response.status === 503))
+        assert.equal((await progress()).total, 0)
+        await Promise.all([stop(foreground), stop(background)])
+        return {
+            activeWriteTransactionsBeforeDrain: 2,
+            databaseSessionsAfterDrain: 0,
+            committedWritesBeforeRestore: 2,
+            restoredHosts: 100,
+            logicalSchemaRestore: true,
+            oldRoleWritesRejected: true,
             productionRootMaintenanceIntegrated: false,
         }
     })

@@ -41,18 +41,28 @@ export async function command(args: string[], timeoutMs = 30_000): Promise<strin
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
         throw new Error('Invalid isolation command timeout')
     const child = Bun.spawn(args, { stdout: 'pipe', stderr: 'pipe' })
-    const completions = [
-        child.exited,
-        new Response(child.stdout).text(),
-        new Response(child.stderr).text(),
-    ] as const
+    const output = new AbortController()
+    const read = (stream: ReadableStream<Uint8Array>) =>
+        new Response(
+            stream.pipeThrough(new TransformStream<Uint8Array, Uint8Array>(), {
+                signal: output.signal,
+            }),
+        ).text()
+    const completions = [child.exited, read(child.stdout), read(child.stderr)] as const
     try {
         const [code, out] = await bounded(Promise.all(completions), timeoutMs)
         if (code !== 0) throw new Error('Isolation fixture command failed')
         return out.trim()
     } catch (error) {
         if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
-        await Promise.allSettled(completions)
+        // Reap the owned process even when a descendant keeps an inherited pipe open.
+        await child.exited
+        try {
+            await bounded(Promise.allSettled(completions), 250)
+        } catch {
+            output.abort()
+            await bounded(Promise.allSettled(completions), 250).catch(() => {})
+        }
         throw error
     }
 }
@@ -588,6 +598,8 @@ export async function runIsolationEvaluation(options: IsolationOptions) {
                   request,
                   stopChild,
                   bounded,
+                  command,
+                  snapshotPath: join(directory, 'active-writers.dump'),
               })
             : null
         const report = {
