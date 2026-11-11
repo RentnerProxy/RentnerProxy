@@ -24,7 +24,8 @@ describe('isolation command ownership and readiness streams', () => {
                     process.execPath,
                     '--no-env-file',
                     '-e',
-                    `const descendant=Bun.spawn([process.execPath,'--no-env-file','-e','setInterval(()=>{},1000)'],{stdin:'ignore',stdout:'inherit',stderr:'inherit'});await Bun.write(${JSON.stringify(pidFile)},String(descendant.pid));setInterval(()=>{},1000)`,
+                    "const descendant=Bun.spawn([process.execPath,'--no-env-file','-e','setInterval(()=>{},1000)'],{stdin:'ignore',stdout:'inherit',stderr:'inherit'});await Bun.write(process.argv[1],String(descendant.pid));setInterval(()=>{},1000)",
+                    pidFile,
                 ],
                 750,
             )
