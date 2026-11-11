@@ -1,4 +1,5 @@
 import { drainWorker, settleWorkerTasks } from '@/server/Foundation/worker-lifecycle.server.ts'
+import { WorkerDrainTimeoutError } from '@/server/Foundation/Types/worker-lifecycle.types.ts'
 import { HOST_MONITORING_LIMITS } from '@/config/host-monitoring.config.ts'
 import type { HostMonitoringWorkerDependencies } from './Types/host-monitoring-worker.types.ts'
 
@@ -93,30 +94,35 @@ export function createHostMonitoringWorker<Claim>(
             pollDelayMs = HOST_MONITORING_LIMITS.pollIntervalMs
             // Cap this tick too: fast completions must not create an endless drain.
             let remaining = HOST_MONITORING_LIMITS.workerConcurrency - running.size
-            try {
-                while (!signal.aborted && remaining > 0) {
-                    const limit = Math.min(
-                        remaining,
-                        HOST_MONITORING_LIMITS.claimBatchSize,
-                        HOST_MONITORING_LIMITS.workerConcurrency - running.size,
-                    )
-                    // This batch reserves its slots until storage returns. Admission
-                    // never overlaps, so running tasks plus reserved slots stay bounded.
+            while (!signal.aborted && remaining > 0) {
+                const limit = Math.min(
+                    remaining,
+                    HOST_MONITORING_LIMITS.claimBatchSize,
+                    HOST_MONITORING_LIMITS.workerConcurrency - running.size,
+                )
+                // Catch unavailable admission separately: failed cleanup must reach stop().
+                let claims: readonly Claim[]
+                try {
                     // eslint-disable-next-line no-await-in-loop -- Each storage batch reserves only currently free capacity.
-                    const claims = await dependencies.claim(limit)
-                    if (signal.aborted) {
-                        // eslint-disable-next-line no-await-in-loop -- Shutdown must await every late lease release before returning.
-                        await Promise.allSettled(
-                            claims.map(async (claim) => dependencies.releaseCancelled(claim)),
-                        )
-                        return
-                    }
-                    unavailable.delete('claim')
-                    for (const claim of claims) launch(claim, signal)
-                    remaining -= limit
-                    if (claims.length < limit) {
-                        if (claims.length === 0 && dependencies.nextAdmissionAt) {
-                            // eslint-disable-next-line no-await-in-loop -- Read the durable due time only after an empty claim batch.
+                    claims = await dependencies.claim(limit)
+                } catch {
+                    warn('claim', signal)
+                    return
+                }
+                if (signal.aborted) {
+                    // eslint-disable-next-line no-await-in-loop -- Shutdown must await every late lease release before returning.
+                    await settleWorkerTasks(
+                        claims.map(async (claim) => dependencies.releaseCancelled(claim)),
+                    )
+                    return
+                }
+                unavailable.delete('claim')
+                for (const claim of claims) launch(claim, signal)
+                remaining -= limit
+                if (claims.length < limit) {
+                    if (claims.length === 0 && dependencies.nextAdmissionAt) {
+                        try {
+                            // eslint-disable-next-line no-await-in-loop -- Read durable due time only after an empty claim batch.
                             const due = await dependencies.nextAdmissionAt()
                             if (!signal.aborted && revision === wakeRevision)
                                 pollDelayMs = Math.max(
@@ -128,12 +134,12 @@ export function createHostMonitoringWorker<Claim>(
                                             : due - now(),
                                     ),
                                 )
+                        } catch {
+                            warn('claim', signal)
                         }
-                        return
                     }
+                    return
                 }
-            } catch {
-                warn('claim', signal)
             }
         })().finally(() => {
             admission = null
@@ -185,9 +191,21 @@ export function createHostMonitoringWorker<Claim>(
                         ])
                     })(),
                 )
-            })().then(() => {
-                stopping = null
-            })
+            })().then(
+                () => {
+                    stopping = null
+                },
+                (error: unknown) => {
+                    if (error instanceof WorkerDrainTimeoutError)
+                        void error.drained.then(
+                            () => {
+                                stopping = null
+                            },
+                            () => undefined,
+                        )
+                    throw error
+                },
+            )
             return stopping
         },
     }

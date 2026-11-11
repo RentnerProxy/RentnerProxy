@@ -1,5 +1,6 @@
 import '@tanstack/react-start/server-only'
 import { HOST_MONITORING_LIMITS } from '@/config/host-monitoring.config.ts'
+import { withBackgroundDatabaseContext } from '@/db/background-admission.ts'
 import { observeWorkerOperation } from '@/server/Foundation/worker-operation.ts'
 import { workerObservability } from '@/server/Foundation/worker-observability.ts'
 import { inspectControllerDomain } from '@/server/Controller/domain-diagnostics.server.ts'
@@ -74,7 +75,10 @@ const release = createHostMonitoringBatcher<HostMonitoringClaim, boolean>({
         for (const current of batches) {
             try {
                 // oxlint-disable-next-line no-await-in-loop -- A later token for the same policy must follow the earlier fenced release.
-                const values = await releaseHostMonitoringClaims(current)
+                const values = await withBackgroundDatabaseContext(
+                    () => releaseHostMonitoringClaims(current),
+                    null,
+                )
                 if (values.length !== current.length)
                     throw new Error('Invalid monitoring release result.')
                 released ||= values.some(Boolean)
