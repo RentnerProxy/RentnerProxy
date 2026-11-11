@@ -143,6 +143,7 @@ function connected(value: unknown): 'connected' | 'unavailable' {
     return isRecord(value) && value.state === 'connected' ? 'connected' : 'unavailable'
 }
 
+/** Build the allowlisted report from independently validated sections; absent worker snapshots stay unavailable and make completeness partial. */
 export function createRuntimeSupportReport(
     input: RuntimeSupportReportInput,
     capturedAt: Date,

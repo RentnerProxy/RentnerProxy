@@ -1,4 +1,25 @@
 use super::background::{Outcome, Worker};
+// Capture owned values before entering the bounded storage worker. Each expression
+// is one complete local store operation; network awaits stay outside this macro.
+macro_rules! acme_store {
+    ($runtime:expr; [$($capture:ident),*]; $store:ident => $operation:expr) => {{
+        $(let $capture = $capture.to_owned();)*
+        $runtime.storage_async(move |runtime| async move {
+            let $store = &runtime.certificate_store;
+            $operation.await
+        }).await.unwrap_or(Err(crate::runtime::certificates::CertificateError::StoreUnavailable))
+    }};
+    (@unit $runtime:expr; [$($capture:ident),*]; $store:ident => $operation:expr) => {{
+        $(let $capture = $capture.to_owned();)*
+        let _ = $runtime.storage_async(move |runtime| async move {
+            let $store = &runtime.certificate_store;
+            $operation.await;
+        }).await;
+    }};
+}
+
+pub(super) use acme_store;
+
 mod accounts;
 #[path = "acme_http.rs"]
 mod acme_http;
@@ -17,7 +38,7 @@ use crate::{
 };
 use std::{sync::Arc, time::Duration};
 use tokio::{
-    sync::{Semaphore, SemaphorePermit},
+    sync::{Semaphore, oneshot},
     time::timeout,
 };
 const ORDER_TIMEOUT: Duration = Duration::from_secs(120);
@@ -31,6 +52,7 @@ static ACME_JOBS: Semaphore = Semaphore::const_new(4);
 mod tests;
 
 impl ProxyRuntime {
+    /// Admit pending cleanup fairly under the shared ACME semaphore; scanning records idle while spawned jobs own completion evidence.
     pub(crate) async fn recover_dns_cleanup(self: &Arc<Self>) -> bool {
         let pass = self.background.begin(Worker::Orders);
         let Ok(mut ids) = self.certificate_store.pending_dns_cleanup_ids().await else {
@@ -51,7 +73,7 @@ impl ProxyRuntime {
                 break;
             };
             let runtime = Arc::clone(self);
-            tokio::spawn(async move {
+            self.background_jobs.spawn("acme_dns_cleanup", async move {
                 let _permit = permit;
                 runtime.recover_dns_cleanup_one(&id).await;
             });
@@ -60,9 +82,10 @@ impl ProxyRuntime {
         true
     }
 
-    async fn recover_dns_cleanup_one(&self, id: &str) {
+    /// Own one cleanup pass; missing work is idle and provider/cleanup errors remain failures while the store claim is released.
+    async fn recover_dns_cleanup_one(self: &Arc<Self>, id: &str) {
         let pass = self.background.begin(Worker::Orders);
-        let work = match self.certificate_store.begin_dns_cleanup(id).await {
+        let work = match acme_store!(self; [id]; store => store.begin_dns_cleanup(&id)) {
             Ok(Some(work)) => work,
             Ok(None) => {
                 pass.finish(Outcome::Idle);
@@ -81,12 +104,36 @@ impl ProxyRuntime {
             Ok(provider) => self.cleanup_dns_challenges(id, &provider, &intents).await,
             Err(error) => Err(error),
         };
-        self.certificate_store.finish_dns_cleanup(id).await;
+        acme_store!(@unit self; [id]; store => store.finish_dns_cleanup(&id));
         pass.finish(if result.is_ok() {
             Outcome::Success
         } else {
             Outcome::Failure
         });
+    }
+
+    async fn owned_acme_job<F, Fut>(
+        self: &Arc<Self>,
+        operation: &'static str,
+        job: F,
+    ) -> Result<super::CertificateMetadata, CertificateError>
+    where
+        F: FnOnce(
+            Arc<Self>,
+            oneshot::Sender<Result<super::CertificateMetadata, CertificateError>>,
+        ) -> Fut,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let (response, result) = oneshot::channel();
+        if !self
+            .background_jobs
+            .spawn(operation, job(Arc::clone(self), response))
+        {
+            return Err(CertificateError::OperationInProgress);
+        }
+        result
+            .await
+            .unwrap_or(Err(CertificateError::StoreUnavailable))
     }
 
     pub(crate) async fn start_acme_issue(
@@ -95,22 +142,36 @@ impl ProxyRuntime {
         request: CertificateIssueRequest,
         challenges: ChallengeStore,
     ) -> Result<super::CertificateMetadata, CertificateError> {
-        if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(CertificateError::OperationInProgress);
-        }
+        let permit = ACME_JOBS
+            .try_acquire()
+            .map_err(|_| CertificateError::OperationInProgress)?;
+        self.owned_acme_job("acme_issue", move |runtime, response| async move {
+            let _permit = permit;
+            match runtime.prepare_acme_issue(&id, &request).await {
+                Ok(metadata) => {
+                    let _ = response.send(Ok(metadata));
+                    runtime.issue_acme_inner(id, request, challenges).await;
+                }
+                Err(error) => {
+                    let _ = response.send(Err(error));
+                }
+            }
+        })
+        .await
+    }
+
+    async fn prepare_acme_issue(
+        self: &Arc<Self>,
+        id: &str,
+        request: &CertificateIssueRequest,
+    ) -> Result<super::CertificateMetadata, CertificateError> {
         if self
             .certificate_store
             .pending_candidate_ids()
             .await?
             .iter()
-            .any(|candidate_id| candidate_id == &id)
+            .any(|candidate_id| candidate_id == id)
         {
-            return Err(CertificateError::OperationInProgress);
-        }
-        let permit = ACME_JOBS
-            .try_acquire()
-            .map_err(|_| CertificateError::OperationInProgress)?;
-        if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(CertificateError::OperationInProgress);
         }
         let binding = if request
@@ -126,27 +187,17 @@ impl ProxyRuntime {
             self.reconcile_provider_connections()
                 .await
                 .map_err(super::provider_connections::certificate_error)?;
-            self.reserve_certificate_connection(&id, &request).await?;
+            self.reserve_certificate_connection(id, request).await?;
         }
-        let metadata = match self
-            .certificate_store
-            .begin_issue(&id, request.clone(), false)
-            .await
-        {
-            Ok(metadata) => metadata,
+        match acme_store!(self; [id, request]; store => store.begin_issue(&id, request, false)) {
+            Ok(metadata) => Ok(metadata),
             Err(error) => {
                 if binding.is_some() {
                     let _ = self.reconcile_provider_connections().await;
                 }
-                return Err(error);
+                Err(error)
             }
-        };
-        let runtime = Arc::clone(self);
-        tokio::spawn(async move {
-            let _permit = permit;
-            runtime.issue_acme_inner(id, request, challenges).await;
-        });
-        Ok(metadata)
+        }
     }
 
     pub(crate) async fn start_acme_renewal(
@@ -154,16 +205,35 @@ impl ProxyRuntime {
         id: String,
         challenges: ChallengeStore,
     ) -> Result<super::CertificateMetadata, CertificateError> {
-        if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(CertificateError::OperationInProgress);
-        }
-        if let Some(metadata) = self.retry_certificate_candidate(&id, false).await? {
-            return Ok(metadata);
-        }
-        let permit = ACME_JOBS
-            .try_acquire()
-            .map_err(|_| CertificateError::OperationInProgress)?;
-        self.renew_with_permit(id, challenges, permit).await
+        self.owned_acme_job("acme_renewal", move |runtime, response| async move {
+            let preparation = async {
+                if let Some(metadata) = runtime
+                    .retry_certificate_candidate_inner(&id, false)
+                    .await?
+                {
+                    return Ok((metadata, None));
+                }
+                let permit = ACME_JOBS
+                    .try_acquire()
+                    .map_err(|_| CertificateError::OperationInProgress)?;
+                let (metadata, request) =
+                    acme_store!(runtime; [id]; store => store.begin_renewal(&id))?;
+                Ok((metadata, Some((request, permit))))
+            }
+            .await;
+            match preparation {
+                Ok((metadata, continuation)) => {
+                    let _ = response.send(Ok(metadata));
+                    if let Some((request, _permit)) = continuation {
+                        runtime.issue_acme_inner(id, request, challenges).await;
+                    }
+                }
+                Err(error) => {
+                    let _ = response.send(Err(error));
+                }
+            }
+        })
+        .await
     }
 
     pub(crate) async fn start_scheduled_acme_renewal(
@@ -171,19 +241,35 @@ impl ProxyRuntime {
         id: String,
         challenges: ChallengeStore,
     ) -> Result<super::CertificateMetadata, CertificateError> {
-        if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(CertificateError::OperationInProgress);
-        }
         let permit = ACME_JOBS
             .try_acquire()
             .map_err(|_| CertificateError::OperationInProgress)?;
-        let certificate = self.certificate_store.get(&id).await?;
-        if !self.certificate_store.renewal_is_allowed(&id).await
-            || !Self::renewal_is_due(&certificate)
-        {
-            return Err(CertificateError::OperationInProgress);
-        }
-        self.renew_with_permit(id, challenges, permit).await
+        self.owned_acme_job(
+            "acme_scheduled_renewal",
+            move |runtime, response| async move {
+                let _permit = permit;
+                let preparation = async {
+                    let certificate = runtime.certificate_store.get(&id).await?;
+                    if !runtime.certificate_store.renewal_is_allowed(&id).await
+                        || !Self::renewal_is_due(&certificate)
+                    {
+                        return Err(CertificateError::OperationInProgress);
+                    }
+                    acme_store!(runtime; [id]; store => store.begin_renewal(&id))
+                }
+                .await;
+                match preparation {
+                    Ok((metadata, request)) => {
+                        let _ = response.send(Ok(metadata));
+                        runtime.issue_acme_inner(id, request, challenges).await;
+                    }
+                    Err(error) => {
+                        let _ = response.send(Err(error));
+                    }
+                }
+            },
+        )
+        .await
     }
 
     pub(crate) async fn start_scheduled_acme_retry(
@@ -191,39 +277,25 @@ impl ProxyRuntime {
         id: String,
         challenges: ChallengeStore,
     ) -> Result<super::CertificateMetadata, CertificateError> {
-        if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(CertificateError::OperationInProgress);
-        }
         let permit = ACME_JOBS
             .try_acquire()
             .map_err(|_| CertificateError::OperationInProgress)?;
-        let (metadata, request) = self.certificate_store.begin_acme_retry(&id).await?;
-        let runtime = Arc::clone(self);
-        tokio::spawn(async move {
+        self.owned_acme_job("acme_retry", move |runtime, response| async move {
             let _permit = permit;
-            runtime.issue_acme_inner(id, request, challenges).await;
-        });
-        Ok(metadata)
+            match acme_store!(runtime; [id]; store => store.begin_acme_retry(&id)) {
+                Ok((metadata, request)) => {
+                    let _ = response.send(Ok(metadata));
+                    runtime.issue_acme_inner(id, request, challenges).await;
+                }
+                Err(error) => {
+                    let _ = response.send(Err(error));
+                }
+            }
+        })
+        .await
     }
 
-    async fn renew_with_permit(
-        self: &Arc<Self>,
-        id: String,
-        challenges: ChallengeStore,
-        permit: SemaphorePermit<'static>,
-    ) -> Result<super::CertificateMetadata, CertificateError> {
-        if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(CertificateError::OperationInProgress);
-        }
-        let (metadata, request) = self.certificate_store.begin_renewal(&id).await?;
-        let runtime = Arc::clone(self);
-        tokio::spawn(async move {
-            let _permit = permit;
-            runtime.issue_acme_inner(id, request, challenges).await;
-        });
-        Ok(metadata)
-    }
-
+    /// Bound automatic issuance by challenge type and remove HTTP challenges before activation; early exits retain failed-pass evidence.
     async fn issue_acme_inner(
         self: Arc<Self>,
         id: String,
@@ -241,9 +313,7 @@ impl ProxyRuntime {
             AcmeChallengeType::Http01 => None,
             AcmeChallengeType::Dns01 => {
                 let Some(config) = request.dns_provider.clone() else {
-                    self.certificate_store
-                        .finish_failed(&id, CertificateError::AcmeDnsRequired)
-                        .await;
+                    acme_store!(@unit self; [id]; store => store.finish_failed(&id, CertificateError::AcmeDnsRequired));
                     return;
                 };
                 let resolved = self
@@ -256,7 +326,7 @@ impl ProxyRuntime {
                 {
                     Ok(provider) => Some(provider),
                     Err(error) => {
-                        self.certificate_store.finish_failed(&id, error).await;
+                        acme_store!(@unit self; [id, error]; store => store.finish_failed(&id, error));
                         return;
                     }
                 }
@@ -268,7 +338,7 @@ impl ProxyRuntime {
         {
             Ok(intents) => intents,
             Err(error) => {
-                self.certificate_store.finish_failed(&id, error).await;
+                acme_store!(@unit self; [id, error]; store => store.finish_failed(&id, error));
                 return;
             }
         };
@@ -294,10 +364,7 @@ impl ProxyRuntime {
         };
         let (candidate, issue_error) = match order_result {
             Ok((certificate_pem, private_key_pem)) => {
-                match self
-                    .certificate_store
-                    .stage_acme(&id, &request, certificate_pem, private_key_pem)
-                    .await
+                match acme_store!(self; [id, request, certificate_pem, private_key_pem]; store => store.stage_acme(&id, &request, certificate_pem, private_key_pem))
                 {
                     Ok(staged) => (Some(staged), None),
                     Err(error) => (None, Some(error)),
@@ -319,13 +386,13 @@ impl ProxyRuntime {
             return;
         }
         if let Some(error) = issue_error {
-            self.certificate_store.finish_failed(&id, error).await;
+            acme_store!(@unit self; [id, error]; store => store.finish_failed(&id, error));
         }
         self.recover_dns_cleanup_one(&id).await;
     }
 
     async fn prepare_dns_challenges(
-        &self,
+        self: &Arc<Self>,
         id: &str,
         request: &CertificateIssueRequest,
         provider: Option<&DnsProvider>,
@@ -356,7 +423,7 @@ impl ProxyRuntime {
     }
 
     async fn cleanup_dns_challenges(
-        &self,
+        self: &Arc<Self>,
         id: &str,
         provider: &DnsProvider,
         intents: &[DnsRecordIntent],
@@ -373,7 +440,7 @@ impl ProxyRuntime {
     }
 
     async fn reconcile_dns_challenges(
-        &self,
+        self: &Arc<Self>,
         id: &str,
         provider: &DnsProvider,
         intents: &[DnsRecordIntent],
@@ -396,9 +463,7 @@ impl ProxyRuntime {
                     .await?;
                 let mut pending = retained.clone();
                 pending.extend_from_slice(&intents[index + 1..]);
-                self.certificate_store
-                    .set_pending_dns_records(id, pending)
-                    .await?;
+                acme_store!(self; [id, pending]; store => store.set_pending_dns_records(&id, pending))?;
             }
             Ok(retained)
         })

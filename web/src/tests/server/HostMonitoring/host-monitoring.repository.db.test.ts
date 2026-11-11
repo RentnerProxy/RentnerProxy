@@ -177,25 +177,21 @@ describe('durable scheduled monitoring repository', () => {
                 Bun.randomUUIDv7(),
             )
             hostIds.push(...ids)
-            await db
-                .insert(proxyHosts)
-                .values(
-                    ids.map((id) => ({
-                        id,
-                        forwardScheme: 'http' as const,
-                        forwardHost: '127.0.0.1',
-                        forwardPort: 8080,
-                    })),
-                )
-            await db
-                .insert(hostCheckPolicies)
-                .values(
-                    ids.map((id) => ({
-                        proxyHostId: id,
-                        domain: `retention-${id}.example.test`,
-                        sampleLimit: 1440,
-                    })),
-                )
+            await db.insert(proxyHosts).values(
+                ids.map((id) => ({
+                    id,
+                    forwardScheme: 'http' as const,
+                    forwardHost: '127.0.0.1',
+                    forwardPort: 8080,
+                })),
+            )
+            await db.insert(hostCheckPolicies).values(
+                ids.map((id) => ({
+                    proxyHostId: id,
+                    domain: `retention-${id}.example.test`,
+                    sampleLimit: 1440,
+                })),
+            )
             await db.execute(sql`
             insert into rentnerproxy.host_check_observations (policy_id, policy_version, checked_at, status, code)
             select p.id, p.version, statement_timestamp() - n * interval '1 minute', 'healthy', 'expected_status'

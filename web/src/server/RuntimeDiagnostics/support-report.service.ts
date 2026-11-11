@@ -25,6 +25,7 @@ function value(result: PromiseSettledResult<unknown>): unknown {
     return result.status === 'fulfilled' ? result.value : null
 }
 
+/** Require report-export permission before sampling dependencies; settle independent reads so a missing controller snapshot preserves truthful partial Bun evidence. */
 export async function exportRuntimeSupportReportService(): Promise<RuntimeSupportReport> {
     const user = await requireUserService()
     if (!canExportRuntimeSupportReport(user.permissions))

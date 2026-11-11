@@ -6,6 +6,7 @@ import { hostCheckPolicies, hostDomains, proxyHosts } from '@/db/schema.ts'
 import { getAuthDatabase } from '@/server/Auth/Core/database.server.ts'
 import { workerObservability } from '@/server/Foundation/worker-observability.ts'
 
+/** Read only enabled, existing policies under a two-second SQL deadline; unavailable queue evidence becomes null rather than zero. */
 export async function sampleHostMonitoringBacklog(): Promise<void> {
     try {
         const row = await getAuthDatabase().transaction(

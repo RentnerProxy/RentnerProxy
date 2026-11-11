@@ -80,7 +80,7 @@ impl Store {
                 continue;
             }
             if strict {
-                self.decrypt(entry)?;
+                self.decrypt(entry).await?;
                 if consumer_type == ConsumerType::Dns01
                     && !entry.metadata.verified_for(&reference.zone_id)
                 {
@@ -100,7 +100,7 @@ impl Store {
             for entry in &next.connections {
                 validation::metadata(&entry.metadata)?;
             }
-            self.commit(&mut state, next)?;
+            self.commit(state, next).await?;
         }
         Ok(())
     }

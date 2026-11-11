@@ -16,6 +16,7 @@ import {
 } from '@/server/Admin/CertificateManagement/certificate-events.worker.ts'
 import { getAuthDatabase } from '@/server/Auth/Core/database.server.ts'
 import { getDatabaseUrl } from '@/server/env.server.ts'
+import { workerObservability } from '@/server/Foundation/worker-observability.ts'
 
 const enabled = process.env.RENTNERPROXY_DATABASE_INTEGRATION === '1' && getDatabaseUrl() !== null
 const integrationTest = enabled ? test : test.skip
@@ -322,6 +323,7 @@ describe('certificate event synchronization with PostgreSQL', () => {
     integrationTest(
         'runs the background lifecycle without a browser and deduplicates after restart',
         async () => {
+            workerObservability.reset()
             startCertificateEventsSynchronization()
             try {
                 await waitForEventWorker(async () => (await readEventRows()).length === 1)
@@ -329,6 +331,11 @@ describe('certificate event synchronization with PostgreSQL', () => {
                 await stopCertificateEventsSynchronization()
             }
             expect(eventRequests).toBeGreaterThan(0)
+            const progress = workerObservability
+                .snapshot()
+                .workers.find((item) => item.id === 'certificate_events')!
+            expect(progress.nextDueAt).not.toBeNull()
+            expect(progress.nextDueAt!).toBeGreaterThan(progress.lastFinishedAt!)
 
             const requestsBeforeRestart = eventRequests
             startCertificateEventsSynchronization()

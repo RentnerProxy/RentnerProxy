@@ -37,6 +37,7 @@ const readContext = createHostMonitoringBatcher<
 const complete = createHostMonitoringBatcher<HostMonitoringCompletion, boolean>({
     size: HOST_MONITORING_LIMITS.persistenceBatchSize,
     delayMs: HOST_MONITORING_LIMITS.persistenceDelayMs,
+    /** Publish a change only when a durable batch completion was accepted; rejected or failed writes cannot announce progress. */
     run: async (items) => {
         const results = await completeHostMonitoringClaims(items)
         if (results.some((result) => result.status === 'fulfilled' && result.value))
@@ -54,11 +55,13 @@ export const hostMonitoringWorker = createHostMonitoringWorker({
             () => 'deferred',
             'admission',
         ),
+    /** Count progress only after accepted persistence, treating busy outcomes as deferred and unknown dependency results as failures. */
     runClaim: (claim, signal) => {
         let progress: 'success' | 'failure' | 'deferred' = 'deferred'
         const execute = createHostMonitoringProbe({
             readContext,
             inspect: inspectControllerDomain,
+            /** Persist under the current claim fence before updating progress; admission rejection remains distinct from successful probes. */
             complete: async (current, outcome, before, currentSignal) => {
                 const stored = await complete({
                     claim: current,
@@ -66,7 +69,13 @@ export const hostMonitoringWorker = createHostMonitoringWorker({
                     before,
                     signal: currentSignal,
                 })
-                if (stored) progress = outcome.status === 'unknown' ? 'failure' : 'success'
+                if (stored)
+                    progress =
+                        outcome.code === 'busy'
+                            ? 'deferred'
+                            : outcome.status === 'unknown'
+                              ? 'failure'
+                              : 'success'
                 if (outcome.code === 'busy')
                     workerObservability.count('host_monitoring', 'admissionRejected')
                 return stored
@@ -83,6 +92,7 @@ export const hostMonitoringWorker = createHostMonitoringWorker({
     releaseCancelled: async (claim) => {
         await releaseHostMonitoringClaim(claim)
     },
+    /** Observe retention independently from probe execution, then refresh queue evidence after successful pruning. */
     prune: async () => {
         await observeWorkerOperation(
             'host_monitoring',
