@@ -110,18 +110,16 @@ impl Discovery {
         configuration: &Document,
         candidates: Option<Vec<models::Candidate>>,
         error: Option<Error>,
-    ) {
-        let pass = self.background.begin(super::background::Worker::Docker);
+    ) -> super::background::Outcome {
         let succeeded = candidates.is_some() && error.is_none();
         let mut snapshot = self.snapshot.lock().await;
         // A late response from a replaced endpoint must never become its successor's inventory.
         // Recheck persistence under the same snapshot -> I/O order as observation.
         let Ok((current, restored)) = persistence::load(&self.path, &self.io).await else {
-            return;
+            return super::background::Outcome::Failure;
         };
         if &current != configuration || restored {
-            pass.finish(super::background::Outcome::Idle);
-            return;
+            return super::background::Outcome::Idle;
         }
         let previous = snapshot.clone();
         if snapshot.configuration != current {
@@ -139,11 +137,11 @@ impl Discovery {
         if *snapshot != previous {
             self.advance_generation();
         }
-        pass.finish(if succeeded {
+        if succeeded {
             super::background::Outcome::Success
         } else {
             super::background::Outcome::Failure
-        });
+        }
     }
 }
 

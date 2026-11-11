@@ -80,7 +80,13 @@ export const hostMonitoringWorker = createHostMonitoringWorker({
                     before,
                     signal: currentSignal,
                 })
-                if (stored) progress = outcome.status === 'unknown' ? 'failure' : 'success'
+                if (stored)
+                    progress =
+                        outcome.code === 'busy'
+                            ? 'deferred'
+                            : outcome.status === 'unknown'
+                              ? 'failure'
+                              : 'success'
                 if (outcome.code === 'busy')
                     workerObservability.count('host_monitoring', 'admissionRejected')
                 return stored
