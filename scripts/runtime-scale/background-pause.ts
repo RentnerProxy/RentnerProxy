@@ -60,6 +60,7 @@ export async function backgroundPauseProcessGuard(guard: typeof backgroundPauseG
         throw new Error('Invalid background guard arguments')
     const pid = Number(pidText)
     await guard({
+        /** Recheck the Linux process start tick before either signal; a missing or recycled PID never inherits the paused owner identity. */
         identity: async () => {
             try {
                 const stat = await Bun.file('/proc/' + pid + '/stat').text()

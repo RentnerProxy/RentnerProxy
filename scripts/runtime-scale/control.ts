@@ -94,6 +94,7 @@ export async function drainConcurrent<T extends readonly unknown[]>(
     return Promise.all(operations)
 }
 
+/** Validate report identity, stages, and fixed failure categories; cancellation stays a failure and incomplete required checks cannot establish success. */
 export function buildScaleReport(input: {
     targetSha: string
     imageIdentity: string

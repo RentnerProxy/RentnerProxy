@@ -154,6 +154,7 @@ async function archive(revision: string, destination: string, paths: string[] = 
     await rm(path)
 }
 
+/** Own a uniquely named disposable appliance and its private fixture state, DNS, transport observers, and cleanup handles for bounded reliability scenarios. */
 export async function createHarness(options: ReliabilityOptions, checks: ReliabilityCheck[]) {
     const runId = randomBytes(6).toString('hex')
     if (!process.env.RENTNERPROXY_SMOKE_RUN) process.env.RENTNERPROXY_SMOKE_RUN = 'local-' + runId
@@ -333,6 +334,7 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
             )
         }, 'desired revision did not become active')
     }
+    /** Refresh the owned appliance IPv4 address while preserving registered boundary SANs; validate aliases before changing any DNS record. */
     async function refreshDns(aliases: readonly string[] = []) {
         const address = await docker([
             'inspect',
@@ -472,6 +474,7 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
         fixtureTlsStarted = true
         return fixtureTransport.tlsPort
     }
+    /** Export only allowlisted stages/categories and bounded transport evidence, preserving cancellation while incomplete probes remain explicitly partial. */
     async function captureTrafficDiagnostic(
         stage: string,
         category: string,
@@ -629,6 +632,7 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
         }
         await writeFile(composeFile, smokeCompose(Bun.YAML.stringify(config)), { mode: 0o600 })
     }
+    /** Restore the owned current-source appliance into a fresh volume, reestablish private fixture ownership, and verify exact durable state and desired revision. */
     async function backupRestore() {
         assert.equal(options.source, 'current')
         const before = await fixture('durability-read')
@@ -1054,6 +1058,7 @@ console.log(JSON.stringify({memoryBytes:Math.max(0,memory-inactive),pids:Number(
         setAuthMode(value: 'allow' | 'deny' | 'unavailable') {
             return fixtureControl({ authMode: value })
         },
+        /** Read bounded upstream receipt evidence through the private fixture control endpoint; return unknown data for caller schema validation. */
         async backgroundReceipts() {
             return JSON.parse(
                 await docker(
