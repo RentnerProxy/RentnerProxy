@@ -226,6 +226,7 @@ impl ProxyRuntime {
         Ok(metadata)
     }
 
+    /// Bound automatic issuance by challenge type and remove HTTP challenges before activation; early exits retain failed-pass evidence.
     async fn issue_acme_inner(
         self: Arc<Self>,
         id: String,
