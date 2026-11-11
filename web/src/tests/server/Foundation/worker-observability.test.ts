@@ -43,6 +43,26 @@ test('successful bookkeeping cannot hide a delivery outage or invent recovery', 
     expect(worker.state).toBe('idle')
     expect(worker.degradedLanes).toEqual([])
 })
+
+test('a completed idle admission recovers its own lane without inventing successful work', () => {
+    const metrics = createWorkerObservability()
+    metrics.begin('notifications', 'delivery')('failure')
+    metrics.begin('notifications', 'admission')('failure')
+    metrics.begin('notifications', 'admission')('cancelled')
+    expect(
+        metrics.snapshot().workers.find((item) => item.id === 'notifications')?.degradedLanes,
+    ).toEqual(['delivery', 'admission'])
+    metrics.begin('notifications', 'admission')('deferred')
+    const worker = metrics.snapshot().workers.find((item) => item.id === 'notifications')!
+    expect(worker.degradedLanes).toEqual(['delivery'])
+    expect(worker.state).toBe('degraded')
+    expect(worker.lastSuccessAt).toBeNull()
+    expect(worker.counters).toMatchObject({ failure: 2, cancelled: 1, deferred: 1, success: 0 })
+    metrics.begin('notifications', 'delivery')('success')
+    expect(metrics.snapshot().workers.find((item) => item.id === 'notifications')?.state).toBe(
+        'idle',
+    )
+})
 import type {
     BackgroundWorkerId,
     BackgroundWorkerState,

@@ -157,7 +157,7 @@ export function createWorkerObservability(
                 if (outcome === 'failure') worker.lastFailureAt = finishedAt
                 if (outcome === 'failure' && !worker.degradedLanes.includes(lane))
                     worker.degradedLanes.push(lane)
-                if (outcome === 'success')
+                if (outcome === 'success' || outcome === 'deferred')
                     worker.degradedLanes = worker.degradedLanes.filter((item) => item !== lane)
                 const elapsed = Math.max(0, finishedAt - startedAt)
                 const boundedBucket = durationBoundsMs.findIndex((bound) => elapsed <= bound)

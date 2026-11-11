@@ -10,7 +10,7 @@ export function startEventLoopObservation(): void {
         const due = performance.now() + backgroundWorkerMetricsConfig.eventLoopSampleMs
         timer = setTimeout(() => {
             timer = null
-            workerObservability.eventLoopDelay(performance.now() - due)
+            workerObservability.eventLoopDelay(Math.max(0, performance.now() - due))
             if (!stopped) schedule()
         }, backgroundWorkerMetricsConfig.eventLoopSampleMs)
         timer.unref()
