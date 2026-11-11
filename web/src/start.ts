@@ -39,7 +39,14 @@ const startDockerDiscoveryLifecycle = createServerOnlyFn(() =>
     startWorkerLifecycle(async () => {
         const { dockerDiscoveryWorker } =
             await import('@/server/Admin/DockerDiscovery/discovery-worker.ts')
-        return dockerDiscoveryWorker
+        return {
+            // Reconciliation is admitted work, not startup: its SQL/controller budget exceeds startup's deadline.
+            start: () => {
+                void dockerDiscoveryWorker.start()
+            },
+            // The worker retains its initial flight, so maintenance still drains every admitted write.
+            stop: () => dockerDiscoveryWorker.stop(),
+        }
     }, 'docker_discovery'),
 )
 if (typeof window === 'undefined') void startDockerDiscoveryLifecycle()
