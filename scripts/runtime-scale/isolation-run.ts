@@ -37,19 +37,61 @@ async function bounded<T>(operation: Promise<T>, milliseconds: number): Promise<
         clearTimeout(timer)
     }
 }
-async function command(args: string[]): Promise<string> {
+export async function command(args: string[], timeoutMs = 30_000): Promise<string> {
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
+        throw new Error('Invalid isolation command timeout')
     const child = Bun.spawn(args, { stdout: 'pipe', stderr: 'pipe' })
-    const [code, out] = await bounded(
-        Promise.all([
-            child.exited,
-            new Response(child.stdout).text(),
-            new Response(child.stderr).text(),
-        ]),
-        30_000,
-    )
-    if (code !== 0) throw new Error('Isolation fixture command failed')
-    return out.trim()
+    const completions = [
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+    ] as const
+    try {
+        const [code, out] = await bounded(Promise.all(completions), timeoutMs)
+        if (code !== 0) throw new Error('Isolation fixture command failed')
+        return out.trim()
+    } catch (error) {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+        await Promise.allSettled(completions)
+        throw error
+    }
 }
+
+export function createIsolationLineReader(onLine: (line: string) => void) {
+    const decoder = new TextDecoder()
+    let pending = ''
+    let discarding = false
+    function read(text: string) {
+        let offset = 0
+        while (offset < text.length) {
+            const end = text.indexOf('\n', offset)
+            const fragment = text.slice(offset, end < 0 ? text.length : end)
+            if (!discarding) {
+                if (pending.length + fragment.length > 4096) {
+                    pending = ''
+                    discarding = true
+                } else pending += fragment
+            }
+            if (end < 0) break
+            if (!discarding) onLine(pending)
+            pending = ''
+            discarding = false
+            offset = end + 1
+        }
+    }
+    return {
+        write(chunk: Uint8Array) {
+            read(decoder.decode(chunk, { stream: true }))
+        },
+        finish() {
+            read(decoder.decode())
+            if (!discarding && pending.length > 0) onLine(pending)
+            pending = ''
+            discarding = false
+        },
+    }
+}
+
 async function sourceHash() {
     const hash = createHash('sha256')
     async function add(directory: string) {
@@ -141,20 +183,15 @@ async function spawnRole(
             stderr: 'pipe',
         },
     )
+    const lines = createIsolationLineReader((line) => {
+        try {
+            ready.resolve(isolationReadySchema.parse(JSON.parse(line)))
+        } catch {}
+    })
     void (async () => {
-        let text = ''
-        for await (const data of child.stdout) {
-            text += new TextDecoder().decode(data)
-            const end = text.indexOf('\n')
-            if (end >= 0) {
-                try {
-                    ready.resolve(isolationReadySchema.parse(JSON.parse(text.slice(0, end))))
-                } catch {}
-                text = text.slice(end + 1)
-            }
-            if (text.length > 4096) text = ''
-        }
-    })()
+        for await (const data of child.stdout) lines.write(data)
+        lines.finish()
+    })().catch((error: unknown) => ready.reject(error))
     void new Response(child.stderr).text()
     try {
         return {
