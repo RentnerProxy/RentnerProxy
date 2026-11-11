@@ -3,14 +3,18 @@ import { mkdtemp, readFile, rm, unlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { stageReliabilityFixtureSources } from '../../../../../../scripts/runtime-reliability/harness.ts'
+import { stageBackgroundFixtureSources } from '../../../../../../scripts/runtime-scale/background-source.ts'
 
-async function buildFixture(directory: string): Promise<{ exitCode: number; stderr: string }> {
+async function buildFixture(
+    directory: string,
+    entry = 'scripts/runtime-reliability/fixture.ts',
+): Promise<{ exitCode: number; stderr: string }> {
     const child = Bun.spawn({
         cmd: [
             process.execPath,
             '--no-env-file',
             'build',
-            join(directory, 'scripts/runtime-reliability/fixture.ts'),
+            join(directory, entry),
             '--target=bun',
             '--packages=external',
             // Historical application source is archived independently by the harness.
@@ -47,6 +51,24 @@ test('stages and bundles the fixture automation with its shared request-context 
     } finally {
         expect(dirname(resolve(directory))).toBe(resolve(tmpdir()))
         expect(basename(directory)).toStartWith('rentnerproxy-fixture-build-')
+        await rm(directory, { recursive: true, force: true })
+    }
+})
+
+test('background staging includes the real RSS parser and census needed by the archived fixture bundle', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rentnerproxy-background-build-'))
+    try {
+        await stageReliabilityFixtureSources(directory)
+        await stageBackgroundFixtureSources(directory)
+        const entry = 'scripts/runtime-scale/background-fixture.ts'
+        expect(await buildFixture(directory, entry)).toEqual({ exitCode: 0, stderr: '' })
+        await unlink(join(directory, 'scripts/runtime-reliability/resource-probe.ts'))
+        const incomplete = await buildFixture(directory, entry)
+        expect(incomplete.exitCode).not.toBe(0)
+        expect(incomplete.stderr).toContain('resource-probe.ts')
+    } finally {
+        expect(dirname(resolve(directory))).toBe(resolve(tmpdir()))
+        expect(basename(directory)).toStartWith('rentnerproxy-background-build-')
         await rm(directory, { recursive: true, force: true })
     }
 })

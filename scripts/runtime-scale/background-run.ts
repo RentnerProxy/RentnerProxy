@@ -1,7 +1,7 @@
 // oxlint-disable no-await-in-loop -- Bounded workload observations and fault recovery depend on the preceding durable state.
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { createHarness, ReliabilityError } from '../runtime-reliability/harness.ts'
 import { recoveryDependencies } from '../runtime-reliability/run.ts'
@@ -26,6 +26,7 @@ import {
 import { exerciseExtendedBackgroundRecovery } from './background-extended.ts'
 import { backgroundPolicies } from './background.ts'
 import { backgroundReceiptsSchema, backgroundSnapshotSchema } from './background.validation.ts'
+import { stageBackgroundFixtureSources } from './background-source.ts'
 import type {
     BackgroundOptions,
     BackgroundResourceSample,
@@ -51,25 +52,7 @@ function generationOf(
 /** Stage the explicit fixture sources, bundle against external production packages, and install only into the owned appliance. */
 async function installFixture(context: ReliabilityContext) {
     const source = join(context.temp, 'fixture-source')
-    for (const relative of [
-        'scripts/runtime-scale/background-fixture.ts',
-        'scripts/runtime-scale/background-notifications.ts',
-        'scripts/runtime-scale/background-receivers.ts',
-        'scripts/runtime-scale/background-network.ts',
-        'scripts/runtime-scale/background-discovery.ts',
-        'scripts/runtime-scale/background-recovery.ts',
-        'scripts/runtime-scale/background-contention-fixture.ts',
-        'scripts/runtime-scale/background-contention-receiver.ts',
-        'scripts/runtime-scale/background-contention-web.ts',
-        'scripts/runtime-scale/background.ts',
-        'scripts/runtime-scale/background.validation.ts',
-        'scripts/runtime-reliability/control.ts',
-        'scripts/runtime-reliability/control.config.ts',
-    ]) {
-        const destination = join(source, relative)
-        await mkdir(dirname(destination), { recursive: true })
-        await writeFile(destination, await readFile(resolve(import.meta.dir, '../..', relative)))
-    }
+    await stageBackgroundFixtureSources(source)
     const bundle = join(context.temp, 'reliability-fixture.js')
     await context.command([
         process.execPath,
