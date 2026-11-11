@@ -8,21 +8,25 @@ import {
 } from '../../../../../../scripts/runtime-scale/isolation-faults.ts'
 
 test('role imports remain inert and reject an unflagged identity before database imports', async () => {
-    const output = await runBunScript(`
+    const output = await runBunScript(
+        `
         import assert from 'node:assert/strict'
         delete process.env.RENTNERPROXY_ISOLATION_FIXTURE
         delete process.env.DATABASE_URL
         const { runIsolationRole } = await import('./scripts/runtime-scale/isolation-role.ts')
         await assert.rejects(runIsolationRole('background', 12345), /Explicit unprivileged isolation role required/)
         console.log('guarded')
-    `, { cwd: new URL('../../../../../..', import.meta.url) })
+    `,
+        { cwd: new URL('../../../../../..', import.meta.url) },
+    )
     expect(output.trim()).toBe('guarded')
 })
 
 test.each(['probe', 'late claim'] as const)(
     'isolation %s cleanup drains all 64 original leases through the real monitoring gate',
     async (phase) => {
-        const output = await runBunScript(`
+        const output = await runBunScript(
+            `
             import assert from 'node:assert/strict'
             import { createIsolationClaimRelease } from './scripts/runtime-scale/isolation-role.ts'
             import { createHostMonitoringWorker } from './web/src/server/HostMonitoring/host-monitoring.worker.ts'
@@ -87,9 +91,15 @@ test.each(['probe', 'late claim'] as const)(
             await worker.stop()
             assert.deepEqual([...leases], [[claims[0].policy.id, 'superseding-token']])
             console.log(JSON.stringify({ calls, peak, sql, probes, stopped }))
-        `, { cwd: new URL('../../../../../..', import.meta.url) })
+        `,
+            { cwd: new URL('../../../../../..', import.meta.url) },
+        )
         expect(JSON.parse(output.trim().split('\n').at(-1)!)).toEqual({
-            calls: 64, peak: 2, sql: 64, probes: phase === 'probe' ? 64 : 48, stopped: true,
+            calls: 64,
+            peak: 2,
+            sql: 64,
+            probes: phase === 'probe' ? 64 : 48,
+            stopped: true,
         })
     },
 )
@@ -97,7 +107,8 @@ test.each(['probe', 'late claim'] as const)(
 test.each(['sql', 'admission'] as const)(
     'isolation cleanup retains failed drain ownership after a permanent %s failure',
     async (mode) => {
-        const output = await runBunScript(`
+        const output = await runBunScript(
+            `
             import assert from 'node:assert/strict'
             import { createIsolationClaimRelease } from './scripts/runtime-scale/isolation-role.ts'
             import { createHostMonitoringWorker } from './web/src/server/HostMonitoring/host-monitoring.worker.ts'
@@ -142,53 +153,78 @@ test.each(['sql', 'admission'] as const)(
             await Promise.all(held)
             assert.equal(backgroundDatabaseResourceSnapshot().monitoring.running, 0)
             console.log(JSON.stringify({ calls, typed, sql, settled }))
-        `, { cwd: new URL('../../../../../..', import.meta.url) })
+        `,
+            { cwd: new URL('../../../../../..', import.meta.url) },
+        )
         expect(JSON.parse(output.trim().split('\n').at(-1)!)).toEqual({
-            calls: 64, typed: 64, sql: mode === 'sql' ? 64 : 0, settled: true,
+            calls: 64,
+            typed: 64,
+            sql: mode === 'sql' ? 64 : 0,
+            settled: true,
         })
     },
 )
 
-test.each([0, 3, 8])('pool saturation records only fulfilled SQL queries: %s failures', async (failures) => {
-    const sibling = Promise.withResolvers<void>()
-    let calls = 0, settled = false
-    const operation = readIsolationPoolSaturation(async () => {
-        const index = calls++
-        if (index === 7) await sibling.promise
-        if (index < failures) throw new Error('injected query failure')
-    }, false).then(response => { settled = true; return response })
-    await Bun.sleep(0)
-    expect(calls).toBe(8)
-    expect(settled).toBe(false)
-    sibling.resolve()
-    const response = await operation
-    expect(response.status).toBe(failures ? 503 : 200)
-    expect(await response.json()).toEqual({ requested: 8, succeeded: 8-failures, failed: failures })
-})
+test.each([0, 3, 8])(
+    'pool saturation records only fulfilled SQL queries: %s failures',
+    async (failures) => {
+        const sibling = Promise.withResolvers<void>()
+        let calls = 0,
+            settled = false
+        const operation = readIsolationPoolSaturation(async () => {
+            const index = calls++
+            if (index === 7) await sibling.promise
+            if (index < failures) throw new Error('injected query failure')
+        }, false).then((response) => {
+            settled = true
+            return response
+        })
+        await Bun.sleep(0)
+        expect(calls).toBe(8)
+        expect(settled).toBe(false)
+        sibling.resolve()
+        const response = await operation
+        expect(response.status).toBe(failures ? 503 : 200)
+        expect(await response.json()).toEqual({
+            requested: 8,
+            succeeded: 8 - failures,
+            failed: failures,
+        })
+    },
+)
 
 test('a stopping role refuses pool work before issuing SQL', async () => {
     let calls = 0
-    const response = await readIsolationPoolSaturation(async () => { calls++ }, true)
+    const response = await readIsolationPoolSaturation(async () => {
+        calls++
+    }, true)
     expect(response.status).toBe(503)
     expect(calls).toBe(0)
 })
 
 test('synchronous pool-query failures still settle every requested sibling', async () => {
     let calls = 0
-    const response = await readIsolationPoolSaturation(() => { calls++; throw new Error('SQL dispatch failure') }, false)
+    const response = await readIsolationPoolSaturation(() => {
+        calls++
+        throw new Error('SQL dispatch failure')
+    }, false)
     expect(calls).toBe(8)
     expect(response.status).toBe(503)
     expect(await response.json()).toEqual({ requested: 8, succeeded: 0, failed: 8 })
 })
 
 test('the fault caller requires successful status and exact complete saturation evidence', async () => {
-    await expect(assertIsolationPoolSaturation(Response.json({ requested: 8, succeeded: 8, failed: 0 }))).resolves.toBeUndefined()
-    await Promise.all([
-        Response.json({ requested: 8, succeeded: 8, failed: 0 }, { status: 503 }),
-        Response.json({ requested: 8, succeeded: 7, failed: 1 }),
-        Response.json({ requested: 0, succeeded: 0, failed: 0 }),
-        Response.json({ settled: 8 }),
-    ].map(response => expect(assertIsolationPoolSaturation(response)).rejects.toThrow()))
+    await expect(
+        assertIsolationPoolSaturation(Response.json({ requested: 8, succeeded: 8, failed: 0 })),
+    ).resolves.toBeUndefined()
+    await Promise.all(
+        [
+            Response.json({ requested: 8, succeeded: 8, failed: 0 }, { status: 503 }),
+            Response.json({ requested: 8, succeeded: 7, failed: 1 }),
+            Response.json({ requested: 0, succeeded: 0, failed: 0 }),
+            Response.json({ settled: 8 }),
+        ].map((response) => expect(assertIsolationPoolSaturation(response)).rejects.toThrow()),
+    )
 })
 
 test('pool saturation evidence rejects queued work without eight active PostgreSQL worker PIDs', () => {

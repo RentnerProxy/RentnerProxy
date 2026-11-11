@@ -14,7 +14,8 @@ import { assertNativeMonitoringFixture } from '../../../../../scripts/runtime-sc
 import { runBunScript } from '@/tests/Helpers/runBunScript.ts'
 
 test('a failed probe lease release reaches the real worker drain and capacity report', async () => {
-    const output = await runBunScript(`
+    const output = await runBunScript(
+        `
         import assert from 'node:assert/strict'
         import { mock } from 'bun:test'
         process.env.RENTNERPROXY_DATABASE_INTEGRATION = '1'
@@ -53,8 +54,14 @@ test('a failed probe lease release reaches the real worker drain and capacity re
         assert.equal(releases, 1)
         assert.equal(closed, true)
         console.log(JSON.stringify({ releases, closed, passed: result.passed }))
-    `, { cwd: new URL('../../..', import.meta.url) })
-    expect(JSON.parse(output.trim().split('\n').at(-1)!)).toEqual({ releases: 1, closed: true, passed: false })
+    `,
+        { cwd: new URL('../../..', import.meta.url) },
+    )
+    expect(JSON.parse(output.trim().split('\n').at(-1)!)).toEqual({
+        releases: 1,
+        closed: true,
+        passed: false,
+    })
 })
 
 test.each(['success', 'delete failure'] as const)(

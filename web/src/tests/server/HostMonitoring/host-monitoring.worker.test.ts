@@ -111,7 +111,10 @@ describe('host monitoring worker', () => {
                     now: () => clock,
                     schedule: timer.schedule,
                     claim: async () => (claims++ === 0 ? ['owned'] : []),
-                    nextAdmissionAt: async () => { dueReads++; return null },
+                    nextAdmissionAt: async () => {
+                        dueReads++
+                        return null
+                    },
                     runClaim: async () => {
                         await probe.promise
                         if (outcome === 'cleanup failure')

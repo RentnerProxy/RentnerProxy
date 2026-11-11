@@ -172,7 +172,11 @@ export function createHostMonitoringWorker<Claim>(
                     }
                     remaining -= limit
                     if (claims.length < limit) {
-                        if (claims.length === 0 && running.size === 0 && dependencies.nextAdmissionAt) {
+                        if (
+                            claims.length === 0 &&
+                            running.size === 0 &&
+                            dependencies.nextAdmissionAt
+                        ) {
                             try {
                                 // eslint-disable-next-line no-await-in-loop -- Read durable due time only after an empty claim batch.
                                 const due = await dependencies.nextAdmissionAt()

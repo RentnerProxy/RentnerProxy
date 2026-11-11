@@ -242,10 +242,14 @@ export async function runIsolationFaults(context: FaultContext) {
         let saturation: Promise<Settled<Response>> | undefined
         let poolReadiness: Promise<Settled<void>> | undefined
         let latencyPromise: Promise<Settled<ReturnType<typeof isolationDistribution>>> | undefined
-        let measurementPromise: Promise<Settled<{
-            held: boolean
-            outcome: Settled<ReturnType<typeof isolationDistribution>>
-        }>> | undefined
+        let measurementPromise:
+            | Promise<
+                  Settled<{
+                      held: boolean
+                      outcome: Settled<ReturnType<typeof isolationDistribution>>
+                  }>
+              >
+            | undefined
         const ssrAbort = new AbortController()
         let latency: ReturnType<typeof isolationDistribution> | undefined
         let scenarioFailure: unknown
@@ -293,15 +297,21 @@ export async function runIsolationFaults(context: FaultContext) {
         } finally {
             releaseBarrier.resolve()
         }
-        const [barrierResult, barrierReadyResult, poolReadinessResult, saturationResult, latencyResult, measurementResult] =
-            await Promise.all([
-                barrier,
-                barrierReadyPromise,
-                poolReadiness ?? Promise.resolve(undefined),
-                saturation ?? Promise.resolve(undefined),
-                latencyPromise ?? Promise.resolve(undefined),
-                measurementPromise ?? Promise.resolve(undefined),
-            ])
+        const [
+            barrierResult,
+            barrierReadyResult,
+            poolReadinessResult,
+            saturationResult,
+            latencyResult,
+            measurementResult,
+        ] = await Promise.all([
+            barrier,
+            barrierReadyPromise,
+            poolReadiness ?? Promise.resolve(undefined),
+            saturation ?? Promise.resolve(undefined),
+            latencyPromise ?? Promise.resolve(undefined),
+            measurementPromise ?? Promise.resolve(undefined),
+        ])
         if (scenarioFailed) throw scenarioFailure
         if (barrierResult.status === 'rejected') throw barrierResult.reason
         if (barrierReadyResult.status === 'rejected') throw barrierReadyResult.reason

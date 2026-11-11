@@ -229,7 +229,10 @@ test('native progress must advance between samples taken during mixed overlap', 
 test('registry revision without emitted discovery events is not positive discovery evidence', () => {
     const noEvents = sample()
     noEvents.receiver.discovery.emitted = 0
-    expect(buildContentionReport([noEvents], { attempts: 1, successes: 1, discoveryRevision: 2 }, 0).status).toBe('unmet')
+    expect(
+        buildContentionReport([noEvents], { attempts: 1, successes: 1, discoveryRevision: 2 }, 0)
+            .status,
+    ).toBe('unmet')
 })
 
 test('controlled Docker events wait for the overlap barrier and change only detached candidate metadata', async () => {
@@ -297,7 +300,10 @@ test('cancelling one paused Docker stream preserves the other stream for the arm
 })
 
 test('actual private TLS SMTP AUTH and webhook receivers retain slow in-flight work and allowlisted receipt counts', async () => {
-    const receiver = await startBackgroundNotificationReceivers({ delayMs: 0, holdDeliveries: true })
+    const receiver = await startBackgroundNotificationReceivers({
+        delayMs: 0,
+        holdDeliveries: true,
+    })
     const transport = createTransport({
         host: '127.0.0.1',
         port: receiver.smtpPort,
