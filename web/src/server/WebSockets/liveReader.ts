@@ -97,7 +97,8 @@ export async function readSubscriptionSnapshot(
         return { kind: 'failure', status: response.status }
     }
     const bodyAbort = abortable<unknown>(signal, () => {
-        void response.body?.cancel().catch(() => undefined)
+        const cancelling = response.body?.cancel().catch(() => undefined)
+        if (cancelling) trackWork?.(cancelling)
     })
     try {
         const reading = readBoundedJson(response, maxPayloadBytes, signal, trackWork)
