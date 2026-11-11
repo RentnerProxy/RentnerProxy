@@ -1014,6 +1014,8 @@ async fn disabling_and_reenabling_does_not_erase_a_transient_retry_deadline() {
     );
 }
 
+/// Cancels a configuration write after cache invalidation but before owned I/O admission, then
+/// checks that the next operation reloads persisted state instead of using the abandoned cache.
 #[tokio::test]
 async fn cancelling_a_configuration_write_invalidates_cached_state_before_next_admission() {
     let fixture = Fixture::new(vec![]).await;

@@ -465,6 +465,8 @@ async fn dns_authorization_errors_do_not_finalize_or_publish_unrequested_proofs(
     }
 }
 
+/// Builds a stored delegated proof, then checks that cancellation and malformed proof/delegation
+/// state return their specific errors without another propagation wait.
 #[tokio::test]
 async fn delegated_wait_rejects_cancelled_or_invalid_work_without_waiting() {
     if isolated("delegated_wait_rejects_cancelled_or_invalid_work_without_waiting")

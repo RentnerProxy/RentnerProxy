@@ -118,6 +118,16 @@ impl AcmeHttpClient {
 }
 
 impl HttpClient for AcmeHttpClient {
+    /// Sends a bounded ACME request to the configured HTTPS origin.
+    ///
+    /// The returned future owns transport/runtime handles independently of this borrow.
+    /// Persists actionable retry deadlines through bounded store operations before
+    /// reading the response, and observes successful order expiry data when enabled.
+    /// Dropping the future cannot undo a request already accepted by the server.
+    ///
+    /// # Errors
+    /// Returns transport errors for invalid origin/body size, request or response failures,
+    /// or retry-deadline persistence failure; preserves ACME status and headers on success.
     fn request(
         &self,
         request: Request<BodyWrapper<Bytes>>,

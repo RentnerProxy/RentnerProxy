@@ -33,6 +33,11 @@ function stateArchive() {
     return Buffer.concat([header, Buffer.alloc(1024)])
 }
 
+/**
+ * Builds private v4 artifacts and matching journal metadata for an isolated download scenario.
+ * Tracks external admission acquisitions/releases and removes the fixture after the callback.
+ * Custom timings and dump size exercise timeout and backpressure boundaries without real backups.
+ */
 async function fixture(
     run: (context: {
         root: string
@@ -145,6 +150,7 @@ async function fixture(
 
 test.skipIf(!linuxRoot)(
     'completed root body releases its admission slot before reporting end of stream',
+    /** Checks both local capacity reuse and shared admission release immediately after body completion. */
     () =>
         fixture(async ({ download, admission }) => {
             const response = await download(new Request('http://localhost'), id)
@@ -162,6 +168,7 @@ test.skipIf(!linuxRoot)(
 
 test.skipIf(!linuxRoot)(
     'aborted root body reports cancellation only after releasing its admission slot',
+    /** Checks the same cleanup acknowledgement after request cancellation, before admitting another body. */
     () =>
         fixture(
             async ({ download, admission }) => {

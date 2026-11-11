@@ -41,6 +41,10 @@ impl Store {
         }
     }
 
+    /// Finds a verified connection matching a legacy provider, zone and token.
+    ///
+    /// Unreadable candidate tokens are skipped so optional adoption does not block
+    /// unrelated connections; registry and provider-metadata errors still propagate.
     pub(in crate::runtime) async fn matching_connection(
         &self,
         config: &crate::runtime::dns::DnsProviderConfig,
@@ -69,6 +73,10 @@ impl Store {
         Ok(None)
     }
 
+    /// Returns decrypted zone access together with an owned registry guard.
+    ///
+    /// Retaining the result fences credential rotation, zone removal and deletion
+    /// through a record operation. Missing zones and unreadable credentials fail closed.
     pub(in crate::runtime) async fn record_access(
         &self,
         connection: &str,
