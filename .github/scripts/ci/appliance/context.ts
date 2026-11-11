@@ -17,6 +17,7 @@ import {
     smokeDockerArguments,
 } from '../../../../scripts/smoke/resources.ts'
 import { sharedSmokeImage } from '../../../../scripts/smoke/images.ts'
+import { runtimeCensusFailureDiagnostic } from '../../../../scripts/smoke/appliance-processes.ts'
 
 const repositoryRoot = fileURLToPath(new URL('../../../..', import.meta.url))
 const rootComposeFile = join(repositoryRoot, 'docker-compose.yml')
@@ -69,6 +70,23 @@ async function command(argumentsList: string[], timeoutMs = 120_000): Promise<st
             console.error(dockerBuildDiagnostic(stderr))
         const diagnostic = restoreSmokeDiagnostic(stderr)
         if (diagnostic) console.error(diagnostic)
+        if (argumentsList.some((argument) => argument.includes('RUNTIME_CENSUS_DIAGNOSTIC='))) {
+            const census = runtimeCensusFailureDiagnostic(stderr, timedOut) ?? {
+                stage: 'command',
+                code: 'no-census-record',
+                causeCode: 'unknown',
+                syscall: 'unknown',
+                errno: null,
+            }
+            console.error(
+                'Runtime census failure: ' +
+                    JSON.stringify({
+                        ...census,
+                        exitCode: Number.isSafeInteger(exitCode) ? exitCode : null,
+                        timedOut,
+                    }),
+            )
+        }
         throw new Error('smoke command failed: ' + argumentsList.slice(0, 2).join(' '))
     }
     return (stdout || stderr).trim()
