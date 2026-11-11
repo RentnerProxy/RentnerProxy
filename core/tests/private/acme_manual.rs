@@ -508,7 +508,7 @@ async fn setup() -> (
 }
 
 async fn prepare(
-    runtime: &ProxyRuntime,
+    runtime: &Arc<ProxyRuntime>,
     request: &CertificateIssueRequest,
     operation: &str,
     ca: &ManualCa,

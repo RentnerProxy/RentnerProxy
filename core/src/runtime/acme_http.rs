@@ -171,18 +171,12 @@ impl HttpClient for AcmeHttpClient {
                 && let Some(deadline) = parse_retry_after(&headers, OffsetDateTime::now_utc())
             {
                 if retry_after_is_account_scoped(status) {
-                    runtime
-                        .certificate_store
-                        .defer_acme_account_retry(environment, deadline)
-                        .await
+                    acme_store!(runtime; [environment, deadline]; store => store.defer_acme_account_retry(environment, deadline))
                         .map_err(|_| {
                             other_error("unable to persist ACME account retry deadline")
                         })?;
                 }
-                runtime
-                    .certificate_store
-                    .defer_acme_retry(&certificate_id, deadline)
-                    .await
+                acme_store!(runtime; [certificate_id, deadline]; store => store.defer_acme_retry(&certificate_id, deadline))
                     .map_err(|_| other_error("unable to persist ACME retry deadline"))?;
             }
             let bytes = read_bounded_body(response).await?;

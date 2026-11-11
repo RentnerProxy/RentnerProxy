@@ -600,7 +600,7 @@ async fn corrupt_adoption_candidate_does_not_block_other_accounts_or_credential_
         let mut state = fixture.store.lock().await.unwrap();
         let mut next = Store::registry(&mut state).unwrap().clone();
         next.connections[0].secret.ciphertext[0] ^= 1;
-        fixture.store.commit(&mut state, next).unwrap();
+        fixture.store.commit(state, next).await.unwrap();
     }
     assert!(
         fixture

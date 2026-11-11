@@ -83,7 +83,7 @@ export function createWorkerLifecycleSupervisor() {
         return starting
     }
 
-    /** Fence new starts before collecting listener drain promises; share their resulting success or failure with every maintenance caller. */
+    /** Fence new starts before requesting listener drains and retain the same success or failure for every maintenance caller. */
     async function stopWorkersForRestoreMaintenance(): Promise<void> {
         if (maintenanceDrain) return maintenanceDrain
         maintenanceStopped = true
@@ -93,7 +93,7 @@ export function createWorkerLifecycleSupervisor() {
         return maintenanceDrain
     }
 
-    /** Load with cancellation, clean failed instances before bounded retries, and prevent late startup or reuse of a stopped singleton. */
+    /** Wait for restore permission, load with cancellation and bounded retries, and share drain ownership without reusing stopped instances. */
     async function initializeWorkerLifecycle(
         load: (signal: AbortSignal) => Promise<WorkerLifecycle>,
         id?: BackgroundWorkerId,

@@ -37,6 +37,28 @@ func fixture(profile string) *debug.BuildInfo {
 	return info
 }
 
+// TestCompilerPolicy checks the independent allowed compiler version for each profile.
+func TestCompilerPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		profile string
+		version string
+		valid   bool
+	}{
+		{"caddy", "go1.27.4", true},
+		{"caddy", "go1.27.3", false},
+		{"crowdsec", "go1.27.3", true},
+		{"crowdsec", "go1.27.4", false},
+	} {
+		t.Run(tc.profile+"/"+tc.version, func(t *testing.T) {
+			info := fixture(tc.profile)
+			info.GoVersion = tc.version
+			if err := validate(tc.profile, info); (err == nil) != tc.valid {
+				t.Fatalf("validate compiler %s: got %v, want valid=%v", tc.version, err, tc.valid)
+			}
+		})
+	}
+}
+
 // TestPolicies rejects cross-profile compilers and missing or ambiguous metadata.
 func TestPolicies(t *testing.T) {
 	for _, profile := range []string{"caddy", "crowdsec"} {

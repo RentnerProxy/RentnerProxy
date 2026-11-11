@@ -15,7 +15,7 @@ const INITIAL_RETRY_DELAY_MS = 1_000
 const MAX_RETRY_DELAY_MS = 60_000
 const DRIFT_CHECK_INTERVAL_MS = 60_000
 
-/** Own one serialized apply loop and drift flight with shared cancellation and bounded drain; rejected revisions stay degraded until actual recovery. */
+/** Own serialized, coalesced applies and one drift flight with shared cancellation and bounded drain; rejected revisions stay degraded until recovery. */
 export function createRuntimeReconciler<T>(
     dependencies: RuntimeReconcileDependencies<T>,
     options: RuntimeReconcileOptions,
@@ -64,7 +64,7 @@ export function createRuntimeReconciler<T>(
         }
     }
 
-    /** Apply revisions serially with cancellation; only stable successful work clears rejection evidence and resolves applied waiters. */
+    /** Pass cancellation through serialized applies and retain nonretryable rejection across idle checks until a stable successful apply resolves waiters. */
     async function runWorker(): Promise<void> {
         let retryDelay = INITIAL_RETRY_DELAY_MS
         // oxlint-disable-next-line no-unmodified-loop-condition -- stop() changes this lifecycle flag.
