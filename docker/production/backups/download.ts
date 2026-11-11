@@ -67,8 +67,10 @@ class InvalidDownload extends Error {}
 /**
  * Creates a Linux backup-download handler with one active snapshot per instance.
  * The handler validates root-owned retained artifacts and streams a private, unlinked tar snapshot.
+ * Stream-produced completion/errors follow cleanup. Consumers cancelling through a reader or body
+ * must await that cancel() call's promise; a reader's closed promise can settle before cleanup.
  * @param admission Optional shared admission whose release runs after owned file handles close.
- * @returns A handler whose terminal stream signals acknowledge cleanup and admission release.
+ * @returns The request handler for retained, validated backup snapshots.
  */
 export function createBackupDownload(
     status: () => Promise<ManagedBackupStatus>,

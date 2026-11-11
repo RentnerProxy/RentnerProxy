@@ -169,8 +169,10 @@ async fn delete_inner(id: String, state: AppState, request: DeleteRequest) -> Re
         Err(e) => error(e),
     }
 }
-/// Runs a revision-checked DNS write probe, then reconciles successful results.
+/// Runs a revision-checked DNS write probe, then reconciles recorded outcomes.
 ///
+/// A completed verification can record a provider failure and still return metadata;
+/// that result is reconciled too.
 /// Only post-verification reconciliation uses the owned binding transaction;
 /// waiting for its lock remains cancellable. All responses disable caching.
 pub(in crate::server) async fn verify(
