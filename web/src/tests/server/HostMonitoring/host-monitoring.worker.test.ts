@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { createHostMonitoringWorker } from '@/server/HostMonitoring/host-monitoring.worker.ts'
 import type { HostMonitoringWorkerDependencies } from '@/server/HostMonitoring/Types/host-monitoring-worker.types.ts'
+import { HostMonitoringCleanupError } from '@/server/HostMonitoring/Types/host-monitoring-worker.types.ts'
 import { HOST_MONITORING_LIMITS } from '@/config/host-monitoring.config.ts'
 import { runBunScript } from '@/tests/Helpers/runBunScript.ts'
 
@@ -95,6 +96,267 @@ async function flush() {
 }
 
 describe('host monitoring worker', () => {
+    test('retains at most the 64 original claims and backs off recovery waves to thirty seconds', async () => {
+        const timer = scheduler()
+        const failed = Promise.withResolvers<void>()
+        const attempts: string[] = []
+        const failure = new HostMonitoringCleanupError(new Error('original release outage'))
+        let clock = 0,
+            claimed = 0,
+            claimCalls = 0,
+            healthy = false
+        const worker = createHostMonitoringWorker(
+            dependencies({
+                now: () => clock,
+                schedule: timer.schedule,
+                claim: async (limit) => {
+                    claimCalls++
+                    return claimed < 64
+                        ? Array.from({ length: limit }, () => `original-${claimed++}`)
+                        : []
+                },
+                runClaim: async () => {
+                    await failed.promise
+                    throw failure
+                },
+                releaseCancelled: async (claim) => {
+                    attempts.push(claim)
+                    if (!healthy) throw failure
+                },
+            }),
+        )
+        try {
+            worker.start()
+            await worker.runOnce()
+            failed.resolve()
+            await flush()
+            for (const at of [1000, 3000, 7000, 15000, 31000, 61000, 91000]) {
+                clock = at - 1
+                const before = attempts.length
+                // oxlint-disable-next-line no-await-in-loop -- Probe each deterministic backoff boundary.
+                await worker.runOnce()
+                expect(attempts.length).toBe(before)
+                clock = at
+                // oxlint-disable-next-line no-await-in-loop -- Each failed wave settles before its next backoff boundary.
+                await worker.runOnce()
+                expect(attempts.length).toBe(before + 64)
+                expect(new Set(attempts.slice(-64)).size).toBe(64)
+                expect(claimCalls).toBe(4)
+                expect(timer.pending.size).toBe(1)
+            }
+            healthy = true
+            clock = 121000
+            await worker.runOnce()
+            expect(claimCalls).toBe(5)
+            expect(attempts).toHaveLength(8 * 64)
+            expect(claimed).toBe(64)
+        } finally {
+            failed.resolve()
+            await Promise.allSettled([worker.stop()])
+        }
+    })
+
+    test.each(['success', 'failure'] as const)(
+        'stop owns a hanging recovery and retains any failed drain: %s',
+        async (outcome) => {
+            const failed = Promise.withResolvers<void>()
+            const cleanup = Promise.withResolvers<void>()
+            const releaseEntered = Promise.withResolvers<void>()
+            const healthy = Promise.withResolvers<void>()
+            const failure = new Error('original durable release failure')
+            let clock = 0,
+                claims = 0
+            const worker = createHostMonitoringWorker(
+                dependencies({
+                    now: () => clock,
+                    claim: async () => (++claims === 1 ? ['failed', 'healthy'] : []),
+                    runClaim: async (claim) => {
+                        if (claim === 'failed') {
+                            await failed.promise
+                            throw new HostMonitoringCleanupError(failure)
+                        }
+                        await healthy.promise
+                    },
+                    releaseCancelled: async () => {
+                        releaseEntered.resolve()
+                        await cleanup.promise
+                        if (outcome === 'failure')
+                            throw new HostMonitoringCleanupError(
+                                new Error('retry still unavailable'),
+                            )
+                    },
+                }),
+            )
+            await worker.runOnce()
+            failed.resolve()
+            await flush()
+            clock = 1000
+            const recovering = worker.runOnce()
+            await releaseEntered.promise
+            let drained = false
+            const stopping = worker.stop()
+            void stopping.then(
+                () => {
+                    drained = true
+                },
+                () => {
+                    drained = true
+                },
+            )
+            await flush()
+            expect(drained).toBe(false)
+            healthy.resolve()
+            await flush()
+            expect(drained).toBe(false)
+            cleanup.resolve()
+            await recovering
+            if (outcome === 'failure') {
+                await expect(stopping).rejects.toBe(failure)
+                await expect(worker.stop()).rejects.toBe(failure)
+                worker.start()
+                await worker.runOnce()
+                expect(claims).toBe(1)
+            } else {
+                await stopping
+                worker.start()
+                await worker.runOnce()
+                expect(claims).toBe(2)
+                await worker.stop()
+            }
+        },
+    )
+
+    test('an in-flight claim batch arriving after cleanup failure releases without starting fresh probes', async () => {
+        const failed = Promise.withResolvers<void>()
+        const healthy = Promise.withResolvers<void>()
+        const late = Promise.withResolvers<readonly string[]>()
+        const entered = Promise.withResolvers<void>()
+        const released: string[] = []
+        const probed: string[] = []
+        const signals = new Set<AbortSignal>()
+        let claims = 0,
+            clock = 0,
+            recovered = false
+        const worker = createHostMonitoringWorker(
+            dependencies({
+                now: () => clock,
+                claim: async () => {
+                    if (++claims === 1)
+                        return Array.from({ length: 16 }, (_, index) => String(index))
+                    if (claims === 2) {
+                        entered.resolve()
+                        return late.promise
+                    }
+                    return []
+                },
+                runClaim: async (claim, signal) => {
+                    probed.push(claim)
+                    signals.add(signal)
+                    if (claim === '0') {
+                        await failed.promise
+                        throw new HostMonitoringCleanupError(new Error('failed first claim'))
+                    }
+                    await healthy.promise
+                },
+                releaseCancelled: async (claim) => {
+                    released.push(claim)
+                    if (claim === 'late-0' && !recovered) throw new Error('failed late release')
+                },
+            }),
+        )
+        const running = worker.runOnce()
+        try {
+            await entered.promise
+            failed.resolve()
+            await flush()
+            expect([...signals].every((signal) => !signal.aborted)).toBe(true)
+            late.resolve(Array.from({ length: 16 }, (_, index) => `late-${index}`))
+            await running
+            expect(probed).toHaveLength(16)
+            expect(released).toEqual(Array.from({ length: 16 }, (_, index) => `late-${index}`))
+            clock = 999
+            await worker.runOnce()
+            expect(claims).toBe(2)
+            recovered = true
+            clock = 1000
+            await worker.runOnce()
+            expect(released.slice(16)).toEqual(['0', 'late-0'])
+            expect(claims).toBe(3)
+            expect(probed).toHaveLength(16)
+            expect([...signals].every((signal) => !signal.aborted)).toBe(true)
+        } finally {
+            failed.resolve()
+            healthy.resolve()
+            late.resolve([])
+            await Promise.allSettled([running, worker.stop()])
+        }
+    })
+    test('recovers failed claim ownership before new probes while healthy siblings keep running', async () => {
+        const timer = scheduler()
+        const failed = Promise.withResolvers<void>()
+        const healthy = Promise.withResolvers<void>()
+        const released = Promise.withResolvers<void>()
+        const releaseEntered = Promise.withResolvers<void>()
+        let clock = 0,
+            claims = 0,
+            releases = 0,
+            healthyFinished = false
+        let healthySignal: AbortSignal | undefined
+        const worker = createHostMonitoringWorker(
+            dependencies({
+                now: () => clock,
+                schedule: timer.schedule,
+                claim: async () => (++claims === 1 ? ['failed', 'healthy'] : []),
+                runClaim: async (claim, signal) => {
+                    if (claim === 'failed') {
+                        await failed.promise
+                        throw new HostMonitoringCleanupError(new Error('fixture release outage'))
+                    }
+                    healthySignal = signal
+                    await healthy.promise
+                    healthyFinished = true
+                },
+                releaseCancelled: async (claim) => {
+                    expect(claim).toBe('failed')
+                    releases++
+                    releaseEntered.resolve()
+                    await released.promise
+                },
+            }),
+        )
+        try {
+            worker.start()
+            await worker.runOnce()
+            failed.resolve()
+            await flush()
+            expect(healthySignal?.aborted).toBe(false)
+            clock = 999
+            timer.fire()
+            await worker.runOnce()
+            expect({ claims, releases }).toEqual({ claims: 1, releases: 0 })
+            clock = 1000
+            const recovery = worker.runOnce()
+            expect(worker.runOnce()).toBe(recovery)
+            await releaseEntered.promise
+            expect(claims).toBe(1)
+            healthy.resolve()
+            await flush()
+            expect(healthyFinished).toBe(true)
+            expect(healthySignal?.aborted).toBe(false)
+            released.resolve()
+            await recovery
+            expect({ claims, releases }).toEqual({ claims: 2, releases: 1 })
+            expect(timer.pending.size).toBe(1)
+            expect(
+                timer.delays.every((delay) => delay === HOST_MONITORING_LIMITS.pollIntervalMs),
+            ).toBe(true)
+        } finally {
+            failed.resolve()
+            healthy.resolve()
+            released.resolve()
+            await Promise.allSettled([worker.stop()])
+        }
+    })
     test('bounds in-flight storage plus running probes at 64 with batches of 16', async () => {
         const done = Promise.withResolvers<void>()
         const late = Promise.withResolvers<readonly string[]>()

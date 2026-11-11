@@ -15,9 +15,13 @@ export function createHostMonitoringWorker<Claim>(
     let stopped = false
     let nextPruneAt = 0
     let cleanupFailure: { reason: unknown } | undefined
+    const failedClaims = new Map<Claim, { reason: unknown }>()
+    let recoveryAt = 0
+    let recoveryDelay = 1_000
     const running = new Set<Promise<void>>()
     const unavailable = new Set<'claim' | 'probe' | 'prune'>()
     const now = dependencies.now ?? Date.now
+    const recoveryNow = dependencies.now ?? performance.now.bind(performance)
     const setTimer =
         dependencies.schedule ??
         ((callback, delayMs) => {
@@ -26,12 +30,32 @@ export function createHostMonitoringWorker<Claim>(
             return () => clearTimeout(timer)
         })
 
-    /** Latch the first unresolved release, fence new work, and retain even falsy thrown causes until the complete worker drain rejects. */
-    function failCleanup(error: unknown) {
-        cleanupFailure ??= {
+    /** Retain owned failed claims within the existing 64 slots; fence new probes without cancelling healthy siblings. */
+    function failCleanup(claim: Claim, error: unknown) {
+        const failure = {
             reason: error instanceof HostMonitoringCleanupError ? error.cause : error,
         }
-        controller.abort()
+        if (failedClaims.size === 0) {
+            recoveryDelay = 1_000
+            recoveryAt = recoveryNow() + recoveryDelay
+        }
+        cleanupFailure ??= failure
+        if (!failedClaims.has(claim)) failedClaims.set(claim, failure)
+    }
+
+    /** A successful adapter call proves release or supersession in SQL; time alone never releases an owned claim. */
+    async function releaseClaims(claims: readonly Claim[]): Promise<void> {
+        await Promise.all(
+            claims.map(async (claim) => {
+                const retained = failedClaims.get(claim)
+                try {
+                    await dependencies.releaseCancelled(claim)
+                    if (failedClaims.get(claim) === retained) failedClaims.delete(claim)
+                } catch (error) {
+                    failCleanup(claim, error)
+                }
+            }),
+        )
     }
 
     /** Deduplicates sanitized availability warnings until the failing subsystem recovers. */
@@ -55,7 +79,7 @@ export function createHostMonitoringWorker<Claim>(
                 await dependencies.runClaim(claim, signal)
                 if (!signal.aborted) unavailable.delete('probe')
             } catch (error) {
-                if (error instanceof HostMonitoringCleanupError) failCleanup(error)
+                if (error instanceof HostMonitoringCleanupError) failCleanup(claim, error)
                 warn('probe', signal)
             }
         })().finally(() => running.delete(task))
@@ -91,15 +115,28 @@ export function createHostMonitoringWorker<Claim>(
 
     /** Coalesces admission ticks and reserves free slots before each storage claim batch. */
     function runOnce(): Promise<void> {
-        if (stopped || cleanupFailure) return Promise.resolve()
+        if (stopped) return Promise.resolve()
         const signal = controller.signal
         prune(signal)
         if (admission) return admission
         admission = (async () => {
+            if (failedClaims.size > 0) {
+                if (recoveryNow() < recoveryAt) return
+                // One coalesced bounded wave, using the same eight-at-a-time SQL adapter.
+                await releaseClaims([...failedClaims.keys()])
+                if (failedClaims.size > 0) {
+                    recoveryDelay = Math.min(recoveryDelay * 2, 30_000)
+                    recoveryAt = recoveryNow() + recoveryDelay
+                    return
+                }
+                cleanupFailure = undefined
+                recoveryDelay = 1_000
+                unavailable.delete('probe')
+            }
             // Cap this tick too: fast completions must not create an endless drain.
             let remaining = HOST_MONITORING_LIMITS.workerConcurrency - running.size
             try {
-                while (!signal.aborted && remaining > 0) {
+                while (!signal.aborted && failedClaims.size === 0 && remaining > 0) {
                     const limit = Math.min(
                         remaining,
                         HOST_MONITORING_LIMITS.claimBatchSize,
@@ -109,17 +146,23 @@ export function createHostMonitoringWorker<Claim>(
                     // never overlaps, so running tasks plus reserved slots stay bounded.
                     // eslint-disable-next-line no-await-in-loop -- Each storage batch reserves only currently free capacity.
                     const claims = await dependencies.claim(limit)
-                    if (signal.aborted) {
+                    if (signal.aborted || failedClaims.size > 0) {
                         // eslint-disable-next-line no-await-in-loop -- Shutdown must await every late lease release before returning.
-                        const released = await Promise.allSettled(
-                            claims.map(async (claim) => dependencies.releaseCancelled(claim)),
-                        )
-                        for (const result of released)
-                            if (result.status === 'rejected') failCleanup(result.reason)
+                        await releaseClaims(claims)
                         return
                     }
                     unavailable.delete('claim')
-                    for (const claim of claims) launch(claim, signal)
+                    let launched = 0
+                    for (const claim of claims) {
+                        if (signal.aborted || failedClaims.size > 0) break
+                        launch(claim, signal)
+                        launched++
+                    }
+                    if (launched < claims.length) {
+                        // eslint-disable-next-line no-await-in-loop -- A synchronous cleanup failure fences the remaining admitted batch too.
+                        await releaseClaims(claims.slice(launched))
+                        return
+                    }
                     remaining -= limit
                     if (claims.length < limit) return
                 }
@@ -136,7 +179,7 @@ export function createHostMonitoringWorker<Claim>(
         runOnce,
         /** Starts admission, or resumes only after a previous stop has finished draining. */
         start() {
-            if (started || stopping || cleanupFailure) return
+            if (started || stopping) return
             if (stopped) controller = new AbortController()
             started = true
             stopped = false
@@ -155,7 +198,7 @@ export function createHostMonitoringWorker<Claim>(
                 const admitted = await Promise.allSettled([admission, pruning])
                 const probes = await Promise.allSettled(running)
                 for (const result of [...admitted, ...probes])
-                    if (result.status === 'rejected') failCleanup(result.reason)
+                    if (result.status === 'rejected') cleanupFailure ??= { reason: result.reason }
                 if (cleanupFailure) throw cleanupFailure.reason
             })().then(() => {
                 stopping = null
