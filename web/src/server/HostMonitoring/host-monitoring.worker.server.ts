@@ -15,7 +15,7 @@ import {
     claimDueHostMonitoringPolicies,
     completeHostMonitoringClaims,
     readHostMonitoringClaimContexts,
-    releaseHostMonitoringClaim,
+    releaseHostMonitoringClaims,
     pruneHostMonitoringHistory,
     readNextHostMonitoringAdmissionAt,
 } from './host-monitoring.repository.ts'
@@ -49,14 +49,15 @@ const complete = createHostMonitoringBatcher<HostMonitoringCompletion, boolean>(
     },
 })
 
-// A cancelled 64-probe flight must not create 64 waiting SQL transactions.
-// Reuse the bounded owner batcher to drain fenced releases through one SQL slot.
+// Coalesce a cancelled 64-probe flight into one fenced transaction within the drain budget.
 const release = createHostMonitoringBatcher<HostMonitoringClaim, boolean>({
-    size: 1,
+    size: HOST_MONITORING_LIMITS.workerConcurrency,
     delayMs: 0,
-    run: async ([claim]) => [
-        { status: 'fulfilled', value: await releaseHostMonitoringClaim(claim!) },
-    ],
+    run: async (claims) => {
+        const results = await releaseHostMonitoringClaims(claims)
+        if (results.some(Boolean)) publishApplicationChange()
+        return results.map((value) => ({ status: 'fulfilled', value }))
+    },
 })
 
 export const hostMonitoringWorker = createHostMonitoringWorker({

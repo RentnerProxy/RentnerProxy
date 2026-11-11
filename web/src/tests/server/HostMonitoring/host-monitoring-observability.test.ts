@@ -15,7 +15,7 @@ test('stored busy results defer admission without claiming success or hiding act
             completeHostMonitoringClaims: async items => items.map(() => ({ status: 'fulfilled', value: true })),
             readHostMonitoringClaimContexts: async () => [],
             readNextHostMonitoringAdmissionAt: async () => null,
-            releaseHostMonitoringClaim: async () => {}, pruneHostMonitoringHistory: async () => {},
+            releaseHostMonitoringClaims: async items => items.map(() => true), pruneHostMonitoringHistory: async () => {},
         }))
         mock.module('./server/HostMonitoring/host-monitoring.batch.ts', () => ({
             createHostMonitoringBatcher: options => async item => (await options.run([item]))[0].value,

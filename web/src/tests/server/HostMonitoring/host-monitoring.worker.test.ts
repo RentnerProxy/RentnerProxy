@@ -21,7 +21,7 @@ test('monitoring completion publishes only after accepted durable writes', async
             claimDueHostMonitoringPolicies: async () => [],
             completeHostMonitoringClaims: (...args) => complete(...args),
             readHostMonitoringClaimContexts: async claims => claims.map(() => null),
-            releaseHostMonitoringClaim: async () => {},
+            releaseHostMonitoringClaims: async items => items.map(() => true),
             pruneHostMonitoringHistory: async () => {},
             readNextHostMonitoringAdmissionAt: async () => null,
         }))

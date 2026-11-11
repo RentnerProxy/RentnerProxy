@@ -229,12 +229,41 @@ function nextScheduledCheck(policy: HostMonitoringPolicy) {
 
 /** Clears only the still-owned live lease and advances its fixed cadence without immediate catch-up work. */
 export async function releaseHostMonitoringClaim(claim: HostMonitoringClaim): Promise<boolean> {
+    return (await releaseHostMonitoringClaims([claim]))[0]!
+}
+
+/** Releases one cancelled flight in one bounded transaction, retaining every token/version/expiry fence. */
+export async function releaseHostMonitoringClaims(
+    claims: readonly HostMonitoringClaim[],
+): Promise<boolean[]> {
+    if (claims.length === 0) return []
+    if (
+        claims.length > HOST_MONITORING_LIMITS.workerConcurrency ||
+        new Set(claims.map((claim) => claim.policy.id)).size !== claims.length
+    )
+        throw new Error('Invalid monitoring release batch.')
     return getBackgroundDatabase('monitoring').transaction(async (transaction) => {
         await prepareWorkerTransaction(transaction, false)
-        const policy = await currentClaim(transaction, claim)
-        if (!policy) return false
-        await clearLease(transaction, policy)
-        return true
+        const rows = await transaction.execute<{ slot: number }>(sql`
+            update "rentnerproxy"."host_check_policies" as policy
+            set lease_token = null,
+                lease_expires_at = null,
+                next_check_at = date_bin(policy.interval_seconds * interval '1 second', clock_timestamp(), policy.next_check_at)
+                    + policy.interval_seconds * interval '1 second',
+                updated_at = clock_timestamp()
+            from (values ${sql.join(
+                claims.map(
+                    (claim, index) =>
+                        sql`(${index}::integer, ${claim.policy.id}::uuid, ${claim.policy.version}::uuid, ${claim.leaseToken}::uuid)`,
+                ),
+                sql`, `,
+            )}) as owned(slot, id, version, token)
+            where policy.id = owned.id and policy.version = owned.version
+                and policy.lease_token = owned.token and policy.lease_expires_at > clock_timestamp()
+            returning owned.slot
+        `)
+        const released = new Set(rows.map((row) => row.slot))
+        return claims.map((_, index) => released.has(index))
     })
 }
 
