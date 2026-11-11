@@ -91,18 +91,17 @@ export function createBackupDownload(
         const timeout = createBackupDownloadTimeout(abort, timings)
         const files: FileHandle[] = []
         let archive: FileHandle | undefined
-        let released = false
+        let releasePromise: Promise<void> | undefined
         let releaseAdmission: (() => void) | undefined
-        const release = async () => {
-            if (released) return
-            released = true
-            timeout.clear()
-            request.signal.removeEventListener('abort', abort)
-            await Promise.all(files.map((file) => file.close().catch(() => {})))
-            await archive?.close().catch(() => {})
-            active = false
-            releaseAdmission?.()
-        }
+        const release = () =>
+            (releasePromise ??= (async () => {
+                timeout.clear()
+                request.signal.removeEventListener('abort', abort)
+                await Promise.all(files.map((file) => file.close().catch(() => {})))
+                await archive?.close().catch(() => {})
+                active = false
+                releaseAdmission?.()
+            })())
         try {
             try {
                 releaseAdmission = await admission?.()
@@ -204,8 +203,8 @@ export function createBackupDownload(
             let offset = 0
             let controller: ReadableStreamDefaultController<Uint8Array> | undefined
             const abortStream = () => {
-                controller?.error(new Error('download cancelled'))
-                void release()
+                // Terminal body state acknowledges cleanup and admission release.
+                void release().then(() => controller?.error(new Error('download cancelled')))
             }
             stop.signal.addEventListener('abort', abortStream, { once: true })
             const stream = new ReadableStream<Uint8Array>({
@@ -216,8 +215,8 @@ export function createBackupDownload(
                     try {
                         stop.signal.throwIfAborted()
                         if (offset === length) {
-                            value.close()
                             await release()
+                            value.close()
                             return
                         }
                         const chunk = await readFileRange(
@@ -225,16 +224,21 @@ export function createBackupDownload(
                             offset,
                             Math.min(65_536, length - offset),
                         )
+                        stop.signal.throwIfAborted()
                         offset += chunk.length
                         timeout.progress()
                         value.enqueue(chunk)
                         if (offset === length) {
-                            value.close()
                             await release()
+                            value.close()
                         }
                     } catch {
-                        value.error(new Error('download unavailable'))
                         await release()
+                        value.error(
+                            new Error(
+                                stop.signal.aborted ? 'download cancelled' : 'download unavailable',
+                            ),
+                        )
                     }
                 },
                 cancel: release,

@@ -135,6 +135,42 @@ async function fixture(
 }
 
 test.skipIf(!linuxRoot)(
+    'completed root body releases its admission slot before reporting end of stream',
+    () =>
+        fixture(async ({ download }) => {
+            const response = await download(new Request('http://localhost'), id)
+            expect(response.status).toBe(200)
+            const bytes = await response.arrayBuffer()
+            expect(bytes.byteLength).toBe(Number(response.headers.get('content-length')))
+            const next = await download(new Request('http://localhost'), id)
+            expect(next.status).toBe(200)
+            await next.body!.cancel()
+        }),
+)
+
+test.skipIf(!linuxRoot)(
+    'aborted root body reports cancellation only after releasing its admission slot',
+    () =>
+        fixture(
+            async ({ download }) => {
+                const stop = new AbortController()
+                const response = await download(
+                    new Request('http://localhost', { signal: stop.signal }),
+                    id,
+                )
+                expect(response.status).toBe(200)
+                stop.abort()
+                await expect(response.arrayBuffer()).rejects.toThrow('cancelled')
+                const next = await download(new Request('http://localhost'), id)
+                expect(next.status).toBe(200)
+                await next.body!.cancel()
+            },
+            BACKUP_DOWNLOAD_TIMEOUTS,
+            512 * 1024,
+        ),
+)
+
+test.skipIf(!linuxRoot)(
     'unconsumed root snapshot expires at idle and releases its admission slot',
     () =>
         fixture(
