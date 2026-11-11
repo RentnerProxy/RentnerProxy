@@ -19,7 +19,7 @@ test('partial authority bootstrap omits only a never-started absent outbox and n
         const existing = new Database(path)
         existing.exec('CREATE TABLE b2_outbox (sequence INTEGER); INSERT INTO b2_outbox VALUES (7)')
         existing.close()
-        for (const started of [false, true]) {
+        const verifyReadonlyDrain = async (started: boolean) => {
             const outbox = await openMonitoringB2OutboxForDrain(path, started)
             try {
                 expect(outbox?.query('SELECT sequence FROM b2_outbox').get()).toEqual({
@@ -30,6 +30,8 @@ test('partial authority bootstrap omits only a never-started absent outbox and n
                 outbox?.close()
             }
         }
+        await verifyReadonlyDrain(false)
+        await verifyReadonlyDrain(true)
     } finally {
         await rm(directory, { recursive: true, force: true })
     }

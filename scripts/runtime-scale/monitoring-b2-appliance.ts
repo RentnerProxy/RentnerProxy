@@ -428,18 +428,19 @@ export async function runMonitoringB2Appliance(runId: string) {
         if (current.design === 'B2') {
             const path = root + '/state/' + current.windowId + '.sqlite'
             const outbox = await openMonitoringB2OutboxForDrain(path, current.nativeStartAttempted)
-            try {
-                const deadline = Date.now() + 15000
-                while (
-                    Date.now() < deadline &&
-                    outbox &&
-                    outbox
-                        .query<{ count: number }, []>('SELECT count(*) count FROM b2_outbox')
-                        .get()!.count > 0
-                )
-                    await Bun.sleep(50)
-            } finally {
-                outbox?.close()
+            if (outbox) {
+                try {
+                    const deadline = Date.now() + 15000
+                    while (
+                        Date.now() < deadline &&
+                        outbox
+                            .query<{ count: number }, []>('SELECT count(*) count FROM b2_outbox')
+                            .get()!.count > 0
+                    )
+                        await Bun.sleep(50)
+                } finally {
+                    outbox.close()
+                }
             }
         }
         await monitoringB2PolicyTransaction(database, async (transaction) => {
