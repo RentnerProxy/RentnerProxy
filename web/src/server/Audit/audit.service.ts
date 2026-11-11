@@ -18,6 +18,7 @@ const AUDIT_MAX_ROWS = 100_000
 export const AUDIT_RETENTION_LOCK_ID = 7_421_908
 const AUDIT_METADATA_MAX_BYTES = 4_096
 
+/** Validate the audit allowlist and encoded size before any row is written. */
 function parseEventInput(input: AuditEventInput): AuditEventInput {
     let parsed: ReturnType<typeof auditEventInputSchema.parse>
     try {
@@ -37,6 +38,13 @@ function parseEventInput(input: AuditEventInput): AuditEventInput {
     }
 }
 
+/** Bind the validated object once, retaining SQL-queryable JSONB and the empty-object default. */
+function metadataValue(metadata: AuditMetadata | undefined) {
+    // Bun SQL serializes the bound object; bypass Drizzle's additional JSON string encoding.
+    return sql`${metadata ?? {}}`
+}
+
+/** Keep the event, retention and committed-change marker in the caller's atomic mutation. */
 export async function appendAuditEventInTransactionService(
     transaction: AuthTransaction,
     input: AuditEventInput,
@@ -51,12 +59,13 @@ export async function appendAuditEventInTransactionService(
         resource: parsed.resource,
         targetId: parsed.targetId,
         result: parsed.result,
-        metadata: parsed.metadata ?? {},
+        metadata: metadataValue(parsed.metadata),
     })
     await pruneAuditEventsInTransaction(transaction)
     markAuditedApplicationMutation(transaction, parsed)
 }
 
+/** Validate at most 500 events before one atomic insert and retention pass. */
 export async function appendAuditEventsInTransactionService(
     transaction: AuthTransaction,
     inputs: readonly AuditEventInput[],
@@ -73,7 +82,7 @@ export async function appendAuditEventsInTransactionService(
             resource: event.resource,
             targetId: event.targetId,
             result: event.result,
-            metadata: event.metadata ?? {},
+            metadata: metadataValue(event.metadata),
         })),
     )
     await pruneAuditEventsInTransaction(transaction)

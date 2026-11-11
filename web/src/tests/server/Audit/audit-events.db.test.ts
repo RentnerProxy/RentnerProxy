@@ -16,7 +16,8 @@ async function loadDatabaseTestContext() {
     const { createSessionService } = await import('@/server/Auth/Access/sessions.service.ts')
     const { getAuthDatabase } = await import('@/server/Auth/Core/database.server.ts')
     const { listAuditEventsService } = await import('@/server/Audit/audit-reader.service.ts')
-    const { appendAuditEventInTransactionService } = await import('@/server/Audit/audit.service.ts')
+    const { appendAuditEventInTransactionService, appendAuditEventsInTransactionService } =
+        await import('@/server/Audit/audit.service.ts')
     const { count, eq, inArray, sql } = await import('drizzle-orm')
 
     async function withUser<T>(userId: string, operation: () => Promise<T>): Promise<T> {
@@ -65,6 +66,7 @@ async function loadDatabaseTestContext() {
 
     return {
         appendAuditEventInTransactionService,
+        appendAuditEventsInTransactionService,
         auditEvents,
         db,
         deleteUser,
@@ -86,6 +88,132 @@ describe('audit event PostgreSQL persistence', () => {
     afterEach(() => {
         context = undefined
     })
+
+    integrationTest(
+        'single and batch writes store SQL-queryable JSONB objects with exact event identities',
+        async () => {
+            const current = await loadDatabaseTestContext()
+            const {
+                auditEvents,
+                db,
+                eq,
+                inArray,
+                sql,
+                appendAuditEventInTransactionService,
+                appendAuditEventsInTransactionService,
+            } = current
+            const inputs = Array.from({ length: 3 }, () => ({
+                actorUserId: null,
+                actorKind: 'system' as const,
+                action: 'started' as const,
+                resource: 'certificate' as const,
+                targetId: crypto.randomUUID(),
+                result: 'success' as const,
+                metadata: {
+                    operationId: crypto.randomUUID(),
+                    eventId: crypto.randomUUID(),
+                    certificateStage: 'creating_order' as const,
+                    occurredAt: new Date().toISOString(),
+                },
+            }))
+            const emptyTarget = crypto.randomUUID()
+            const targets = [...inputs.map((input) => input.targetId), emptyTarget]
+            try {
+                await db.transaction(async (transaction) => {
+                    await appendAuditEventInTransactionService(transaction, inputs[0]!)
+                    await appendAuditEventsInTransactionService(transaction, [
+                        inputs[1]!,
+                        inputs[2]!,
+                        {
+                            actorUserId: null,
+                            actorKind: 'system',
+                            action: 'started',
+                            resource: 'certificate',
+                            targetId: emptyTarget,
+                            result: 'success',
+                        },
+                    ])
+                })
+                expect(
+                    await db
+                        .select({
+                            object: sql<boolean>`jsonb_typeof(${auditEvents.metadata}) = 'object'`,
+                        })
+                        .from(auditEvents)
+                        .where(inArray(auditEvents.targetId, targets)),
+                ).toEqual(Array.from({ length: 4 }, () => ({ object: true })))
+                const matches = await Promise.all(
+                    inputs.map((input) =>
+                        db
+                            .select({
+                                exact: sql<boolean>`${auditEvents.metadata}->>'eventId' = ${input.metadata.eventId}`,
+                                object: sql<boolean>`jsonb_typeof(${auditEvents.metadata}) = 'object'`,
+                            })
+                            .from(auditEvents)
+                            .where(eq(auditEvents.targetId, input.targetId)),
+                    ),
+                )
+                expect(matches).toEqual(
+                    Array.from({ length: 3 }, () => [{ exact: true, object: true }]),
+                )
+                expect(
+                    await db
+                        .select({ empty: sql<boolean>`${auditEvents.metadata} = '{}'::jsonb` })
+                        .from(auditEvents)
+                        .where(eq(auditEvents.targetId, emptyTarget)),
+                ).toEqual([{ empty: true }])
+            } finally {
+                await db.delete(auditEvents).where(inArray(auditEvents.targetId, targets))
+            }
+        },
+    )
+
+    integrationTest(
+        'single and batch JSONB audit writes roll back atomically with their enclosing mutation',
+        async () => {
+            const current = await loadDatabaseTestContext()
+            const {
+                auditEvents,
+                db,
+                inArray,
+                sql,
+                appendAuditEventInTransactionService,
+                appendAuditEventsInTransactionService,
+            } = current
+            const inputs = Array.from({ length: 3 }, () => ({
+                actorUserId: null,
+                actorKind: 'system' as const,
+                action: 'started' as const,
+                resource: 'certificate' as const,
+                targetId: crypto.randomUUID(),
+                result: 'success' as const,
+                metadata: { eventId: crypto.randomUUID() },
+            }))
+            const targets = inputs.map((input) => input.targetId)
+            const rollback = new Error('rollback private JSONB audit fixture')
+            await expect(
+                db.transaction(async (transaction) => {
+                    await appendAuditEventInTransactionService(transaction, inputs[0]!)
+                    await appendAuditEventsInTransactionService(transaction, inputs.slice(1))
+                    expect(
+                        await transaction
+                            .select({
+                                object: sql<boolean>`jsonb_typeof(${auditEvents.metadata}) = 'object'`,
+                            })
+                            .from(auditEvents)
+                            .where(inArray(auditEvents.targetId, targets)),
+                    ).toEqual(Array.from({ length: 3 }, () => ({ object: true })))
+                    throw rollback
+                }),
+            ).rejects.toBe(rollback)
+            expect(
+                await db
+                    .select({ id: auditEvents.id })
+                    .from(auditEvents)
+                    .where(inArray(auditEvents.targetId, targets)),
+            ).toHaveLength(0)
+        },
+    )
 
     integrationTest(
         'appends, rolls back with its mutation, and preserves historical actors',
