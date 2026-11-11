@@ -68,6 +68,7 @@ export async function readSubscriptionSnapshot(
     headers.set('origin', subscription.connection.origin)
     const request = new Request(getSnapshotUrl(subscription), { method: 'GET', headers, signal })
     let response: Response
+    let unclaimedResponse: Response | undefined
     const responseAbort = abortable<Response>(signal, () => undefined)
     try {
         const responsePromise = Promise.resolve()
@@ -82,11 +83,15 @@ export async function readSubscriptionSnapshot(
             .then(async (result) => {
                 // Late bodies still own the admitted resource until cancellation actually settles.
                 if (signal.aborted) await result.body?.cancel().catch(() => undefined)
+                else unclaimedResponse = result
                 return result
             })
         trackWork?.(responsePromise)
         response = await Promise.race([responsePromise, responseAbort.promise])
     } catch {
+        // Abort can win after the late check but before the response reaches this reader.
+        const cancelling = unclaimedResponse?.body?.cancel().catch(() => undefined)
+        if (cancelling) trackWork?.(cancelling)
         responseAbort.cleanup()
         return { kind: 'failure', status: 503 }
     }
