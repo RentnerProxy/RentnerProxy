@@ -226,8 +226,9 @@ impl Store {
     /// Checks permitted zones and probes write access with operation-owned TXT records.
     ///
     /// Old intents are cleaned first; new intents and cleared verification are persisted
-    /// before provider writes. Each intent is removed only after cleanup succeeds, so
-    /// cancellation or failure leaves ownership available for recovery.
+    /// before provider writes. Cleanup precedes each intent's removal; an intent remains
+    /// recoverable while cleanup or removal is incomplete. A presentation error may be
+    /// returned after successful cleanup has already removed its intent.
     async fn verify_inner(&self, mut entry: Entry) -> Result<(), Error> {
         self.cleanup_checks(&entry).await?;
         let provider = super::resolve_provider(None, Some(&entry))?;

@@ -152,8 +152,9 @@ impl Store {
     }
     /// Checks provider access and selected zones without certifying DNS write permission.
     ///
-    /// Stored credentials are decrypted using the current key, and their revision is
-    /// checked again after the provider request so stale results return a conflict.
+    /// Uses a supplied token when present; otherwise decrypts the stored credential with
+    /// the current key. Before returning a successful result for a stored connection,
+    /// its ID and revision are rechecked after the provider request.
     pub(crate) async fn test(&self, request: TestRequest) -> Result<TestResult, Error> {
         if let Some(id) = &request.connection_id {
             validation::id(id)?;
