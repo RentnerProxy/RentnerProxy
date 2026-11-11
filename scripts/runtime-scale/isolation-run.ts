@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import { chmod, chown, mkdtemp, open, readdir, readFile, rm } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { isolationContract as contract } from './isolation.config.ts'
+import { isolationPoolFaultBudget } from './isolation-faults.ts'
 import {
     parseIsolationOptions,
     isolationDistribution,
@@ -403,17 +404,19 @@ async function spawnRole(
         throw error
     }
 }
-/** Send a control-marked request only to the owned role loopback port, with a sixteen-second deadline and redirects disabled. */
-async function request(child: Child, path: string, method = 'GET', signal?: AbortSignal) {
+/** Send a control-marked loopback request with the pool fault's explicit budget or the normal sixteen-second deadline. */
+async function request(child: Pick<Child, 'ready'>, path: string, method = 'GET', signal?: AbortSignal) {
+    const deadline = AbortSignal.timeout(path === '/pool' ? isolationPoolFaultBudget.poolClientMs : isolationPoolFaultBudget.requestMs)
     return fetch('http://127.0.0.1:' + child.ready.port + path, {
         method,
         headers: controlHeaders,
         signal: signal
-            ? AbortSignal.any([signal, AbortSignal.timeout(16_000)])
-            : AbortSignal.timeout(16_000),
+            ? AbortSignal.any([signal, deadline])
+            : deadline,
         redirect: 'error',
     })
 }
+export { request as requestIsolationRole }
 /** Read final counters from the first completed drain and retain its actual duration. */
 export async function drainIsolationRole(send: () => Promise<Response>) {
     const started = performance.now()
@@ -883,6 +886,7 @@ async function evaluateIsolation(options: IsolationOptions, signal: AbortSignal)
                           await import('./isolation-faults.ts')
                       ).runIsolationFaults({
                           database,
+                          signal,
                           seed: (load) => {
                               signal.throwIfAborted()
                               return seed(load, database!, signal)

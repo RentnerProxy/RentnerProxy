@@ -269,15 +269,21 @@ test('saturated real critical admission defers all four claim producers without 
         let holders = 0
         const held = Array.from({ length: 2 }, () => getBackgroundDatabase('critical').transaction(async () => { if (++holders === 2) entered.resolve(); await gate.promise }))
         await entered.promise
-        const queued = Array.from({ length: 8 }, () => getBackgroundDatabase('critical').transaction(async () => true))
         const { workerObservability } = await import('./server/Foundation/worker-observability.ts')
         const { observeWorkerOperation } = await import('./server/Foundation/worker-operation.ts')
         const { runCertificateJobsOnce } = await import('./server/Admin/ProxyHostManagement/certificate-jobs.worker.server.ts')
+        const queued = Array.from({ length: 8 }, () => getBackgroundDatabase('critical').transaction(async () => true).then(
+            value => ({ status: 'fulfilled' as const, value }),
+            error => ({ status: 'rejected' as const, error }),
+        ))
         const outcome = await observeWorkerOperation('certificate_jobs', () => runCertificateJobsOnce(), undefined, value => value)
         const pressure = getBackgroundDatabaseResourceSnapshot().critical
         const beforeDrain = statements
         gate.resolve()
-        await Promise.all([...held, ...queued])
+        const [heldResults, queuedResults] = await Promise.all([Promise.all(held), Promise.all(queued)])
+        assert.equal(heldResults.length, 2)
+        assert.equal(queuedResults.length, 8)
+        assert.equal(queuedResults.every(result => result.status === 'fulfilled'), true)
         const worker = workerObservability.snapshot().workers.find(value => value.id === 'certificate_jobs')
         console.log(JSON.stringify({ outcome, pressure, beforeDrain, counters: worker.counters }))
     `,
@@ -290,6 +296,65 @@ test('saturated real critical admission defers all four claim producers without 
         counters: { deferred: 1, failure: 0, success: 0, retry: 4, admissionRejected: 4 },
     })
 })
+
+test.each(['25P04', '55P03', '57014', '53300'] as const)(
+    'nested PostgreSQL pressure SQLSTATE %s defers certificate work without controller blame',
+    async (sqlState) => {
+        const output = await runBunScript(
+            `
+            import { mock } from 'bun:test'
+            process.env.DATABASE_URL = 'postgresql://unit:unit@127.0.0.1:1/rentnerproxy_unit'
+            mock.module('@tanstack/react-start/server-only', () => ({}))
+            const job = { id: 'job', certificateId: 'certificate', stage: 'issuing', lastErrorCode: 'provider_error', retryRequested: true, leaseToken: 'owned' }
+            const patches = []
+            let claimed = false, controllerCalls = 0
+            const driver = Object.assign(new Error('synthetic postgres driver failure'), { code: 'ERR_POSTGRES_SERVER_ERROR', errno: '${sqlState}' })
+            const drizzle = new Error('synthetic ORM failure', { cause: driver })
+            const wrapped = new Error('synthetic transaction failure', { cause: drizzle })
+            mock.module('./server/Admin/ProxyHostManagement/certificate-jobs.lease.server.ts', () => ({
+                claimCertificateJob: async () => claimed ? null : (claimed = true, job),
+                withCertificateJobClaim: async () => { throw wrapped },
+                releaseCertificateJob: async (_, changes) => { patches.push(changes); Object.assign(job, changes, { leaseToken: null }) },
+            }))
+            mock.module('./server/Admin/ProxyHostManagement/certificate-jobs.storage.server.ts', () => ({
+                CertificateJobDomainError: class extends Error {}, certificateJobDigest: () => '', validateCertificateJobContext: async () => {},
+            }))
+            mock.module('./server/Admin/ProxyHostManagement/certificate-jobs.binding.server.ts', () => ({
+                certificateJobRuntime: {}, bindIssuedJobCertificate: async () => false, confirmJobRuntime: async () => false,
+            }))
+            mock.module('./server/Controller/certificates.server.ts', () => ({
+                getControllerCertificate: async () => { controllerCalls++; throw new Error('not a database pressure result') },
+                issueControllerCertificate: async () => { controllerCalls++ }, renewControllerCertificate: async () => { controllerCalls++ },
+            }))
+            const { observeWorkerOperation } = await import('./server/Foundation/worker-operation.ts')
+            const { workerObservability } = await import('./server/Foundation/worker-observability.ts')
+            const { runCertificateJobsOnce } = await import('./server/Admin/ProxyHostManagement/certificate-jobs.worker.server.ts')
+            const outcome = await observeWorkerOperation('certificate_jobs', () => runCertificateJobsOnce(), undefined, value => value)
+            const worker = workerObservability.snapshot().workers.find(value => value.id === 'certificate_jobs')
+            console.log(JSON.stringify({ outcome, job, patches, controllerCalls, counters: worker.counters }))
+        `,
+            { cwd: new URL('../../../..', import.meta.url) },
+        )
+        expect(JSON.parse(output.trim().split('\n').at(-1)!)).toMatchObject({
+            outcome: 'deferred',
+            job: {
+                stage: 'issuing',
+                lastErrorCode: 'provider_error',
+                retryRequested: true,
+                leaseToken: null,
+            },
+            patches: [{}],
+            controllerCalls: 0,
+            counters: {
+                deferred: 1,
+                failure: 0,
+                retry: 1,
+                admissionRejected: 0,
+                exhausted: 0,
+            },
+        })
+    },
+)
 
 test('failed claims still await late sibling leases and cancellation cleanup before settling', async () => {
     const output = await runBunScript(

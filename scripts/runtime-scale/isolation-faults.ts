@@ -7,6 +7,7 @@ import type { IsolationChild, IsolationLoad } from './Types/isolation.types.ts'
 
 interface FaultContext {
     database: SQL
+    signal?: AbortSignal
     seed: (load: IsolationLoad) => Promise<void>
     spawnRole: (
         role: 'foreground' | 'combined' | 'background',
@@ -26,6 +27,11 @@ interface FaultContext {
 
 type Settled<T> = { status: 'fulfilled'; value: T } | { status: 'rejected'; reason: unknown }
 const isolationPoolBarrierKey = 1_380_864_088
+export const isolationPoolFaultBudget = {
+    samples: 100, requestMs: 16_000, readinessMs: 5_000,
+    // 99 requests at p99=500ms plus one request at its 16s deadline take 65.5s.
+    measurementMs: 70_000, poolClientMs: 80_000, poolServerSeconds: 85, activityReadMs: 2_000,
+} as const
 
 /** A completed HTTP request is not proof that every requested saturation query succeeded. */
 export async function assertIsolationPoolSaturation(response: Response): Promise<void> {
@@ -52,11 +58,50 @@ export function hasCompleteIsolationPoolActivity(activity: {
 }
 
 /** Observe only the dedicated worker role and exact advisory-lock statement issued by the private pool fault. */
-async function activeIsolationPoolQueries(database: SQL) {
-    const rows = await database.unsafe<{ active: number; pids: number }[]>(
-        "select count(*)::int as active,count(distinct pid)::int as pids from pg_stat_activity where usename='isolation_worker' and datname=current_database() and state='active' and wait_event_type='Lock' and query='select pg_advisory_xact_lock(1380864088)'",
+export async function activeIsolationPoolQueries(database: Pick<SQL, 'reserve'>, signal?: AbortSignal) {
+    const deadline = AbortSignal.timeout(isolationPoolFaultBudget.activityReadMs)
+    const aborted = signal ? AbortSignal.any([signal, deadline]) : deadline
+    aborted.throwIfAborted()
+    const connection = await database.reserve({ signal: aborted }).catch((error: unknown) => {
+        aborted.throwIfAborted()
+        throw error
+    })
+    const result = await (async () => {
+        aborted.throwIfAborted()
+        // One query on an exclusive connection cannot be cancelled as a still-running pipelined sibling.
+        const query = connection.unsafe<{ active: number; pids: number }[]>(
+            "select count(*)::int as active,count(distinct pid)::int as pids from pg_stat_activity where usename='isolation_worker' and datname=current_database() and state='active' and wait_event_type='Lock' and query='select pg_advisory_xact_lock(1380864088)'",
+        )
+        const cancel = () => { query.cancel() }
+        aborted.addEventListener('abort', cancel, { once: true })
+        if (aborted.aborted) cancel()
+        try {
+            const rows = await query
+            aborted.throwIfAborted()
+            return hasCompleteIsolationPoolActivity(rows[0] ?? { active: 0, pids: 0 })
+        } catch (error) {
+            aborted.throwIfAborted()
+            throw error
+        } finally {
+            aborted.removeEventListener('abort', cancel)
+        }
+    })().then(
+        value => ({ status: 'fulfilled' as const, value }),
+        (reason: unknown) => ({ status: 'rejected' as const, reason }),
     )
-    return hasCompleteIsolationPoolActivity(rows[0] ?? { active: 0, pids: 0 })
+    try {
+        await connection.release()
+    } catch (error) {
+        if (result.status === 'rejected' || aborted.aborted)
+            throw new AggregateError(
+                [result.status === 'rejected' ? result.reason : aborted.reason, error],
+                'Isolation activity cancellation cleanup failed', { cause: error },
+            )
+        throw error
+    }
+    if (result.status === 'rejected') throw result.reason
+    aborted.throwIfAborted()
+    return result.value
 }
 
 /** Sample actual PostgreSQL activity while SSR runs; each loop iteration races measurement completion against the next observation tick. */
@@ -256,31 +301,39 @@ export async function runIsolationFaults(context: FaultContext) {
         let scenarioFailed = false
         let saturationHeldThroughSsr = false
         try {
-            const ready = await bounded(barrierReadyPromise, 5000)
+            const ready = await bounded(barrierReadyPromise, isolationPoolFaultBudget.readinessMs)
             if (ready.status === 'rejected') throw ready.reason
             saturation = request(background, '/pool', 'POST').then(
                 (response) => ({ status: 'fulfilled' as const, value: response }),
                 (reason: unknown) => ({ status: 'rejected' as const, reason }),
             )
-            poolReadiness = waitFor(() => activeIsolationPoolQueries(database), 5000).then(
+            const readinessSignal = AbortSignal.any([
+                ssrAbort.signal, AbortSignal.timeout(isolationPoolFaultBudget.readinessMs),
+                ...(context.signal ? [context.signal] : []),
+            ])
+            poolReadiness = waitFor(() => activeIsolationPoolQueries(database, readinessSignal), isolationPoolFaultBudget.readinessMs).then(
                 () => ({ status: 'fulfilled' as const, value: undefined }),
                 (reason: unknown) => ({ status: 'rejected' as const, reason }),
             )
-            const poolReady = await bounded(poolReadiness, 5000)
+            const poolReady = await bounded(poolReadiness, isolationPoolFaultBudget.readinessMs)
             if (poolReady.status === 'rejected') throw poolReady.reason
-            latencyPromise = ssr(foreground, 100, ssrAbort.signal).then(
+            const measurementSignal = AbortSignal.any([
+                ssrAbort.signal, AbortSignal.timeout(isolationPoolFaultBudget.measurementMs),
+                ...(context.signal ? [context.signal] : []),
+            ])
+            latencyPromise = ssr(foreground, isolationPoolFaultBudget.samples, measurementSignal).then(
                 (value) => ({ status: 'fulfilled' as const, value }),
                 (reason: unknown) => ({ status: 'rejected' as const, reason }),
             )
             measurementPromise = measureSsrUnderPoolActivity(
                 latencyPromise,
-                () => activeIsolationPoolQueries(database),
+                () => activeIsolationPoolQueries(database, measurementSignal),
                 () => ssrAbort.abort(new Error('PostgreSQL saturation ended during SSR')),
             ).then(
                 (value) => ({ status: 'fulfilled' as const, value }),
                 (reason: unknown) => ({ status: 'rejected' as const, reason }),
             )
-            const measurement = await bounded(measurementPromise, 16000)
+            const measurement = await bounded(measurementPromise, isolationPoolFaultBudget.measurementMs)
             if (measurement.status === 'rejected') throw measurement.reason
             const measured = measurement.value
             if (measured.outcome.status === 'rejected') throw measured.outcome.reason

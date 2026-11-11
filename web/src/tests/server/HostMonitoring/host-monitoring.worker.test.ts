@@ -97,6 +97,31 @@ async function flush() {
 }
 
 describe('host monitoring worker', () => {
+    test('deduplicates failed due-time reads until the durable due-time read actually recovers', async () => {
+        let failed = true, warnings = 0
+        const worker = createHostMonitoringWorker(dependencies({
+            nextAdmissionAt: async () => {
+                if (failed) throw new Error('private due read unavailable')
+                return null
+            },
+            unavailable: () => { warnings++ },
+        }))
+        try {
+            await worker.runOnce()
+            await worker.runOnce()
+            await worker.runOnce()
+            expect(warnings).toBe(1)
+            failed = false
+            await worker.runOnce()
+            failed = true
+            await worker.runOnce()
+            await worker.runOnce()
+            expect(warnings).toBe(2)
+        } finally {
+            await worker.stop()
+        }
+    })
+
     test.each(['success', 'cleanup failure'] as const)(
         'an empty claim read retains normal polling while an admitted probe can settle: %s',
         async (outcome) => {

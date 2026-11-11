@@ -246,6 +246,8 @@ test.each([
     ['late', 'reject'],
     ['non-OK', 'resolve'],
     ['non-OK', 'reject'],
+    ['overflow', 'resolve'],
+    ['overflow', 'reject'],
 ] as const)(
     '%s response body cancellation retains all permits and shutdown ownership until cancel %s',
     async (phase, outcome) => {
@@ -260,6 +262,7 @@ test.each([
         const runtime = createLiveWebSocketRuntime({
             allowedOrigin: 'http://allowed.test',
             snapshotTimeoutMs: phase === 'late' ? 5 : 5_000,
+            ...(phase === 'overflow' ? { maxPayloadBytes: 1 } : {}),
             readSnapshot: () =>
                 responses[reads++]?.promise ?? Response.json({ revision: 'unexpected fresh read' }),
         })
@@ -278,18 +281,21 @@ test.each([
                 response.resolve(
                     new Response(
                         new ReadableStream({
+                            start(source) {
+                                if (phase === 'overflow') source.enqueue(Uint8Array.of(1, 2))
+                            },
                             cancel() {
                                 if (++cancellations === slots) cancelled.resolve()
                                 return cancel.promise
                             },
                         }),
-                        { status: phase === 'late' ? 200 : 403 },
+                        { status: phase === 'non-OK' ? 403 : 200 },
                     ),
                 )
             await cancelled.promise
             expect(
                 (await initial).every(
-                    (result) => result.response?.status === (phase === 'late' ? 503 : 403),
+                    (result) => result.response?.status === (phase === 'late' ? 503 : phase === 'overflow' ? 413 : 403),
                 ),
             ).toBe(true)
             const next = request().then((result) => {

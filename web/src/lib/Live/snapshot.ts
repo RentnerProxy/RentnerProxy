@@ -123,11 +123,12 @@ export async function readBoundedJson(
     response: Response,
     maxPayloadBytes = LIVE_MAX_PAYLOAD_BYTES,
     signal?: AbortSignal,
+    trackWork?: (work: Promise<unknown>) => void,
 ): Promise<unknown> {
     if (!response.body) throw new LivePayloadError()
     let bytes: Uint8Array
     try {
-        bytes = await readBoundedStream(response.body, maxPayloadBytes, signal)
+        bytes = await readBoundedStream(response.body, maxPayloadBytes, signal, trackWork)
     } catch (error) {
         if (error instanceof ResponseBodyLimitError) throw new LivePayloadError()
         throw error

@@ -179,31 +179,41 @@ test('missing real web/event-loop data stays insufficient and each observed SQL 
 
 test('idle timers, stale registry writes, data-plane errors, admission overflow and slow management fail separately', () => {
     const base = { attempts: 1, successes: 1, discoveryRevision: 2 }
+    const passingSamples = () => {
+        const first = sample()
+        first.critical = { attempts: 1, successes: 1 }
+        const second = sample()
+        second.critical = { attempts: 2, successes: 2 }
+        return [first, second]
+    }
     for (const mutate of [
-        (value: ContentionSample) => {
-            value.critical.successes = 1
+        (values: ContentionSample[]) => {
+            values[1]!.critical.successes = values[0]!.critical.successes
         },
-        (value: ContentionSample) => {
-            value.criticalObservedMs = 15001
+        (values: ContentionSample[]) => {
+            for (const value of values) value.criticalObservedMs = 15001
         },
-        (value: ContentionSample) => {
-            value.state.discovery.revision = 2
+        (values: ContentionSample[]) => {
+            for (const value of values) value.state.discovery.revision = 2
         },
-        (value: ContentionSample) => {
-            value.revisionUnchanged = false
+        (values: ContentionSample[]) => {
+            for (const value of values) value.revisionUnchanged = false
         },
-        (value: ContentionSample) => {
-            value.state.notification.inflight = 9
+        (values: ContentionSample[]) => {
+            for (const value of values) value.state.notification.inflight = 9
         },
-        (value: ContentionSample) => {
-            value.managementMs = 1001
+        (values: ContentionSample[]) => {
+            for (const value of values) value.managementMs = 1001
         },
     ]) {
-        const value = sample()
-        mutate(value)
-        expect(buildContentionReport([value], base, 0).status).toBe('unmet')
+        const values = passingSamples()
+        expect(buildContentionReport(values, base, 0).status).toBe('met')
+        mutate(values)
+        expect(buildContentionReport(values, base, 0).status).toBe('unmet')
     }
-    expect(buildContentionReport([sample()], base, 1).status).toBe('unmet')
+    const proxyFailure = passingSamples()
+    expect(buildContentionReport(proxyFailure, base, 0).status).toBe('met')
+    expect(buildContentionReport(proxyFailure, base, 1).status).toBe('unmet')
     expect(
         contentionStateSchema.safeParse({ ...sample().state, singleton: { running: 0 } }).success,
     ).toBe(false)
@@ -227,12 +237,15 @@ test('native progress must advance between samples taken during mixed overlap', 
 })
 
 test('registry revision without emitted discovery events is not positive discovery evidence', () => {
-    const noEvents = sample()
-    noEvents.receiver.discovery.emitted = 0
-    expect(
-        buildContentionReport([noEvents], { attempts: 1, successes: 1, discoveryRevision: 2 }, 0)
-            .status,
-    ).toBe('unmet')
+    const first = sample()
+    first.critical = { attempts: 1, successes: 1 }
+    const second = sample()
+    second.critical = { attempts: 2, successes: 2 }
+    const samples = [first, second]
+    const baseline = { attempts: 1, successes: 1, discoveryRevision: 2 }
+    expect(buildContentionReport(samples, baseline, 0).status).toBe('met')
+    for (const value of samples) value.receiver.discovery.emitted = 0
+    expect(buildContentionReport(samples, baseline, 0).status).toBe('unmet')
 })
 
 test('controlled Docker events wait for the overlap barrier and change only detached candidate metadata', async () => {
