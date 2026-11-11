@@ -1,10 +1,10 @@
 use super::{Error, Registry, Store};
-use tokio::sync::MutexGuard;
+use tokio::sync::OwnedMutexGuard;
 
 // The registry guard fences credential rotation, zone removal and deletion for
 // the complete read/modify/verify sequence of one selected DNS record.
-pub(in crate::runtime) struct RecordAccess<'a> {
-    _state: MutexGuard<'a, Option<Registry>>,
+pub(in crate::runtime) struct RecordAccess {
+    _state: OwnedMutexGuard<Option<Registry>>,
     pub(in crate::runtime) zone_name: String,
     pub(in crate::runtime) provider: crate::runtime::dns::capabilities::ProviderId,
     pub(in crate::runtime) token: String,
@@ -54,7 +54,10 @@ impl Store {
             // without blocking unrelated accounts. Explicit use still fails closed.
             if super::resolve_provider(None, Some(entry))? == config.provider_id()
                 && entry.metadata.verified_for(zone_id)
-                && self.decrypt(entry).is_ok_and(|stored| stored == token)
+                && self
+                    .decrypt(entry)
+                    .await
+                    .is_ok_and(|stored| stored == token)
             {
                 return Ok(Some(crate::runtime::dns::DnsProviderConfig::Connection {
                     provider: config.provider_id(),
@@ -70,7 +73,7 @@ impl Store {
         &self,
         connection: &str,
         zone: &str,
-    ) -> Result<RecordAccess<'_>, Error> {
+    ) -> Result<RecordAccess, Error> {
         let mut state = self.lock().await?;
         let entry = Self::registry(&mut state)?
             .connections
@@ -86,7 +89,7 @@ impl Store {
             .name
             .clone();
         let provider = super::resolve_provider(None, Some(entry))?;
-        let token = self.decrypt(entry)?;
+        let token = self.decrypt(entry).await?;
         Ok(RecordAccess {
             _state: state,
             zone_name,

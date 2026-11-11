@@ -1,3 +1,4 @@
+use super::acme::acme_store;
 use super::{CertificateMetadata, MAX_CANDIDATE_ACTIVATIONS_PER_TICK, ProxyRuntime, certificates};
 use std::{
     sync::{Arc, atomic::Ordering},
@@ -7,6 +8,7 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tokio::time::interval;
 
 const MAX_ACME_STARTS_PER_TICK: usize = 4;
+static PERMISSION_RECOVERY: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
 impl ProxyRuntime {
     pub(crate) async fn start_renewal_scheduler(
@@ -14,7 +16,7 @@ impl ProxyRuntime {
         challenges: crate::server::challenges::ChallengeStore,
     ) {
         let mut task = self.renewal_task.lock().await;
-        if task.is_some() {
+        if task.is_some() || self.stopping.load(Ordering::SeqCst) {
             return;
         }
         let runtime = Arc::clone(self);
@@ -24,17 +26,28 @@ impl ProxyRuntime {
             timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 timer.tick().await;
+                if runtime.stopping.load(Ordering::SeqCst) {
+                    break;
+                }
                 runtime.retry_certificate_candidates().await;
-                let _ = runtime.certificate_store.expire_manual_dns_orders().await;
+                if runtime.stopping.load(Ordering::SeqCst) {
+                    break;
+                }
+                let _ = acme_store!(runtime; []; store => store.expire_manual_dns_orders());
                 runtime.recover_manual_dns().await;
                 runtime.recover_dns_cleanup().await;
-                let checks_runtime = Arc::clone(&runtime);
-                tokio::spawn(async move {
-                    checks_runtime
-                        .dns_connections
-                        .recover_permission_checks()
-                        .await;
-                });
+                if let Ok(permit) = PERMISSION_RECOVERY.try_acquire() {
+                    let checks_runtime = Arc::clone(&runtime);
+                    runtime
+                        .background_jobs
+                        .spawn("dns_permission_recovery", async move {
+                            let _permit = permit;
+                            checks_runtime
+                                .dns_connections
+                                .recover_permission_checks()
+                                .await;
+                        });
+                }
                 runtime
                     .renew_due_certificates(challenges.clone(), cursor)
                     .await;

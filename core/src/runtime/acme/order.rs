@@ -32,9 +32,7 @@ impl ProxyRuntime {
         dns_provider: Option<&DnsProvider>,
         dns_intents: &mut Vec<DnsRecordIntent>,
     ) -> Result<(String, String), CertificateError> {
-        self.certificate_store
-            .record_operation_stage(id, CertificateOperationStage::CreatingOrder)
-            .await?;
+        acme_store!(self; [id]; store => store.record_operation_stage(&id, CertificateOperationStage::CreatingOrder))?;
         let delegated = if let Some(provider) = dns_provider {
             if request.dns_mode == DnsValidationMode::Delegated {
                 super::delegated::bindings(request, provider).await?
@@ -64,7 +62,7 @@ impl ProxyRuntime {
     }
 
     async fn issue_acme_with_account(
-        &self,
+        self: &Arc<Self>,
         id: &str,
         request: &CertificateIssueRequest,
         challenges: &ChallengeStore,
@@ -88,9 +86,7 @@ impl ProxyRuntime {
             .await
             .map_err(|_| CertificateError::AcmeFailed)?;
 
-        self.certificate_store
-            .record_operation_stage(id, CertificateOperationStage::PreparingChallenge)
-            .await?;
+        acme_store!(self; [id]; store => store.record_operation_stage(&id, CertificateOperationStage::PreparingChallenge))?;
 
         match request.challenge_type {
             AcmeChallengeType::Http01 => {
@@ -154,19 +150,10 @@ impl ProxyRuntime {
                         intent = intent.with_delegation(binding.clone())?;
                     }
                     if request.dns_mode == DnsValidationMode::Delegated {
-                        super::delegated::present(
-                            &self.certificate_store,
-                            id,
-                            provider,
-                            dns_intents,
-                            intent,
-                        )
-                        .await?;
+                        super::delegated::present(self, id, provider, dns_intents, intent).await?;
                     } else {
                         dns_intents.push(intent.clone());
-                        self.certificate_store
-                            .set_pending_dns_records(id, dns_intents.clone())
-                            .await?;
+                        acme_store!(self; [id, dns_intents]; store => store.set_pending_dns_records(&id, dns_intents))?;
                         provider.present(&intent).await?;
                     }
                     presented = true;
@@ -176,7 +163,7 @@ impl ProxyRuntime {
                         super::delegated::wait_for_records(
                             &dns_intents[current_proofs_start..],
                             request.environment,
-                            &self.certificate_store,
+                            self,
                             id,
                         )
                         .await?;
@@ -199,7 +186,7 @@ impl ProxyRuntime {
                         .ok_or(CertificateError::AcmeFailed)?;
                     requested_identifier(challenge.identifier(), &request.domains)?;
                     if request.dns_mode == DnsValidationMode::Delegated {
-                        super::delegated::check_cancelled(&self.certificate_store, id).await?;
+                        super::delegated::check_cancelled(self, id).await?;
                     }
                     challenge
                         .set_ready()
@@ -209,9 +196,7 @@ impl ProxyRuntime {
             }
         }
 
-        self.certificate_store
-            .record_operation_stage(id, CertificateOperationStage::WaitingForValidation)
-            .await?;
+        acme_store!(self; [id]; store => store.record_operation_stage(&id, CertificateOperationStage::WaitingForValidation))?;
         let status = order
             .poll_ready(&RetryPolicy::default())
             .await
@@ -219,9 +204,7 @@ impl ProxyRuntime {
         if status != OrderStatus::Ready {
             return Err(CertificateError::AcmeFailed);
         }
-        self.certificate_store
-            .record_operation_stage(id, CertificateOperationStage::Finalizing)
-            .await?;
+        acme_store!(self; [id]; store => store.record_operation_stage(&id, CertificateOperationStage::Finalizing))?;
         let private_key_pem = order
             .finalize()
             .await

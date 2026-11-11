@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-test "$(go env GOVERSION)" = go1.27.3
+test "$(go env GOVERSION)" = go1.27.4
 GOWORK=off go build -o /tmp/verify-buildinfo /tmp/verify-buildinfo.go
 cd /opt/rentnerproxy-responsecache
 GODEBUG="${GODEBUG:+$GODEBUG,}http2client=0" go mod download

@@ -23,23 +23,37 @@ impl ProxyRuntime {
     }
 
     pub(crate) async fn cancel_delegated_dns(
-        &self,
+        self: &Arc<Self>,
         id: &str,
         action: &super::CertificateCancelRequest,
     ) -> Result<CertificateMetadata, CertificateError> {
-        self.certificate_store
-            .request_delegated_cancel(id, &action.operation_id)
-            .await
+        let id = id.to_owned();
+        let operation_id = action.operation_id.clone();
+        self.storage_async(move |runtime| async move {
+            runtime
+                .certificate_store
+                .request_delegated_cancel(&id, &operation_id)
+                .await
+        })
+        .await
+        .map_err(|_| CertificateError::StoreUnavailable)?
     }
 
     pub(crate) async fn cancel_manual_dns(
-        &self,
+        self: &Arc<Self>,
         id: &str,
         action: &super::certificates::ManualDnsActionRequest,
     ) -> Result<CertificateMetadata, CertificateError> {
-        self.certificate_store
-            .cancel_manual_dns_order(id, action)
-            .await
+        let id = id.to_owned();
+        let action = action.clone();
+        self.storage_async(move |runtime| async move {
+            runtime
+                .certificate_store
+                .cancel_manual_dns_order(&id, &action)
+                .await
+        })
+        .await
+        .map_err(|_| CertificateError::StoreUnavailable)?
     }
 
     pub(crate) async fn certificate(
@@ -128,21 +142,26 @@ impl ProxyRuntime {
         }
         let runtime = Arc::clone(self);
         let id = id.to_owned();
+        let (response, result) = tokio::sync::oneshot::channel();
         // Own preparation as well as publication: preparation acquires a lease
         // before waiting for the index, so caller cancellation must not drop it.
-        tokio::spawn(async move {
-            runtime
-                .retry_certificate_candidate_inner(&id, scheduled)
-                .await
-        })
-        .await
-        .unwrap_or_else(|error| {
-            super::task::report_join_failure("certificate_candidate_retry", &error);
-            Err(CertificateError::StoreUnavailable)
-        })
+        if !self
+            .background_jobs
+            .spawn("certificate_candidate_retry", async move {
+                let outcome = runtime
+                    .retry_certificate_candidate_inner(&id, scheduled)
+                    .await;
+                let _ = response.send(outcome);
+            })
+        {
+            return Err(CertificateError::OperationInProgress);
+        }
+        result
+            .await
+            .unwrap_or(Err(CertificateError::StoreUnavailable))
     }
 
-    async fn retry_certificate_candidate_inner(
+    pub(super) async fn retry_certificate_candidate_inner(
         self: &Arc<Self>,
         id: &str,
         scheduled: bool,
@@ -172,6 +191,17 @@ impl ProxyRuntime {
         self: &Arc<Self>,
         id: &str,
     ) -> Result<(), CertificateError> {
+        let runtime = Arc::clone(self);
+        let id = id.to_owned();
+        tokio::spawn(async move { runtime.delete_certificate_inner(&id).await })
+            .await
+            .unwrap_or_else(|error| {
+                super::task::report_join_failure("certificate_delete", &error);
+                Err(CertificateError::StoreUnavailable)
+            })
+    }
+
+    async fn delete_certificate_inner(self: &Arc<Self>, id: &str) -> Result<(), CertificateError> {
         let _guard = timeout(self.settings.lock_wait, self.apply_lock.lock())
             .await
             .map_err(|_| CertificateError::InUse)?;
@@ -193,8 +223,14 @@ impl ProxyRuntime {
                         .iter()
                         .any(|host| host.certificate_id.as_deref() == Some(id))
             });
-        self.certificate_store
-            .delete_if_unused(id, in_use || cached_in_use)
-            .await
+        let id = id.to_owned();
+        self.storage_async(move |runtime| async move {
+            runtime
+                .certificate_store
+                .delete_if_unused(&id, in_use || cached_in_use)
+                .await
+        })
+        .await
+        .map_err(|_| CertificateError::StoreUnavailable)?
     }
 }

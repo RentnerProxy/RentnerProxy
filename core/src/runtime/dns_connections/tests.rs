@@ -1,3 +1,5 @@
+mod persistence;
+
 use super::models::{Consumer, ConsumerType, Usage};
 use super::*;
 use std::sync::{
@@ -161,7 +163,8 @@ async fn references_block_delete_and_zone_removal_and_malformed_store_fails_clos
                 id: USER.into(),
             },
         });
-        store.persist(registry).unwrap();
+        let next = registry.clone();
+        store.commit(state, next).await.unwrap();
     }
     assert!(matches!(
         store.delete(ID, 1).await,
@@ -466,7 +469,7 @@ async fn provider_resolution_preserves_registry_v1_and_rejects_unknown_stored_pr
     let metadata = serde_json::to_value(&entry.metadata).unwrap();
     assert!(metadata.get("capabilities").is_none());
     assert_eq!(metadata["provider"], "cloudflare");
-    assert_eq!(store.decrypt(entry).unwrap(), "secret-fixture-token");
+    assert_eq!(store.decrypt(entry).await.unwrap(), "secret-fixture-token");
     entry.metadata.provider = "unknown".into();
     assert_eq!(
         resolve_provider(Some(ProviderId::Cloudflare), Some(entry)),
@@ -544,7 +547,8 @@ async fn failures_preserve_state_and_clock_rollback_keeps_timestamp_order() {
         let mut state = store.lock().await.unwrap();
         let registry = Store::registry(&mut state).unwrap();
         registry.connections[0].metadata.updated_at = "2099-01-01T00:00:00Z".into();
-        store.persist(registry).unwrap();
+        let next = registry.clone();
+        store.commit(state, next).await.unwrap();
     }
     let updated = store.save(ID.into(), request(1)).await.unwrap();
     assert_eq!(updated.updated_at, "2099-01-01T00:00:00Z");
@@ -579,7 +583,8 @@ async fn reference_added_during_provider_validation_prevents_zone_removal() {
                 zone_id: zone_id('a'),
                 consumer: Consumer { r#type: ConsumerType::Dns01, id: USER.into() },
             });
-            store.persist(registry).unwrap();
+            let next = registry.clone();
+            store.commit(state, next).await.unwrap();
         }
     );
     assert!(matches!(result, Err(Error::ConnectionInUse)));
@@ -588,4 +593,32 @@ async fn reference_added_during_provider_validation_prevents_zone_removal() {
     assert_eq!(metadata.zones.len(), 2);
     assert_eq!(metadata.references.len(), 1);
     task.abort();
+}
+
+// A one-operation pause controls local I/O without sleeping on a Tokio worker.
+pub(super) struct IoPause {
+    entered: tokio::sync::oneshot::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+impl IoPause {
+    pub(super) fn wait(self) {
+        let _ = self.entered.send(());
+        self.release
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("test must release blocked registry I/O");
+    }
+}
+fn pause_io(
+    store: &Store,
+) -> (
+    tokio::sync::oneshot::Receiver<()>,
+    std::sync::mpsc::Sender<()>,
+) {
+    let (entered, started) = tokio::sync::oneshot::channel();
+    let (release, resume) = std::sync::mpsc::channel();
+    *store.io_pause.lock().unwrap() = Some(IoPause {
+        entered,
+        release: resume,
+    });
+    (started, release)
 }

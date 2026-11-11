@@ -1020,6 +1020,7 @@ async fn cancelling_a_configuration_write_invalidates_cached_state_before_next_a
     let automation = Automation::new(fixture.path.clone());
     configure(&automation, &fixture, settings(0, false, false)).await;
     let io = Arc::clone(&automation.io).lock_owned().await;
+    let held_io_owners = Arc::strong_count(&automation.io);
     {
         let save = automation.save_at(
             &fixture.store,
@@ -1028,7 +1029,25 @@ async fn cancelling_a_configuration_write_invalidates_cached_state_before_next_a
             Outcome::Configured,
         );
         tokio::pin!(save);
-        tokio::select! { biased; result=&mut save=>panic!("write should wait for I/O: {result:?}"), _=tokio::task::yield_now()=>{} }
+        // This isolated Automation has no background tasks. The next owned I/O
+        // reference therefore belongs to persistence::save waiting on our gate,
+        // after commit has invalidated the cache. Credential and registry I/O
+        // may suspend first, so a single yield cannot identify this boundary.
+        tokio::time::timeout(
+            Duration::from_secs(3),
+            std::future::poll_fn(|cx| {
+                if let std::task::Poll::Ready(result) = save.as_mut().poll(cx) {
+                    panic!("write should wait for I/O: {result:?}");
+                }
+                if Arc::strong_count(&automation.io) > held_io_owners {
+                    std::task::Poll::Ready(())
+                } else {
+                    std::task::Poll::Pending
+                }
+            }),
+        )
+        .await
+        .expect("configuration write must reach owned I/O admission");
     }
     assert!(automation.state.lock().await.is_none());
     drop(io);

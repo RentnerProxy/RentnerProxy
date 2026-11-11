@@ -266,7 +266,7 @@ fn cancellation_waits_for_accepted_provider_post_then_cleans_its_committed_value
             let write = tokio::spawn(async move {
                 let mut intents = Vec::new();
                 let result = super::super::delegated::present(
-                    &write_runtime.certificate_store,
+                    &write_runtime,
                     ID,
                     &write_provider,
                     &mut intents,
@@ -352,14 +352,8 @@ fn uncertain_provider_write_retains_authority_until_late_commit_can_be_cleaned()
             let provider = fixture.provider();
             let mut intents = Vec::new();
             assert_eq!(
-                super::super::delegated::present(
-                    &runtime.certificate_store,
-                    ID,
-                    &provider,
-                    &mut intents,
-                    proof
-                )
-                .await,
+                super::super::delegated::present(&runtime, ID, &provider, &mut intents, proof)
+                    .await,
                 Err(CertificateError::DnsProviderUnavailable)
             );
             assert_eq!(intents.len(), 1);
@@ -418,7 +412,7 @@ fn unknown_write_allows_later_proof_cleanup_and_survives_restart_until_late_comm
         let fixture = Fixture::new(true, &proof).await;
         let provider = fixture.provider();
         let mut journal = Vec::new();
-        assert_eq!(super::super::delegated::present(&runtime.certificate_store, ID, &provider, &mut journal, proof).await,
+        assert_eq!(super::super::delegated::present(&runtime, ID, &provider, &mut journal, proof).await,
             Err(CertificateError::DnsProviderUnavailable));
         let retained = journal.clone();
         assert!(retained[0].unconfirmed_write);
@@ -431,7 +425,7 @@ fn unknown_write_allows_later_proof_cleanup_and_survives_restart_until_late_comm
         fixture.state.release_post.add_permits(1);
         let mut newer = intent();
         newer.value = "newer-stored-attempt-proof".to_owned();
-        super::super::delegated::present(&runtime.certificate_store, ID, &provider, &mut journal, newer.clone()).await.unwrap();
+        super::super::delegated::present(&runtime, ID, &provider, &mut journal, newer.clone()).await.unwrap();
         assert_eq!(journal.len(), 2);
         assert_eq!(journal[0], retained[0]);
         assert_eq!(journal[1], newer);
@@ -557,26 +551,14 @@ fn unresolved_exact_same_proof_is_not_replayed_or_added_to_journal() {
             let provider = fixture.provider();
             let mut journal = Vec::new();
             assert_eq!(
-                super::super::delegated::present(
-                    &runtime.certificate_store,
-                    ID,
-                    &provider,
-                    &mut journal,
-                    intent()
-                )
-                .await,
+                super::super::delegated::present(&runtime, ID, &provider, &mut journal, intent())
+                    .await,
                 Err(CertificateError::DnsProviderUnavailable)
             );
             let original = journal.clone();
             assert_eq!(
-                super::super::delegated::present(
-                    &runtime.certificate_store,
-                    ID,
-                    &provider,
-                    &mut journal,
-                    intent()
-                )
-                .await,
+                super::super::delegated::present(&runtime, ID, &provider, &mut journal, intent())
+                    .await,
                 Err(CertificateError::DnsCleanupFailed)
             );
             assert_eq!(journal, original);

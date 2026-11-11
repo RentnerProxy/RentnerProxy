@@ -1,6 +1,7 @@
 pub(crate) mod access_logs;
 mod acme;
 mod apply;
+mod background_jobs;
 mod certificate_management;
 mod certificates;
 pub(crate) mod clock;
@@ -164,6 +165,7 @@ pub(crate) struct ProxyRuntime {
     storage_worker: storage::StorageWorker,
     apply_sequence: AtomicU64,
     stopping: AtomicBool,
+    background_jobs: background_jobs::BackgroundJobs,
     initialization_started: AtomicBool,
     active_configuration: Mutex<Option<ValidatedProxyConfig>>,
     certificate_store: CertificateStore,
@@ -254,6 +256,7 @@ impl ProxyRuntime {
             storage_worker: storage::StorageWorker::new(),
             apply_sequence: AtomicU64::new(0),
             stopping: AtomicBool::new(false),
+            background_jobs: background_jobs::BackgroundJobs::new(),
             initialization_started: AtomicBool::new(false),
             active_configuration: Mutex::new(None),
             renewal_task: Mutex::new(None),
