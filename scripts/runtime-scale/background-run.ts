@@ -204,8 +204,8 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
     const recovery: { component: string; elapsedMs: number; passed: boolean }[] = []
     const abort = new AbortController()
     const interrupt = () => abort.abort()
-    process.once('SIGINT', interrupt)
-    process.once('SIGTERM', interrupt)
+    process.on('SIGINT', interrupt)
+    process.on('SIGTERM', interrupt)
     let snapshot: BackgroundSnapshot | undefined
     let contention: Awaited<ReturnType<typeof runContentionWindow>>['report'] | undefined
     let monitoring: ReturnType<typeof backgroundMonitoringReport> | undefined
@@ -516,11 +516,13 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
             .catch(() => undefined)
     } finally {
         if (origin && !elapsedMs) elapsedMs = performance.now() - origin
-        process.off('SIGINT', interrupt)
-        process.off('SIGTERM', interrupt)
+        stage = 'cleanup'
         await harness.cleanup().catch(() => {
             failure ??= 'cleanup'
         })
+        if (abort.signal.aborted) failure ??= 'cancelled'
+        process.off('SIGINT', interrupt)
+        process.off('SIGTERM', interrupt)
     }
     const resourceEvidence = backgroundResourceEvidence(resources)
     const interactive = {

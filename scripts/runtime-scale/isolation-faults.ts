@@ -12,12 +12,20 @@ interface FaultContext {
         role: 'foreground' | 'combined' | 'background',
         denied?: boolean,
     ) => Promise<IsolationChild>
-    request: (child: IsolationChild, path: string, method?: string) => Promise<Response>
+    request: (
+        child: IsolationChild,
+        path: string,
+        method?: string,
+        signal?: AbortSignal,
+    ) => Promise<Response>
     stopChild: (child: IsolationChild) => Promise<number>
     bounded: <T>(operation: Promise<T>, milliseconds: number) => Promise<T>
     command: (args: string[], timeoutMs?: number) => Promise<string>
     snapshotPath: string
 }
+
+type Settled<T> = { status: 'fulfilled'; value: T } | { status: 'rejected'; reason: unknown }
+const isolationPoolBarrierKey = 1_380_864_088
 
 /** A completed HTTP request is not proof that every requested saturation query succeeded. */
 export async function assertIsolationPoolSaturation(response: Response): Promise<void> {
@@ -30,6 +38,47 @@ export async function assertIsolationPoolSaturation(response: Response): Promise
         succeeded: isolationContract.workerConnections,
         failed: 0,
     })
+}
+
+/** Accept saturation only when PostgreSQL reports eight distinct active worker backends for the exact blocked fixture query. */
+export function hasCompleteIsolationPoolActivity(activity: {
+    active: number | string
+    pids: number | string
+}) {
+    return (
+        Number(activity.active) === isolationContract.workerConnections &&
+        Number(activity.pids) === isolationContract.workerConnections
+    )
+}
+
+/** Observe only the dedicated worker role and exact advisory-lock statement issued by the private pool fault. */
+async function activeIsolationPoolQueries(database: SQL) {
+    const rows = await database.unsafe<{ active: number; pids: number }[]>(
+        "select count(*)::int as active,count(distinct pid)::int as pids from pg_stat_activity where usename='isolation_worker' and datname=current_database() and state='active' and wait_event_type='Lock' and query='select pg_advisory_xact_lock(1380864088)'",
+    )
+    return hasCompleteIsolationPoolActivity(rows[0] ?? { active: 0, pids: 0 })
+}
+
+/** Sample actual PostgreSQL activity while SSR runs; each loop iteration races measurement completion against the next observation tick. */
+export async function measureSsrUnderPoolActivity<T>(
+    measurement: Promise<Settled<T>>,
+    readActivity: () => Promise<boolean>,
+    onActivityLost: () => void = () => {},
+) {
+    let held = true
+    while (true) {
+        const next = await Promise.race([
+            measurement.then((outcome) => ({ done: true as const, outcome })),
+            Bun.sleep(25).then(() => ({ done: false as const })),
+        ])
+        if (next.done) {
+            const finalActivity = await readActivity()
+            return { held: held && finalActivity, outcome: next.outcome }
+        }
+        const active = await readActivity()
+        if (!active) onActivityLost()
+        held = active && held
+    }
 }
 
 /** Poll a durable checkpoint every 25 milliseconds until its deadline; propagate checkpoint failures and reject an unmet deadline. */
@@ -77,13 +126,16 @@ export async function runIsolationFaults(context: FaultContext) {
         return Number(rows[0]?.total)
     }
     /** Measure sequential successful foreground responses; fail the case on a bad status or missing rendered fixture content. */
-    async function ssr(child: IsolationChild, count: number) {
+    async function ssr(child: IsolationChild, count: number, signal?: AbortSignal) {
         const values: number[] = []
         for (let index = 0; index < count; index++) {
+            signal?.throwIfAborted()
             const start = performance.now()
-            const response = await request(child, '/ssr')
+            const response = await request(child, '/ssr', 'GET', signal)
+            signal?.throwIfAborted()
             assert.equal(response.status, 200)
             assert.ok((await response.text()).includes('Proxy hosts'))
+            signal?.throwIfAborted()
             values.push(performance.now() - start)
         }
         return isolationDistribution(values)
@@ -162,9 +214,104 @@ export async function runIsolationFaults(context: FaultContext) {
         await seed(100)
         const foreground = await spawn('foreground'),
             background = await spawn('background')
-        const saturation = request(background, '/pool', 'POST')
-        const latency = await ssr(foreground, 100)
-        await assertIsolationPoolSaturation(await saturation)
+        const barrierReady = Promise.withResolvers<void>()
+        const releaseBarrier = Promise.withResolvers<void>()
+        const barrier = database
+            .transaction(async (transaction) => {
+                await transaction.unsafe(
+                    'select pg_advisory_xact_lock(' + isolationPoolBarrierKey + ')',
+                )
+                barrierReady.resolve()
+                await releaseBarrier.promise
+            })
+            .then(
+                () => ({ status: 'fulfilled' as const }),
+                (reason: unknown) => ({ status: 'rejected' as const, reason }),
+            )
+        const barrierReadyPromise = Promise.race([
+            barrierReady.promise,
+            barrier.then((outcome) => {
+                throw outcome.status === 'rejected'
+                    ? outcome.reason
+                    : new Error('Isolation saturation barrier ended before release')
+            }),
+        ]).then(
+            () => ({ status: 'fulfilled' as const, value: undefined }),
+            (reason: unknown) => ({ status: 'rejected' as const, reason }),
+        )
+        let saturation: Promise<Settled<Response>> | undefined
+        let poolReadiness: Promise<Settled<void>> | undefined
+        let latencyPromise: Promise<Settled<ReturnType<typeof isolationDistribution>>> | undefined
+        let measurementPromise: Promise<Settled<{
+            held: boolean
+            outcome: Settled<ReturnType<typeof isolationDistribution>>
+        }>> | undefined
+        const ssrAbort = new AbortController()
+        let latency: ReturnType<typeof isolationDistribution> | undefined
+        let scenarioFailure: unknown
+        let scenarioFailed = false
+        let saturationHeldThroughSsr = false
+        try {
+            const ready = await bounded(barrierReadyPromise, 5000)
+            if (ready.status === 'rejected') throw ready.reason
+            saturation = request(background, '/pool', 'POST').then(
+                (response) => ({ status: 'fulfilled' as const, value: response }),
+                (reason: unknown) => ({ status: 'rejected' as const, reason }),
+            )
+            poolReadiness = waitFor(() => activeIsolationPoolQueries(database), 5000).then(
+                () => ({ status: 'fulfilled' as const, value: undefined }),
+                (reason: unknown) => ({ status: 'rejected' as const, reason }),
+            )
+            const poolReady = await bounded(poolReadiness, 5000)
+            if (poolReady.status === 'rejected') throw poolReady.reason
+            latencyPromise = ssr(foreground, 100, ssrAbort.signal).then(
+                (value) => ({ status: 'fulfilled' as const, value }),
+                (reason: unknown) => ({ status: 'rejected' as const, reason }),
+            )
+            measurementPromise = measureSsrUnderPoolActivity(
+                latencyPromise,
+                () => activeIsolationPoolQueries(database),
+                () => ssrAbort.abort(new Error('PostgreSQL saturation ended during SSR')),
+            ).then(
+                (value) => ({ status: 'fulfilled' as const, value }),
+                (reason: unknown) => ({ status: 'rejected' as const, reason }),
+            )
+            const measurement = await bounded(measurementPromise, 16000)
+            if (measurement.status === 'rejected') throw measurement.reason
+            const measured = measurement.value
+            if (measured.outcome.status === 'rejected') throw measured.outcome.reason
+            latency = measured.outcome.value
+            saturationHeldThroughSsr = measured.held
+            assert.ok(
+                saturationHeldThroughSsr,
+                'All eight PostgreSQL worker backends remained active for the complete SSR series',
+            )
+        } catch (error) {
+            scenarioFailure = error
+            scenarioFailed = true
+            ssrAbort.abort(error)
+        } finally {
+            releaseBarrier.resolve()
+        }
+        const [barrierResult, barrierReadyResult, poolReadinessResult, saturationResult, latencyResult, measurementResult] =
+            await Promise.all([
+                barrier,
+                barrierReadyPromise,
+                poolReadiness ?? Promise.resolve(undefined),
+                saturation ?? Promise.resolve(undefined),
+                latencyPromise ?? Promise.resolve(undefined),
+                measurementPromise ?? Promise.resolve(undefined),
+            ])
+        if (scenarioFailed) throw scenarioFailure
+        if (barrierResult.status === 'rejected') throw barrierResult.reason
+        if (barrierReadyResult.status === 'rejected') throw barrierReadyResult.reason
+        if (poolReadinessResult?.status === 'rejected') throw poolReadinessResult.reason
+        if (!saturationResult) throw new Error('Isolation pool saturation was not started')
+        if (saturationResult.status === 'rejected') throw saturationResult.reason
+        await assertIsolationPoolSaturation(saturationResult.value)
+        if (latencyResult?.status === 'rejected') throw latencyResult.reason
+        if (measurementResult?.status === 'rejected') throw measurementResult.reason
+        assert.ok(latency)
         assert.ok(latency.p99 !== null && latency.p99 <= isolationContract.thresholds.ssrP99Ms)
         let denied = false
         try {
@@ -188,6 +335,7 @@ export async function runIsolationFaults(context: FaultContext) {
             foregroundP99Ms: latency.p99,
             deniedStartup: denied,
             workerConnectionLimit: 8,
+            saturationHeldThroughSsr,
             foregroundConnectionLimit: 16,
             postgresGlobalLimit: 100,
         }

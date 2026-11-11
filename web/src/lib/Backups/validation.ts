@@ -60,7 +60,11 @@ export const managedRestoreResultSchema = managedBackupMaintenanceSchema
 /** Display-only fallback for an unsafe historical receipt, without invented maintenance details. */
 export const historicalRestoreMaintenanceSchema = managedRestoreResultSchema.extend({
     state: z.enum(['failed', 'interrupted']),
-    phase: managedBackupMaintenanceSchema.shape.phase.exclude(['queued', 'preparing', 'validating']),
+    phase: managedBackupMaintenanceSchema.shape.phase.exclude([
+        'queued',
+        'preparing',
+        'validating',
+    ]),
     detailsUnavailable: z.literal(true),
 })
 export const restoreMaintenanceDisplaySchema = z.union([

@@ -259,7 +259,10 @@ export async function runIsolationRole(
                 return new Response(null, { status: 204 })
             }
             if (path === '/pool' && request.method === 'POST') {
-                return readIsolationPoolSaturation(() => db.execute('select pg_sleep(1)'), stopping !== null)
+                return readIsolationPoolSaturation(
+                    () => db.execute('select pg_advisory_xact_lock(1380864088)'),
+                    stopping !== null,
+                )
             }
             if (path === '/stop' && request.method === 'POST') {
                 try {

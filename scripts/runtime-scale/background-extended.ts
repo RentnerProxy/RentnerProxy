@@ -9,6 +9,7 @@ import type { createHarness } from '../runtime-reliability/harness.ts'
 import type { FixtureResult } from '../runtime-reliability/Types/harness.types.ts'
 import type { BackgroundOptions } from './Types/background.types.ts'
 import { backgroundSnapshotSchema } from './background.validation.ts'
+import { contentionWebSchema } from './background-contention.ts'
 
 export type ExtendedRecoveryStage =
     | 'certificate-prepare'
@@ -26,6 +27,59 @@ export type ExtendedRecoveryStage =
     | 'monitoring-final-fence'
     | 'audit-replay'
     | 'budget'
+
+/** Require actual serving-worker completion, disabled/unleased policies, and stable durable history before the final fence. */
+export async function waitForMonitoringDrain(
+    readWorkerRunning: () => Promise<number>,
+    readSnapshot: () => Promise<ReturnType<typeof backgroundSnapshotSchema.parse>>,
+    waitFor: (
+        check: () => Promise<boolean>,
+        message: string,
+        timeoutMs: number,
+    ) => Promise<void>,
+    checkCancellation: () => void = () => {},
+) {
+    let previousObservations = -1
+    let stableReads = 0
+    await waitFor(
+        async () => {
+            checkCancellation()
+            const [running, snapshot] = await Promise.all([readWorkerRunning(), readSnapshot()])
+            assert.ok(Number.isSafeInteger(running) && running >= 0)
+            const drained =
+                running === 0 && snapshot.policies.every((policy) => !policy.enabled && !policy.leased)
+            if (drained && snapshot.observations.length === previousObservations) stableReads++
+            else stableReads = 0
+            previousObservations = snapshot.observations.length
+            return drained && stableReads >= 3
+        },
+        'Actual web monitoring operations drain and durable observations stop changing',
+        15000,
+    )
+}
+
+/** Read allowlisted host-monitoring running count from the authenticated web support RPC, never from the fixture process. */
+export async function readActualHostMonitoringRunning(
+    container: string,
+    docker: (args: string[], options: { timeoutMs: number }) => Promise<string>,
+) {
+    const raw = await docker(
+        [
+            'exec',
+            container,
+            'bun',
+            '--no-env-file',
+            '/opt/rentnerproxy/web/background-contention-web.js',
+        ],
+        { timeoutMs: 7000 },
+    )
+    const report = contentionWebSchema.parse(JSON.parse(raw))
+    assert.equal(report.source, 'authenticated actual web support RPC')
+    assert.ok(report.bun)
+    const worker = report.bun.workers.find((item) => item.id === 'host_monitoring')
+    assert.ok(worker)
+    return worker.running
+}
 
 /** Check cancellation between restore stages and verify the same queued certificate, exact activation, stale-write fences, and audit replay within ten minutes. */
 export async function exerciseExtendedBackgroundRecovery(
@@ -127,7 +181,18 @@ export async function exerciseExtendedBackgroundRecovery(
         (await context.fixture('background-quiesce', extra)).background,
     )
     checkCancellation()
-    await Bun.sleep(3500)
+    await waitForMonitoringDrain(
+        () =>
+            readActualHostMonitoringRunning(context.container, (args, dockerOptions) =>
+                context.docker(args, dockerOptions),
+            ),
+        async () =>
+            backgroundSnapshotSchema.parse(
+                (await context.fixture('background-read', extra)).background,
+            ),
+        context.waitFor,
+        checkCancellation,
+    )
     checkCancellation()
     onStage('monitoring-final-fence')
     const stable = backgroundSnapshotSchema.parse(

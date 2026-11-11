@@ -473,9 +473,10 @@ impl ProxyRuntime {
             None
         };
         self.recover_dns_cleanup_one(id).await;
-        if matches!(outcome, Some(FailedIssueOutcome::Cancelled)) {
-            pass.finish(Outcome::Cancelled);
-        }
+        pass.finish(match outcome {
+            Some(FailedIssueOutcome::Cancelled) => Outcome::Cancelled,
+            _ => Outcome::Failure,
+        });
     }
 
     /// Reconciles old DNS intents before allowing a new order to create proofs.

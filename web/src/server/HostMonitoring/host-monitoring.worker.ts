@@ -172,11 +172,16 @@ export function createHostMonitoringWorker<Claim>(
                     }
                     remaining -= limit
                     if (claims.length < limit) {
-                        if (claims.length === 0 && dependencies.nextAdmissionAt) {
+                        if (claims.length === 0 && running.size === 0 && dependencies.nextAdmissionAt) {
                             try {
                                 // eslint-disable-next-line no-await-in-loop -- Read durable due time only after an empty claim batch.
                                 const due = await dependencies.nextAdmissionAt()
-                                if (!signal.aborted && revision === wakeRevision)
+                                if (
+                                    !signal.aborted &&
+                                    failedClaims.size === 0 &&
+                                    running.size === 0 &&
+                                    revision === wakeRevision
+                                )
                                     pollDelayMs = Math.max(
                                         HOST_MONITORING_LIMITS.pollIntervalMs,
                                         Math.min(

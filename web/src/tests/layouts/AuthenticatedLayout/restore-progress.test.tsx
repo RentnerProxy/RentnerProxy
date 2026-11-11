@@ -256,10 +256,18 @@ test.each(['failed', 'interrupted'] as const)(
     'a historical %s restore blocks the page without inventing details or progress',
     async (state) => {
         await mount()
-        const historical = { id: running.id, operation: 'restore', state, phase: 'database', detailsUnavailable: true }
+        const historical = {
+            id: running.id,
+            operation: 'restore',
+            state,
+            phase: 'database',
+            detailsUnavailable: true,
+        }
         await deliver(historical)
         expect(container.querySelector('#restore-progress-title')).not.toBeNull()
-        expect(container.textContent).toContain('Restore failed or service recovery could not be confirmed')
+        expect(container.textContent).toContain(
+            'Restore failed or service recovery could not be confirmed',
+        )
         expect(container.textContent).toContain('Restoring the database')
         expect(progress()).toBeNull()
         expect(container.textContent).not.toContain('Kevin')
@@ -279,7 +287,13 @@ test.each(['failed', 'interrupted'] as const)(
 
 test('genuine full metadata enriches a historical restore and a later ID-only snapshot cannot erase it', async () => {
     await mount()
-    const historical = { id: running.id, operation: 'restore', state: 'failed', phase: 'database', detailsUnavailable: true }
+    const historical = {
+        id: running.id,
+        operation: 'restore',
+        state: 'failed',
+        phase: 'database',
+        detailsUnavailable: true,
+    }
     await deliver(historical)
     expect(container.querySelector('#restore-progress-title')).not.toBeNull()
     await deliver({ ...running, state: 'failed', error: 'execution_failed' })
@@ -292,12 +306,27 @@ test('genuine full metadata enriches a historical restore and a later ID-only sn
 
 test('a genuine later full recovery can retire a historical blocker despite missed intermediate snapshots', async () => {
     await mount()
-    const historical = { id: running.id, operation: 'restore', state: 'failed', phase: 'database', detailsUnavailable: true }
-    const complete = { ...running, id: uuid(95), state: 'succeeded', phase: 'complete', progressPercent: 100 }
+    const historical = {
+        id: running.id,
+        operation: 'restore',
+        state: 'failed',
+        phase: 'database',
+        detailsUnavailable: true,
+    }
+    const complete = {
+        ...running,
+        id: uuid(95),
+        state: 'succeeded',
+        phase: 'complete',
+        progressPercent: 100,
+    }
     const success = spyOn(toast, 'success').mockReturnValue('restore-feedback-fixture')
     const recovery = Promise.withResolvers<void>()
     const invalidate = spyOn(router, 'invalidate').mockImplementation(() => recovery.promise)
-    restorers.push(() => { success.mockRestore(); invalidate.mockRestore() })
+    restorers.push(() => {
+        success.mockRestore()
+        invalidate.mockRestore()
+    })
     await deliver(historical)
     expect(container.querySelector('#restore-progress-title')).not.toBeNull()
     jest.useFakeTimers()
@@ -325,8 +354,12 @@ test('a genuine later full recovery can retire a historical blocker despite miss
     }
 })
 
-async function recoveryPreflightSnapshot(fresh: boolean) {
-    const output = await runBunScript(`
+async function recoveryPreflightSnapshot(
+    fresh: boolean,
+    terminal: 'preflight' | 'complete' = 'preflight',
+) {
+    const output = await runBunScript(
+        `
         import assert from 'node:assert/strict'
         import { createHash } from 'node:crypto'
         import { mock } from 'bun:test'
@@ -373,7 +406,7 @@ async function recoveryPreflightSnapshot(fresh: boolean) {
             assert.deepEqual(await runtime.getActiveRestoreMaintenance(), { ...unsafe, detailsUnavailable: true })
             for (let tick = 0; tick < 40; tick++) await Promise.resolve()
         }
-        publication = { maintenance: failed, restoreResults: [unsafe, { id: complete.id, operation: 'restore', state: 'succeeded', phase: 'complete' }, { id: failed.id, operation: 'restore', state: 'failed', phase: 'validating' }] }
+        publication = { maintenance: '${terminal}' === 'complete' ? complete : failed, restoreResults: [unsafe, { id: complete.id, operation: 'restore', state: 'succeeded', phase: 'complete' }, ...('${terminal}' === 'complete' ? [] : [{ id: failed.id, operation: 'restore', state: 'failed', phase: 'validating' }])] }
         const request = new Request('https://proxy.example/api/live-snapshot?topic=backup-restore', { headers: { origin: 'https://proxy.example', cookie: 'rentnerproxy_session='+token } })
         const response = await getLiveSnapshotResponse(request)
         assert.equal(response.status, 200)
@@ -382,12 +415,194 @@ async function recoveryPreflightSnapshot(fresh: boolean) {
         assert.equal(controllerReads, ${fresh} ? 1 : 0)
         assert.equal((await runtime.withRestoreMaintenanceFence(new Request('https://proxy.example/change', { method: 'POST' }), async () => new Response())).status, ${fresh} ? 200 : 503)
         console.log(JSON.stringify(payload))
-    `, { cwd: new URL('../../..', import.meta.url) })
+    `,
+        { cwd: new URL('../../..', import.meta.url) },
+    )
     return JSON.parse(output.trim().split('\n').at(-1)!) as { maintenance: unknown }
 }
 
+test('historical provenance survives full failure details and accepts a verified later complete recovery', async () => {
+    const [blocked, recovered] = await Promise.all([
+        recoveryPreflightSnapshot(false),
+        recoveryPreflightSnapshot(true, 'complete'),
+    ])
+    await mount()
+    const gate = Promise.withResolvers<void>()
+    const success = spyOn(toast, 'success').mockReturnValue('verified-recovery')
+    const invalidate = spyOn(router, 'invalidate').mockImplementation(() => gate.promise)
+    restorers.push(() => {
+        success.mockRestore()
+        invalidate.mockRestore()
+    })
+    await deliver(blocked.maintenance)
+    await deliver({ ...running, state: 'failed', error: 'execution_failed' })
+    expect(progress()?.value).toBe(42)
+    jest.useFakeTimers()
+    try {
+        await deliver(recovered.maintenance)
+        expect(progress()?.value).toBe(100)
+        expect(invalidate).toHaveBeenCalledTimes(1)
+        expect(success).not.toHaveBeenCalled()
+        await act(async () => gate.resolve())
+        await act(async () => jest.advanceTimersByTime(RESTORE_COMPLETION_VISIBLE_MS))
+        expect(container.querySelector('#restore-progress-title')).toBeNull()
+        expect(success).toHaveBeenCalledTimes(1)
+        await deliver(blocked.maintenance)
+        await deliver(running)
+        expect(container.querySelector('#restore-progress-title')).toBeNull()
+    } finally {
+        gate.resolve()
+        jest.useRealTimers()
+    }
+})
+
+test('a failed preflight refresh retries without another deduplicated snapshot and keeps dismissal blocked', async () => {
+    const [blocked, recovered] = await Promise.all([
+        recoveryPreflightSnapshot(false),
+        recoveryPreflightSnapshot(true),
+    ])
+    await mount()
+    const gate = Promise.withResolvers<void>()
+    const success = spyOn(toast, 'success').mockReturnValue('unused')
+    const invalidate = spyOn(router, 'invalidate')
+        .mockRejectedValueOnce(new Error('Temporary refresh failure'))
+        .mockImplementation(() => gate.promise)
+    restorers.push(() => {
+        success.mockRestore()
+        invalidate.mockRestore()
+    })
+    await deliver(blocked.maintenance)
+    jest.useFakeTimers()
+    try {
+        await deliver(recovered.maintenance)
+        expect(invalidate).toHaveBeenCalledTimes(1)
+        expect(container.querySelector('main button')).toBeNull()
+        await act(async () => jest.advanceTimersByTime(999))
+        expect(invalidate).toHaveBeenCalledTimes(1)
+        await act(async () => jest.advanceTimersByTime(1))
+        expect(invalidate).toHaveBeenCalledTimes(2)
+        expect(container.querySelector('main button')).toBeNull()
+        expect(container.querySelector('[data-route-state]')?.closest('[hidden]')).not.toBeNull()
+        await act(async () => gate.resolve())
+        expect(progress()?.value).toBe(5)
+        expect(container.querySelector('main button')).not.toBeNull()
+        expect(success).not.toHaveBeenCalled()
+    } finally {
+        gate.resolve()
+        jest.useRealTimers()
+    }
+})
+
+test('refresh retries coalesce and back off to thirty seconds, then unmount cancels the owned wake', async () => {
+    const [blocked, recovered] = await Promise.all([
+        recoveryPreflightSnapshot(false),
+        recoveryPreflightSnapshot(true),
+    ])
+    await mount()
+    const invalidate = spyOn(router, 'invalidate').mockRejectedValue(
+        new Error('Refresh remains unavailable'),
+    )
+    restorers.push(() => invalidate.mockRestore())
+    await deliver(blocked.maintenance)
+    jest.useFakeTimers()
+    try {
+        await deliver(recovered.maintenance)
+        let attempts = 1
+        for (const wait of [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000]) {
+            await act(async () => jest.advanceTimersByTime(wait - 1))
+            expect(invalidate).toHaveBeenCalledTimes(attempts)
+            await act(async () => jest.advanceTimersByTime(1))
+            expect(invalidate).toHaveBeenCalledTimes(++attempts)
+            expect(progress()).toBeNull()
+            expect(container.querySelector('main button')).toBeNull()
+            expect(
+                container.querySelector('[data-route-state]')?.closest('[hidden]'),
+            ).not.toBeNull()
+        }
+        await act(async () => root?.unmount())
+        root = null
+        await act(async () => jest.advanceTimersByTime(60_000))
+        expect(invalidate).toHaveBeenCalledTimes(attempts)
+    } finally {
+        jest.useRealTimers()
+    }
+})
+
+test('a newer restore cancels a failed refresh wake and clears the old historical recovery eligibility', async () => {
+    const [blocked, recovered] = await Promise.all([
+        recoveryPreflightSnapshot(false),
+        recoveryPreflightSnapshot(true),
+    ])
+    await mount()
+    const invalidate = spyOn(router, 'invalidate').mockRejectedValue(
+        new Error('Refresh unavailable'),
+    )
+    restorers.push(() => invalidate.mockRestore())
+    await deliver(blocked.maintenance)
+    jest.useFakeTimers()
+    try {
+        await deliver(recovered.maintenance)
+        const newer = { ...running, id: uuid(93), progressPercent: 44 }
+        await deliver(newer)
+        await act(async () => jest.advanceTimersByTime(60_000))
+        expect(invalidate).toHaveBeenCalledTimes(1)
+        expect(progress()?.value).toBe(44)
+        await deliver(recovered.maintenance)
+        await deliver({
+            ...running,
+            id: uuid(94),
+            state: 'succeeded',
+            phase: 'complete',
+            progressPercent: 100,
+        })
+        expect(progress()?.value).toBe(44)
+        expect(invalidate).toHaveBeenCalledTimes(1)
+    } finally {
+        jest.useRealTimers()
+    }
+})
+
+test('a failed completed-recovery refresh retries without another snapshot and waits for actual route recovery', async () => {
+    const [blocked, recovered] = await Promise.all([
+        recoveryPreflightSnapshot(false),
+        recoveryPreflightSnapshot(true, 'complete'),
+    ])
+    await mount()
+    const gate = Promise.withResolvers<void>()
+    const success = spyOn(toast, 'success').mockReturnValue('verified-recovery')
+    const invalidate = spyOn(router, 'invalidate')
+        .mockRejectedValueOnce(new Error('Temporary refresh failure'))
+        .mockImplementation(() => gate.promise)
+    restorers.push(() => {
+        success.mockRestore()
+        invalidate.mockRestore()
+    })
+    await deliver(blocked.maintenance)
+    await deliver({ ...running, state: 'failed', error: 'execution_failed' })
+    jest.useFakeTimers()
+    try {
+        await deliver(recovered.maintenance)
+        expect(progress()?.value).toBe(100)
+        expect(success).not.toHaveBeenCalled()
+        await act(async () => jest.advanceTimersByTime(1_000))
+        expect(invalidate).toHaveBeenCalledTimes(2)
+        await act(async () => jest.advanceTimersByTime(RESTORE_COMPLETION_VISIBLE_MS))
+        expect(container.querySelector('#restore-progress-title')).not.toBeNull()
+        expect(success).not.toHaveBeenCalled()
+        await act(async () => gate.resolve())
+        expect(container.querySelector('#restore-progress-title')).toBeNull()
+        expect(success).toHaveBeenCalledTimes(1)
+    } finally {
+        gate.resolve()
+        jest.useRealTimers()
+    }
+})
+
 test('a root-proven recovery hidden by a later preflight failure refreshes caches before dismissal without a success toast', async () => {
-    const [blocked, recovered] = await Promise.all([recoveryPreflightSnapshot(false), recoveryPreflightSnapshot(true)])
+    const [blocked, recovered] = await Promise.all([
+        recoveryPreflightSnapshot(false),
+        recoveryPreflightSnapshot(true),
+    ])
     await mount()
     const route = container.querySelector('[data-route-state]')!
     client.setQueryData(['before-hidden-recovery'], 'stale')
@@ -396,7 +611,12 @@ test('a root-proven recovery hidden by a later preflight failure refreshes cache
     const invalidate = spyOn(router, 'invalidate').mockImplementation(() => gate.promise)
     const cancel = spyOn(client, 'cancelQueries')
     const clear = spyOn(client, 'clear')
-    restorers.push(() => { success.mockRestore(); invalidate.mockRestore(); cancel.mockRestore(); clear.mockRestore() })
+    restorers.push(() => {
+        success.mockRestore()
+        invalidate.mockRestore()
+        cancel.mockRestore()
+        clear.mockRestore()
+    })
     try {
         await deliver(blocked.maintenance)
         expect(container.querySelector('#restore-progress-title')).not.toBeNull()
@@ -422,14 +642,21 @@ test('a root-proven recovery hidden by a later preflight failure refreshes cache
         await deliver(recovered.maintenance)
         expect(container.querySelector('#restore-progress-title')).toBeNull()
         expect(success).not.toHaveBeenCalled()
-    } finally { gate.resolve() }
+    } finally {
+        gate.resolve()
+    }
 })
 
 test('failed hidden-recovery refresh retains the blocker and retries the same root-authorized snapshot', async () => {
-    const [blocked, recovered] = await Promise.all([recoveryPreflightSnapshot(false), recoveryPreflightSnapshot(true)])
+    const [blocked, recovered] = await Promise.all([
+        recoveryPreflightSnapshot(false),
+        recoveryPreflightSnapshot(true),
+    ])
     await mount()
     const gate = Promise.withResolvers<void>()
-    const invalidate = spyOn(router, 'invalidate').mockRejectedValueOnce(new Error('Refresh unavailable')).mockImplementation(() => gate.promise)
+    const invalidate = spyOn(router, 'invalidate')
+        .mockRejectedValueOnce(new Error('Refresh unavailable'))
+        .mockImplementation(() => gate.promise)
     restorers.push(() => invalidate.mockRestore())
     try {
         await deliver(blocked.maintenance)
@@ -443,11 +670,16 @@ test('failed hidden-recovery refresh retains the blocker and retries the same ro
         await act(async () => gate.resolve())
         expect(progress()?.value).toBe(5)
         expect(container.querySelector('main button')).not.toBeNull()
-    } finally { gate.resolve() }
+    } finally {
+        gate.resolve()
+    }
 })
 
 test('hidden-recovery refresh cannot overwrite a newer restore or revive its retired predecessor', async () => {
-    const [blocked, recovered] = await Promise.all([recoveryPreflightSnapshot(false), recoveryPreflightSnapshot(true)])
+    const [blocked, recovered] = await Promise.all([
+        recoveryPreflightSnapshot(false),
+        recoveryPreflightSnapshot(true),
+    ])
     await mount()
     const gate = Promise.withResolvers<void>()
     const invalidate = spyOn(router, 'invalidate').mockImplementation(() => gate.promise)
@@ -466,7 +698,9 @@ test('hidden-recovery refresh cannot overwrite a newer restore or revive its ret
         expect(progress()?.value).toBe(43)
         expect(container.querySelector('main button')).toBeNull()
         expect(invalidate).toHaveBeenCalledTimes(1)
-    } finally { gate.resolve() }
+    } finally {
+        gate.resolve()
+    }
 })
 
 test('restore preserves the route, search, scroll and mounted drafts until confirmed cache refresh completes', async () => {

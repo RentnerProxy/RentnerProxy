@@ -92,7 +92,8 @@ export async function readSubscriptionSnapshot(
     }
     responseAbort.cleanup()
     if (!response.ok) {
-        void response.body?.cancel().catch(() => undefined)
+        const cancelling = response.body?.cancel().catch(() => undefined)
+        if (cancelling) trackWork?.(cancelling)
         return { kind: 'failure', status: response.status }
     }
     const bodyAbort = abortable<unknown>(signal, () => {

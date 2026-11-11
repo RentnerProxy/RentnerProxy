@@ -889,9 +889,14 @@ async function evaluateIsolation(options: IsolationOptions, signal: AbortSignal)
                           },
                           spawnRole: (role, denied) =>
                               spawnRole(role, network.port!, denied, signal, owned),
-                          request: (child, path, method) => {
+                          request: (child, path, method, requestSignal) => {
                               signal.throwIfAborted()
-                              return request(child, path, method, signal)
+                              return request(
+                                  child,
+                                  path,
+                                  method,
+                                  requestSignal ? AbortSignal.any([signal, requestSignal]) : signal,
+                              )
                           },
                           stopChild,
                           bounded,

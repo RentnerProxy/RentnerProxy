@@ -181,6 +181,7 @@ export async function runMonitoringCapacity(options: MonitoringScaleOptions) {
         { HOST_MONITORING_LIMITS },
         { BACKGROUND_DATABASE_POLICY },
         { settleWorkerTasks },
+        { HostMonitoringCleanupError },
     ] = await Promise.all([
         import('../../web/src/db/index.ts'),
         import('../../web/src/db/schema.ts'),
@@ -192,6 +193,7 @@ export async function runMonitoringCapacity(options: MonitoringScaleOptions) {
         import('../../web/src/config/host-monitoring.config.ts'),
         import('../../web/src/config/background-resources.config.ts'),
         import('../../web/src/server/Foundation/worker-lifecycle.server.ts'),
+        import('../../web/src/server/HostMonitoring/Types/host-monitoring-worker.types.ts'),
     ])
     const { hostCheckPolicies, hostCheckObservations, proxyHosts, redirectHosts, hostDomains } =
         schema
@@ -464,7 +466,13 @@ export async function runMonitoringCapacity(options: MonitoringScaleOptions) {
                 }),
             complete: (claim, outcome, before, signal) =>
                 complete({ claim, outcome, before, signal }),
-            release,
+            release: async (claim) => {
+                try {
+                    return await release(claim)
+                } catch (cause) {
+                    throw new HostMonitoringCleanupError(cause)
+                }
+            },
         })
         worker = createHostMonitoringWorker({
             claim: (limit) => {

@@ -31,9 +31,15 @@ const maintenance = {
 
 test('historical display receipts are strict and cannot widen persisted maintenance or journal contracts', () => {
     const historical = {
-        id: maintenance.id, operation: 'restore', state: 'failed', phase: 'database', detailsUnavailable: true,
+        id: maintenance.id,
+        operation: 'restore',
+        state: 'failed',
+        phase: 'database',
+        detailsUnavailable: true,
     } as const
-    expect(backupRestoreSnapshotSchema.parse({ maintenance: historical })).toEqual({ maintenance: historical })
+    expect(backupRestoreSnapshotSchema.parse({ maintenance: historical })).toEqual({
+        maintenance: historical,
+    })
     expect(backupRestoreSnapshotSchema.parse({ maintenance })).toEqual({ maintenance })
     expect(managedBackupMaintenanceSchema.safeParse(historical).success).toBe(false)
     expect(managedRestoreResultSchema.safeParse(historical).success).toBe(false)
@@ -45,8 +51,12 @@ test('historical display receipts are strict and cannot widen persisted maintena
         { ...historical, state: 'succeeded', phase: 'complete' },
         { ...historical, detailsUnavailable: false },
         { ...historical, id: 'not-a-restore-id' },
-    ]) expect(backupRestoreSnapshotSchema.safeParse({ maintenance: invalid }).success).toBe(false)
-    expect(backupRestoreSnapshotSchema.safeParse({ maintenance: historical, privateState: true }).success).toBe(false)
+    ])
+        expect(backupRestoreSnapshotSchema.safeParse({ maintenance: invalid }).success).toBe(false)
+    expect(
+        backupRestoreSnapshotSchema.safeParse({ maintenance: historical, privateState: true })
+            .success,
+    ).toBe(false)
 })
 
 test('restore snapshots use application access and disclose only maintenance; fenced reads use only cached authentication', async () => {
@@ -155,7 +165,13 @@ test('restore snapshots use application access and disclose only maintenance; fe
     expect(result.afterFence).toEqual(result.beforeFence)
     expect(result.historicalViewer.status).toBe(200)
     expect(backupRestoreSnapshotSchema.parse(JSON.parse(result.historicalViewer.body))).toEqual({
-        maintenance: { id: maintenance.id, operation: 'restore', state: 'failed', phase: 'database', detailsUnavailable: true },
+        maintenance: {
+            id: maintenance.id,
+            operation: 'restore',
+            state: 'failed',
+            phase: 'database',
+            detailsUnavailable: true,
+        },
     })
     expect(result.afterHistorical).toEqual(result.beforeFence)
     expect(result.invalidProgress).toMatchObject({ status: 503, body: '' })

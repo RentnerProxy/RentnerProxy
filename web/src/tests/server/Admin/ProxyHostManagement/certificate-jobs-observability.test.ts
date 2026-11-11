@@ -1,6 +1,91 @@
 import { expect, test } from 'bun:test'
 import { runBunScript } from '@/tests/Helpers/runBunScript.ts'
 
+test.each([
+    ['in-flight', 'admission'],
+    ['late claims', 'admission'],
+    ['in-flight', 'sql'],
+    ['late claims', 'sql'],
+] as const)(
+    'owned certificate cleanup failure fences restore and recovers only after the original SQL fence: %s / %s',
+    async (phase, failureKind) => {
+        const output = await runBunScript(
+            `
+            import assert from 'node:assert/strict'
+            import { mock } from 'bun:test'
+            process.env.DATABASE_URL = 'postgresql://unit:unit@127.0.0.1:1/rentnerproxy_unit'
+            mock.module('@tanstack/react-start/server-only', () => ({}))
+            const { ResourceAdmissionError } = await import('./server/Foundation/resource-admission.ts')
+            const failure = '${failureKind}' === 'admission' ? new ResourceAdmissionError('busy') : new Error('release SQL failed')
+            const entered = Promise.withResolvers(), claimsReady = Promise.withResolvers(), cleanup = Promise.withResolvers()
+            const jobs = Array.from({ length: 4 }, (_, index) => ({ id: 'job-' + index, certificateId: 'cert-' + index, leaseToken: 'original-' + index }))
+            const leases = new Map(jobs.map(job => [job.id, job.leaseToken]))
+            let claims = 0, reads = 0, releases = 0, healthy = false, settled = false
+            mock.module('./server/Admin/ProxyHostManagement/certificate-jobs.lease.server.ts', () => ({
+                claimCertificateJob: async () => {
+                    const job = jobs[claims++] ?? null
+                    if ('${phase}' === 'late claims' && claims === 4) entered.resolve()
+                    if ('${phase}' === 'late claims') await claimsReady.promise
+                    return job
+                },
+                withCertificateJobClaim: async (job, work) => work({}, job),
+                releaseCertificateJob: async (job) => {
+                    releases++
+                    assert.equal(job, jobs.find(original => original.id === job.id))
+                    await cleanup.promise
+                    if (job === jobs[0] && !healthy) throw failure
+                    if (leases.get(job.id) === job.leaseToken) leases.delete(job.id)
+                },
+            }))
+            mock.module('./server/Admin/ProxyHostManagement/certificate-jobs.storage.server.ts', () => ({
+                CertificateJobDomainError: class extends Error {}, certificateJobDigest: () => '', validateCertificateJobContext: async () => {},
+            }))
+            const unexpected = async () => { throw new Error('Cancelled work must not bind or persist metadata') }
+            mock.module('./server/Admin/CertificateManagement/certificate-metadata.persistence.ts', () => ({ persistControllerCertificatesMetadataInTransaction: unexpected }))
+            mock.module('./server/Admin/ProxyHostManagement/certificate-jobs.binding.server.ts', () => ({
+                certificateJobRuntime: {}, bindIssuedJobCertificate: unexpected, confirmJobRuntime: unexpected,
+            }))
+            mock.module('./server/Controller/certificates.server.ts', () => ({
+                issueControllerCertificate: async () => { throw new Error('unexpected issue') },
+                renewControllerCertificate: async () => { throw new Error('unexpected renew') },
+                getControllerCertificate: async (_id, signal) => {
+                    if (++reads === 4) entered.resolve()
+                    return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }))
+                },
+            }))
+            const { startCertificateJobWorker, stopCertificateJobWorker, runCertificateJobsOnce } = await import('./server/Admin/ProxyHostManagement/certificate-jobs.worker.server.ts')
+            startCertificateJobWorker()
+            await entered.promise
+            const stopped = stopCertificateJobWorker()
+            void stopped.then(() => { settled = true }, () => { settled = true })
+            claimsReady.resolve()
+            await Bun.sleep(0)
+            assert.equal(settled, false)
+            assert.equal(releases, 4)
+            cleanup.resolve()
+            await assert.rejects(stopped, error => error.cause === failure)
+            await assert.rejects(stopCertificateJobWorker(), error => error.cause === failure)
+            assert.deepEqual([...leases], [[jobs[0].id, jobs[0].leaseToken]])
+            await assert.rejects(runCertificateJobsOnce(), error => error.cause === failure)
+            assert.equal(claims, 4) // No admission while an earlier lease remains owned.
+            healthy = true
+            leases.set(jobs[0].id, 'newer-token')
+            assert.equal(await runCertificateJobsOnce(), 'deferred')
+            await stopCertificateJobWorker()
+            await assert.rejects(stopped, error => error.cause === failure)
+            assert.deepEqual([...leases], [[jobs[0].id, 'newer-token']])
+            console.log(JSON.stringify({ claims, releases, originalStopFailed: true }))
+        `,
+            { cwd: new URL('../../../..', import.meta.url) },
+        )
+        expect(JSON.parse(output.trim().split('\n').at(-1)!)).toEqual({
+            claims: 8,
+            releases: 6,
+            originalStopFailed: true,
+        })
+    },
+)
+
 test.each(['in-flight', 'late claims'] as const)(
     'cancelled certificate cleanup retains SQL admission, claim fences and all sibling drains: %s',
     async (phase) => {
@@ -105,13 +190,14 @@ test.each([
     { reason: 'deadline', cleanupFails: false },
     { reason: 'busy', cleanupFails: true },
 ])(
-    'critical SQL pressure defers an owned job without changing controller errors or retry intent: %j',
+    'critical SQL pressure preserves job intent and rejects an unconfirmed owned release: %j',
     async ({ reason, cleanupFails }) => {
         const output = await runBunScript(
             `
             import { mock } from 'bun:test'
             process.env.DATABASE_URL = 'postgresql://unit:unit@127.0.0.1:1/rentnerproxy_unit'
             const { ResourceAdmissionError } = await import('./server/Foundation/resource-admission.ts')
+            const cleanupError = new ResourceAdmissionError('deadline')
             const job = { id: 'job', certificateId: 'certificate', stage: 'issuing', lastErrorCode: 'retained_provider_error', retryRequested: true, leaseToken: 'owned' }
             let claimed = false, network = 0
             const patches = []
@@ -120,7 +206,7 @@ test.each([
                 withCertificateJobClaim: async () => { throw new ResourceAdmissionError('${reason}') },
                 releaseCertificateJob: async (_, changes) => {
                     patches.push(changes)
-                    if (${cleanupFails}) throw new ResourceAdmissionError('deadline')
+                    if (${cleanupFails}) throw cleanupError
                     Object.assign(job, changes, { leaseToken: null })
                 },
             }))
@@ -131,15 +217,22 @@ test.each([
             const { workerObservability } = await import('./server/Foundation/worker-observability.ts')
             const { observeWorkerOperation } = await import('./server/Foundation/worker-operation.ts')
             const { runCertificateJobsOnce } = await import('./server/Admin/ProxyHostManagement/certificate-jobs.worker.server.ts')
-            const outcome = await observeWorkerOperation('certificate_jobs', () => runCertificateJobsOnce(), undefined, value => value)
+            let outcome = null, cleanupFailure = null
+            try {
+                outcome = await observeWorkerOperation('certificate_jobs', () => runCertificateJobsOnce(), undefined, value => value)
+            } catch (error) {
+                if (!${cleanupFails}) throw error
+                cleanupFailure = { typed: error.name === 'CertificateJobCleanupError', sameCause: error.cause === cleanupError }
+            }
             const worker = workerObservability.snapshot().workers.find(value => value.id === 'certificate_jobs')
-            console.log(JSON.stringify({ outcome, job, patches, network, counters: worker.counters, lastSuccessAt: worker.lastSuccessAt }))
+            console.log(JSON.stringify({ outcome, cleanupFailure, job, patches, network, counters: worker.counters, lastSuccessAt: worker.lastSuccessAt }))
         `,
             { cwd: new URL('../../../..', import.meta.url) },
         )
         const result = JSON.parse(output.trim().split('\n').at(-1)!)
         expect(result).toMatchObject({
-            outcome: 'deferred',
+            outcome: cleanupFails ? null : 'deferred',
+            cleanupFailure: cleanupFails ? { typed: true, sameCause: true } : null,
             network: 0,
             patches: [{}],
             lastSuccessAt: null,
@@ -150,11 +243,11 @@ test.each([
                 leaseToken: cleanupFails ? 'owned' : null,
             },
             counters: {
-                deferred: 1,
-                failure: 0,
+                deferred: cleanupFails ? 0 : 1,
+                failure: cleanupFails ? 1 : 0,
                 success: 0,
-                retry: cleanupFails ? 2 : 1,
-                admissionRejected: cleanupFails ? 2 : 1,
+                retry: 1,
+                admissionRejected: 1,
             },
         })
     },
