@@ -25,6 +25,11 @@ import { writeDiscoveryRegistry } from './discovery-storage.server.ts'
 import { appendAuditEventInTransactionService } from '@/server/Audit/audit.service.ts'
 import { readProxyRuntimeSnapshot } from '@/server/ProxyRuntime/proxy-runtime-data.ts'
 import { ProxyRuntimeSnapshotError } from '@/server/ProxyRuntime/proxy-runtime-snapshot.ts'
+import { lockMonitoring } from '@/server/HostMonitoring/host-monitoring.storage.ts'
+import {
+    lockNotificationConfiguration,
+    lockNotificationRuntime,
+} from '@/server/Notifications/notification-storage.ts'
 
 /** Revalidates the delegated actor's complete host-management grant in the write transaction. */
 export async function requireDiscoveryReconcilePermissions(
@@ -81,6 +86,13 @@ export async function reconcileDiscoveryInTransaction(
     registry.error = null
     const inventory = await readDiscoveryInventory(transaction, snapshot)
     const plan = createDiscoveryPlan(snapshot, registry, inventory)
+    if (plan.changes.length > 0) {
+        // Savepoints retain earlier candidates' audit locks. Acquire every later
+        // monitoring/notification lock first, under the caller's runtime-settings lock.
+        if (plan.changes.some((change) => change.host)) await lockMonitoring(transaction)
+        await lockNotificationConfiguration(transaction)
+        await lockNotificationRuntime(transaction)
+    }
     const endpoint = snapshot.configuration.settings.endpoint
     const present = new Set(
         snapshot.candidates.map((candidate) =>
