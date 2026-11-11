@@ -116,7 +116,11 @@ export function createDiscoveryObserver(dependencies: DiscoveryObserverDependenc
     const scheduler = createDiscoveryWorker(
         async (signal, force) => {
             try {
-                if (force) enabled = await dependencies.enabled()
+                if (force) {
+                    enabled = await dependencies.enabled()
+                    // A completed durable disable supersedes pending intent; cancellation alone does not.
+                    if (!enabled) finalizationFailure = null
+                }
                 if (!enabled || signal.aborted) {
                     stopWatch()
                     pending = null

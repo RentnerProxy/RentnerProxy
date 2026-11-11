@@ -1,6 +1,7 @@
 // oxlint-disable no-await-in-loop -- Observe the serialized status polls before changing the root fixture.
 import { afterEach, expect, mock, test } from 'bun:test'
 import type { ManagedBackupMaintenance } from '@/lib/Backups/Types/backups.types.ts'
+import { advanceRestoreAdmission } from '@/server/Backups/restore-admission.ts'
 
 const original: ManagedBackupMaintenance = {
     id: '01900000-0000-7000-8000-000000000001',
@@ -44,6 +45,28 @@ async function waitForRead() {
     while (read.mock.calls.length === previous && Date.now() < until) await Bun.sleep(1)
     expect(read.mock.calls.length).toBeGreaterThan(previous)
 }
+
+test('the shared admission decision preserves missing evidence and never mutates its previous cursor', () => {
+    const previous = new Set([original.id])
+    const observation = { maintenance: null, restoreResults: [] }
+    expect([...advanceRestoreAdmission(previous, observation)]).toEqual([original.id])
+    expect([...previous]).toEqual([original.id])
+    expect(observation).toEqual({ maintenance: null, restoreResults: [] })
+    const exhausted = new Set(
+        Array.from(
+            { length: 100 },
+            (_, index) => `01900000-0000-7000-8000-${index.toString(16).padStart(12, '0')}`,
+        ),
+    )
+    const before = [...exhausted]
+    expect(() =>
+        advanceRestoreAdmission(exhausted, {
+            maintenance: { ...original, id: '01900000-0000-7000-8000-000000999999' },
+            restoreResults: [],
+        }),
+    ).toThrow('restore_admission_history_exhausted')
+    expect([...exhausted]).toEqual(before)
+})
 
 test('an overwritten pre-destructive failure admits startup using its original root receipt', async () => {
     maintenance = original

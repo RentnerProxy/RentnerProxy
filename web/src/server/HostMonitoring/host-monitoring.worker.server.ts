@@ -25,6 +25,7 @@ import type {
     HostMonitoringCompletion,
 } from './Types/host-monitoring.repository.types.ts'
 import type { HostMonitoringProbeContext } from './Types/host-monitoring-probe.types.ts'
+import { HostMonitoringCleanupError } from './Types/host-monitoring-worker.types.ts'
 
 const readContext = createHostMonitoringBatcher<
     HostMonitoringClaim,
@@ -52,7 +53,7 @@ const complete = createHostMonitoringBatcher<HostMonitoringCompletion, boolean>(
 })
 
 // Coalesce a cancelled 64-probe flight into one fenced transaction within the drain budget.
-const release = createHostMonitoringBatcher<HostMonitoringClaim, boolean>({
+const releaseBatch = createHostMonitoringBatcher<HostMonitoringClaim, boolean>({
     size: HOST_MONITORING_LIMITS.workerConcurrency,
     delayMs: 0,
     /** Keep repeated policies in separate ordered transactions so every old/new token retains its own fence and result. */
@@ -98,6 +99,12 @@ const release = createHostMonitoringBatcher<HostMonitoringClaim, boolean>({
         return results
     },
 })
+
+/** Retain failed cleanup ownership separately from ordinary probe errors, without bypassing SQL admission or changing claim fences. */
+const release = (claim: HostMonitoringClaim) =>
+    releaseBatch(claim).catch((cause: unknown) => {
+        throw new HostMonitoringCleanupError(cause)
+    })
 
 export const hostMonitoringWorker = createHostMonitoringWorker({
     claim: (limit) =>

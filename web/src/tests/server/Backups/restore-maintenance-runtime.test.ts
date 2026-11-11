@@ -1,5 +1,6 @@
 import { expect, mock, test } from 'bun:test'
 import { createHash } from 'node:crypto'
+import { runBunScript } from '@/tests/Helpers/runBunScript.ts'
 
 import type { ManagedBackupMaintenance } from '@/lib/Backups/Types/backups.types.ts'
 
@@ -37,6 +38,7 @@ const rename = mock(async (_from: string, _to: string) => undefined)
 mock.module('node:fs/promises', () => ({ open, rename, unlink: async () => undefined }))
 mock.module('@/server/Backups/restore-maintenance-status.server.ts', () => ({
     readRestoreMaintenanceStatus: async () => status,
+    readRestoreMaintenanceObservation: async () => ({ maintenance: status, restoreResults: [] }),
 }))
 mock.module('@/server/Foundation/worker-lifecycle.server.ts', () => ({
     stopWorkersForRestoreMaintenance: stopWorkers,
@@ -48,6 +50,151 @@ mock.module('@/db/index.ts', () => ({
 
 const runtime = await import('@/server/Backups/restore-maintenance.server.ts')
 const next = async () => new Response('normal operation')
+
+async function runtimeProbe(script: string) {
+    return runBunScript(
+        `
+        import assert from 'node:assert/strict'
+        import { mock } from 'bun:test'
+        mock.module('@tanstack/react-start/server-only', () => ({}))
+        const original = ${JSON.stringify(initial)}
+        const unsafe = { id: original.id, operation: 'restore', state: 'failed', phase: 'database' }
+        const recovery = { ...original, id: '01900000-0000-7000-8000-000000000000', state: 'succeeded', phase: 'complete' }
+        const deleted = { ...original, id: '01900000-0000-7000-8000-000000000005', operation: 'delete', state: 'succeeded' }
+        let observation = { maintenance: deleted, restoreResults: [unsafe] }
+        const acknowledged = Promise.withResolvers()
+        const calls = { reads: 0, stops: 0, closes: 0, prepares: 0, writes: 0, acknowledgements: [] }
+        mock.module('./server/Backups/restore-maintenance-status.server.ts', () => ({
+            readRestoreMaintenanceStatus: async () => { calls.reads++; return observation.maintenance },
+            readRestoreMaintenanceObservation: async () => { calls.reads++; return observation },
+        }))
+        mock.module('./server/Foundation/worker-lifecycle.server.ts', () => ({ stopWorkersForRestoreMaintenance: async () => { calls.stops++ } }))
+        mock.module('./db/index.ts', () => ({
+            db: { execute: async () => { calls.prepares++; return [] } },
+            closeDatabaseForRestoreMaintenance: async () => { calls.closes++ },
+        }))
+        // Load the builtin namespace before replacing its private acknowledgement IO.
+        await import('node:fs/promises')
+        mock.module('node:fs/promises', () => ({
+            open: async () => ({ writeFile: async text => { calls.acknowledgements.push(JSON.parse(text).id); acknowledged.resolve() }, sync: async () => {}, close: async () => {} }),
+            rename: async () => {}, unlink: async () => {},
+        }))
+        const runtime = await import('./server/Backups/restore-maintenance.server.ts')
+        const flush = async () => { for (let index = 0; index < 40; index++) await Promise.resolve() }
+        const mutation = new Request('http://localhost/change', { method: 'POST' })
+        const next = async () => { calls.writes++; return new Response('admitted') }
+        ${script}
+        console.log(JSON.stringify(calls))
+    `,
+        { cwd: new URL('../../..', import.meta.url) },
+    )
+}
+
+test.each(['fresh delete', 'fresh preflight', 'observed delete'] as const)(
+    'HTTP admission retains a hidden destructive restore across %s and later operations',
+    async (scenario) => {
+        const output = await runtimeProbe(`
+            if ('${scenario}' === 'observed delete') {
+                observation = { maintenance: original, restoreResults: [] }
+                assert.equal((await runtime.getActiveRestoreMaintenance()).id, original.id)
+                await flush()
+                observation = { maintenance: deleted, restoreResults: [unsafe] }
+            }
+            if ('${scenario}' === 'fresh preflight') observation.maintenance = { ...recovery, state: 'failed', phase: 'validating' }
+            const active = await runtime.getActiveRestoreMaintenance()
+            await flush()
+            assert.equal(runtime.isRestoreMaintenanceFenced(), true)
+            assert.equal((await runtime.withRestoreMaintenanceFence(mutation, next)).status, 503)
+            assert.equal(calls.writes, 0)
+            assert.equal(calls.stops, 1)
+            assert.equal(calls.closes, 1)
+            await acknowledged.promise
+            assert.deepEqual(calls.acknowledgements, [unsafe.id])
+            if ('${scenario}' === 'observed delete') assert.equal(active.id, unsafe.id)
+            else assert.equal(active, null) // An ID-only receipt cannot invent the old actor/artifact.
+            observation = { maintenance: { ...recovery, state: 'failed', phase: 'validating' }, restoreResults: [unsafe] }
+            assert.equal((await runtime.withRestoreMaintenanceFence(mutation, next)).status, 503)
+            observation = { maintenance: recovery, restoreResults: [unsafe, recovery] }
+            assert.equal((await runtime.withRestoreMaintenanceFence(mutation, next)).status, 503)
+            assert.equal(runtime.isRestoreMaintenanceFenced(), true) // This old process already closed SQL.
+            assert.equal(calls.writes, 0)
+        `)
+        expect(JSON.parse(output.trim().split('\n').at(-1)!)).toMatchObject({
+            stops: 1,
+            closes: 1,
+            writes: 0,
+        })
+    },
+)
+
+test('a first verified snapshot with a later complete recovery admits HTTP despite an older failure', async () => {
+    const output = await runtimeProbe(`
+        observation.restoreResults.push(recovery)
+        assert.equal(await runtime.getActiveRestoreMaintenance(), null)
+        assert.equal(calls.reads, 1)
+        assert.equal(runtime.isRestoreMaintenanceFenced(), false)
+        assert.equal((await runtime.withRestoreMaintenanceFence(mutation, next)).status, 200)
+        assert.equal(calls.stops, 0)
+        assert.equal(calls.closes, 0)
+    `)
+    expect(JSON.parse(output.trim().split('\n').at(-1)!)).toMatchObject({
+        writes: 1,
+        stops: 0,
+        closes: 0,
+    })
+})
+
+test('a new process prepares the replacement restore while restarting and releases only after complete recovery', async () => {
+    const output = await runtimeProbe(`
+        const restarting = { ...recovery, state: 'running', phase: 'restarting' }
+        observation.maintenance = restarting
+        assert.equal((await runtime.getActiveRestoreMaintenance()).id, restarting.id)
+        await flush()
+        assert.equal((await runtime.withRestoreMaintenanceFence(mutation, next)).status, 503)
+        observation.maintenance = { ...restarting, state: 'failed' }
+        assert.equal((await runtime.withRestoreMaintenanceFence(mutation, next)).status, 503)
+        assert.equal((await runtime.withRestoreMaintenanceFence(new Request('http://localhost/health/ready'), next)).status, 200)
+        assert.equal(calls.stops, 0)
+        assert.equal(calls.closes, 0)
+        assert.deepEqual(calls.acknowledgements, [])
+        observation = { maintenance: recovery, restoreResults: [unsafe, recovery] }
+        assert.equal(await runtime.getActiveRestoreMaintenance(), null)
+        assert.equal((await runtime.withRestoreMaintenanceFence(mutation, next)).status, 200)
+        assert.equal(runtime.isRestoreMaintenanceFenced(), false)
+        assert.equal(calls.stops, 0)
+        assert.equal(calls.closes, 0)
+    `)
+    expect(JSON.parse(output.trim().split('\n').at(-1)!)).toMatchObject({
+        writes: 2,
+        stops: 0,
+        closes: 0,
+    })
+})
+
+test('a proven preflight failure permits the next operation to prepare and quiesce under its own ID', async () => {
+    const output = await runtimeProbe(`
+        observation = { maintenance: original, restoreResults: [] }
+        await runtime.getActiveRestoreMaintenance()
+        await flush()
+        const nextRestore = { ...original, id: recovery.id }
+        observation = { maintenance: nextRestore, restoreResults: [{ ...unsafe, phase: 'validating' }] }
+        assert.equal((await runtime.getActiveRestoreMaintenance()).id, nextRestore.id)
+        await flush()
+        assert.equal((await runtime.withRestoreMaintenanceFence(mutation, next)).status, 503)
+        assert.equal(calls.stops, 0)
+        observation.maintenance = { ...nextRestore, state: 'running', phase: 'quiescing' }
+        await runtime.getActiveRestoreMaintenance()
+        await acknowledged.promise
+        assert.deepEqual(calls.acknowledgements, [nextRestore.id])
+        assert.equal(calls.stops, 1)
+        assert.equal(calls.closes, 1)
+    `)
+    expect(JSON.parse(output.trim().split('\n').at(-1)!)).toMatchObject({
+        stops: 1,
+        closes: 1,
+        writes: 0,
+    })
+})
 
 test('validation failures release the admission fence without stopping services; destructive acknowledgement follows an actual drain', async () => {
     const viewer = new Request('http://localhost/api/live-snapshot', {

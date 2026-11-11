@@ -9,12 +9,15 @@ import { PERMISSIONS, SYSTEM_ROLES } from '@/config/permissions.config.ts'
 import type { ManagedBackupMaintenance } from '@/lib/Backups/Types/backups.types.ts'
 import { createRestoreMaintenanceFence } from './restore-maintenance-fence.ts'
 import { stopWorkersForRestoreMaintenance } from '@/server/Foundation/worker-lifecycle.server.ts'
-import { readRestoreMaintenanceStatus } from './restore-maintenance-status.server.ts'
+import { readRestoreMaintenanceObservation } from './restore-maintenance-status.server.ts'
+import { advanceRestoreAdmission, isDestructiveRestore } from './restore-admission.ts'
 
 const directory = '/run/rentnerproxy/maintenance'
 let lastMaintenance: ManagedBackupMaintenance | null = null
 let restartingBootstrap = false
 let destructivelyQuiesced = false
+let waiting = new Set<string>()
+let fenceOperationId: string | null = null
 
 async function readViewerSessions() {
     const { db } = await import('@/db/index.ts')
@@ -77,44 +80,73 @@ let polling: Promise<void> | null = null
 let timer: ReturnType<typeof setInterval> | null = null
 
 async function pollMaintenance(): Promise<void> {
-    const status = await readRestoreMaintenanceStatus()
-    if (status?.operation === 'restore') {
-        lastMaintenance = status
-        if (!fence.isFenced() && status.state !== 'succeeded' && status.phase === 'restarting')
-            restartingBootstrap = true
-        if (restartingBootstrap && status.state === 'succeeded') {
+    const observation = await readRestoreMaintenanceObservation()
+    waiting = advanceRestoreAdmission(waiting, observation)
+    const status = observation.maintenance
+    if (
+        !fence.isFenced() &&
+        status?.operation === 'restore' &&
+        status.state !== 'succeeded' &&
+        status.phase === 'restarting'
+    )
+        restartingBootstrap = true
+    if (restartingBootstrap) {
+        if (status?.operation === 'restore' && status.id === lastMaintenance?.id)
+            lastMaintenance = status
+        if (waiting.size === 0 && status?.state === 'succeeded' && status.phase === 'complete') {
             fence.release()
+            fenceOperationId = null
             restartingBootstrap = false
             return
         }
-        const destructivePhase = !['queued', 'preparing', 'validating'].includes(status.phase)
-        if (
-            !destructivelyQuiesced &&
-            !restartingBootstrap &&
-            !destructivePhase &&
-            (status.state === 'failed' || status.state === 'interrupted')
-        ) {
-            fence.release()
-            return
+        // This new process already uses the replacement DB. Prepare read-only viewers
+        // while root establishes readiness; never stop its workers or close that DB.
+        if (status?.operation === 'restore') {
+            lastMaintenance = status
+            prepareFence(status.id, false)
         }
-        if (
-            status.state === 'queued' ||
-            status.state === 'running' ||
-            status.state === 'interrupted' ||
-            (status.state === 'failed' && destructivePhase)
-        ) {
-            let preparing: Promise<void>
-            if (destructivePhase && !restartingBootstrap) {
-                destructivelyQuiesced = true
-                preparing = fence.enter(status.id)
-            } else preparing = fence.prepare(status.id)
-            void preparing.catch(() => {
-                console.warn(
-                    '[backups] Restore maintenance could not quiesce; replacement remains blocked',
-                )
-            })
+        return
+    }
+    const destructive =
+        status?.operation === 'restore' && waiting.has(status.id) && isDestructiveRestore(status)
+            ? status
+            : observation.restoreResults.findLast(
+                  (receipt) => waiting.has(receipt.id) && isDestructiveRestore(receipt),
+              )
+    if (destructive) {
+        if (status?.id === destructive.id) lastMaintenance = status
+        else if (lastMaintenance?.id === destructive.id)
+            lastMaintenance = { ...lastMaintenance, ...destructive }
+        else if (!destructivelyQuiesced) lastMaintenance = null
+        // ID-only historical receipts never borrow actor/artifact details from a later delete.
+        if (!destructivelyQuiesced) {
+            destructivelyQuiesced = true
+            prepareFence(destructive.id, true)
         }
-    } else if (!fence.isFenced()) lastMaintenance = null
+        return
+    }
+    if (destructivelyQuiesced) return
+    if (waiting.size === 0) {
+        fence.release()
+        fenceOperationId = null
+        lastMaintenance = null
+        return
+    }
+    if (status?.operation === 'restore' && waiting.has(status.id)) {
+        lastMaintenance = status
+        prepareFence(status.id, false)
+    }
+}
+
+function prepareFence(id: string, destructive: boolean): void {
+    // A safe terminal receipt can be overwritten by the next queued operation.
+    // Retarget its temporary preparation; the fence itself never releases destructive entry.
+    if (fenceOperationId !== null && fenceOperationId !== id) fence.release()
+    fenceOperationId = id
+    const preparing = destructive ? fence.enter(id) : fence.prepare(id)
+    void preparing.catch(() => {
+        console.warn('[backups] Restore maintenance could not quiesce; replacement remains blocked')
+    })
 }
 
 function poll(): Promise<void> {

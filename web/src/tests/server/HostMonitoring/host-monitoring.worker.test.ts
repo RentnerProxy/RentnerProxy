@@ -293,13 +293,18 @@ describe('host monitoring worker', () => {
             () => {
                 stopped = true
             },
-            () => undefined,
+            () => {
+                stopped = true
+            },
         )
         await flush()
         expect(stopped).toBeFalse()
         cleaned.resolve()
         await expect(stopping).rejects.toBe(failure)
-        await expect(tick).rejects.toBe(failure)
+        await tick
+        await expect(worker.stop()).rejects.toBe(failure)
+        worker.start()
+        await worker.runOnce()
         expect({ probes, warnings }).toEqual({ probes: 0, warnings: 0 })
     })
 
