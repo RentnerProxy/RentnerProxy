@@ -137,6 +137,8 @@ fn action(order: &ManualDnsOrder) -> ManualDnsActionRequest {
     }
 }
 
+/// Disconnects a manual-DNS HTTP caller while storage is paused and verifies the admitted action
+/// still commits under serialization and publishes its completion event.
 #[tokio::test(flavor = "current_thread")]
 async fn cancelled_manual_dns_caller_preserves_serialized_commit_and_event_publication() {
     use crate::{
@@ -265,6 +267,8 @@ async fn cancelled_manual_dns_caller_preserves_serialized_commit_and_event_publi
     assert!(!store.leases.lock().await.contains(ID));
 }
 
+/// Cancels a deletion waiter at the storage boundary and checks that the apply lock continues to
+/// fence dependent work until the owned deletion has persisted its removal.
 #[tokio::test(flavor = "current_thread")]
 async fn cancelled_certificate_delete_keeps_apply_lock_until_persisted_removal() {
     use crate::runtime::{ProxyRuntime, RuntimeSettings};
@@ -329,6 +333,8 @@ async fn cancelled_certificate_delete_keeps_apply_lock_until_persisted_removal()
     assert_eq!(restored.get(ID).await, Err(CertificateError::NotFound));
 }
 
+/// Abandons an admitted list request during provider reconciliation and verifies the binding lock
+/// still excludes following transactions until that reconciliation completes.
 #[tokio::test(flavor = "current_thread")]
 async fn cancelled_dns_list_keeps_binding_fenced_until_reconciliation_finishes() {
     use crate::{
@@ -398,6 +404,8 @@ async fn cancelled_dns_list_keeps_binding_fenced_until_reconciliation_finishes()
     assert!(runtime.dns_connections.list().await.unwrap().is_empty());
 }
 
+/// Cancels a delete request before binding admission, proving no detached mutation survives it;
+/// a later admitted delete must still succeed against the unchanged registry.
 #[tokio::test(flavor = "current_thread")]
 async fn cancelled_queued_dns_delete_drops_transaction_without_mutation() {
     use crate::{

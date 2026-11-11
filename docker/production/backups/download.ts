@@ -64,6 +64,14 @@ function sameFile(before: Stats, after: Stats) {
 
 class InvalidDownload extends Error {}
 
+/**
+ * Creates a Linux backup-download handler with one active snapshot per instance.
+ * The handler validates root-owned retained artifacts and streams a private, unlinked tar snapshot.
+ * Stream-produced completion/errors follow cleanup. Consumers cancelling through a reader or body
+ * must await that cancel() call's promise; a reader's closed promise can settle before cleanup.
+ * @param admission Optional shared admission whose release runs after owned file handles close.
+ * @returns The request handler for retained, validated backup snapshots.
+ */
 export function createBackupDownload(
     status: () => Promise<ManagedBackupStatus>,
     root = artifactsRoot,
@@ -72,6 +80,7 @@ export function createBackupDownload(
     admission?: () => Promise<() => void>,
 ) {
     let active = false
+    /** Handles one request, releasing any acquired admission before returning an error response. */
     return async (request: Request, id: string): Promise<Response> => {
         const headers = new Headers({
             'Cache-Control': 'private, no-store',
@@ -93,6 +102,7 @@ export function createBackupDownload(
         let archive: FileHandle | undefined
         let releasePromise: Promise<void> | undefined
         let releaseAdmission: (() => void) | undefined
+        /** Joins one cleanup operation; repeated callers wait for descriptors and admission together. */
         const release = () =>
             (releasePromise ??= (async () => {
                 timeout.clear()
@@ -202,6 +212,7 @@ export function createBackupDownload(
             timeout.streaming()
             let offset = 0
             let controller: ReadableStreamDefaultController<Uint8Array> | undefined
+            /** Publishes cancellation only after the same cleanup awaited by all terminal paths. */
             const abortStream = () => {
                 // Terminal body state acknowledges cleanup and admission release.
                 void release().then(() => controller?.error(new Error('download cancelled')))
@@ -211,6 +222,7 @@ export function createBackupDownload(
                 start(value) {
                     controller = value
                 },
+                /** Reads a bounded chunk and rechecks cancellation before enqueueing or ending the body. */
                 async pull(value) {
                     try {
                         stop.signal.throwIfAborted()

@@ -64,6 +64,13 @@ pub(crate) use operations::{
     CertificateStoreReadiness, CurrentOperation, OperationKind,
 };
 
+/// Reports whether failed issuance settled as a durably recorded cancellation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FailedIssueOutcome {
+    Failed,
+    Cancelled,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct StoredCertificate {

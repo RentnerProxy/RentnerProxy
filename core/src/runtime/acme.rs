@@ -1,6 +1,10 @@
 use super::background::{Outcome, Pass, Worker};
-// Capture owned values before entering the bounded storage worker. Each expression
-// is one complete local store operation; network awaits stay outside this macro.
+
+/// Runs one complete local ACME store operation with owned worker captures.
+///
+/// Network awaits must stay outside this macro. Missing worker results become
+/// `StoreUnavailable`; the `@unit` form deliberately discards best-effort results.
+/// Once started, a blocking storage operation is not cancelled by dropping its wait.
 macro_rules! acme_store {
     ($runtime:expr; [$($capture:ident),*]; $store:ident => $operation:expr) => {{
         $(let $capture = $capture.to_owned();)*
@@ -33,6 +37,7 @@ use super::{
 use crate::{
     runtime::certificates::{
         AcmeChallengeType, CertificateError, CertificateIssueRequest, DnsValidationMode,
+        FailedIssueOutcome,
     },
     server::challenges::ChallengeStore,
 };
@@ -52,7 +57,12 @@ static ACME_JOBS: Semaphore = Semaphore::const_new(4);
 mod tests;
 
 impl ProxyRuntime {
-    /// Admit pending cleanup fairly under the shared ACME semaphore; scanning records idle while spawned jobs own completion evidence.
+    /// Dispatches pending DNS cleanup in rotating order under shared ACME capacity.
+    ///
+    /// Each accepted cleanup belongs to the runtime's background-job registry and
+    /// records its own outcome. Returns false when pending work cannot be listed;
+    /// successful scanning is idle rather than evidence that cleanup has completed.
+    /// Shutdown or exhausted capacity stops further dispatch without undoing writes.
     pub(crate) async fn recover_dns_cleanup(self: &Arc<Self>) -> bool {
         let pass = self.background.begin(Worker::Orders);
         let Ok(mut ids) = self.certificate_store.pending_dns_cleanup_ids().await else {
@@ -82,7 +92,11 @@ impl ProxyRuntime {
         true
     }
 
-    /// Own one cleanup pass; missing work is idle and provider/cleanup errors remain failures while the store claim is released.
+    /// Claims one persisted cleanup attempt and reconciles its provider records.
+    ///
+    /// Missing or busy work is idle; store/provider failures retain failure evidence.
+    /// Attempt release is best-effort after reconciliation, including provider failure;
+    /// unresolved intents remain available for recovery.
     async fn recover_dns_cleanup_one(self: &Arc<Self>, id: &str) {
         let pass = self.background.begin(Worker::Orders);
         let work = match acme_store!(self; [id]; store => store.begin_dns_cleanup(&id)) {
@@ -112,6 +126,14 @@ impl ProxyRuntime {
         });
     }
 
+    /// Transfers an ACME operation to the runtime and waits for its initial metadata.
+    ///
+    /// Dropping the caller's wait does not cancel an accepted job. The job owns the
+    /// runtime and reply sender; it may continue after replying to finish issuance.
+    ///
+    /// # Errors
+    /// Returns `OperationInProgress` when background admission is closed or full, the job's
+    /// preparation error when reported, or `StoreUnavailable` if its reply is lost.
     async fn owned_acme_job<F, Fut>(
         self: &Arc<Self>,
         operation: &'static str,
@@ -136,6 +158,15 @@ impl ProxyRuntime {
             .unwrap_or(Err(CertificateError::StoreUnavailable))
     }
 
+    /// Admits issuance under the global ACME limit and returns its prepared metadata.
+    ///
+    /// The registered job owns the request, challenge store, and permit through issuance;
+    /// a successful return means preparation succeeded, not that a certificate is active.
+    /// Dropping the caller does not stop the accepted job.
+    ///
+    /// # Errors
+    /// Returns `OperationInProgress` for exhausted capacity, closed admission, or conflicting
+    /// work; provider-binding and certificate-store preparation errors are propagated.
     pub(crate) async fn start_acme_issue(
         self: &Arc<Self>,
         id: String,
@@ -160,6 +191,14 @@ impl ProxyRuntime {
         .await
     }
 
+    /// Reserves any provider connection and persists the initial issuance state.
+    ///
+    /// Pending candidates reject new issuance. Provider bindings stay locked through
+    /// reservation and the bounded store operation; a failed start triggers best-effort
+    /// binding reconciliation.
+    ///
+    /// # Errors
+    /// Returns candidate conflicts, provider-connection failures, or certificate-store errors.
     async fn prepare_acme_issue(
         self: &Arc<Self>,
         id: &str,
@@ -200,6 +239,14 @@ impl ProxyRuntime {
         }
     }
 
+    /// Retries an existing candidate or prepares a new runtime-owned renewal.
+    ///
+    /// Returns the candidate result or initial renewal metadata before any new ACME order
+    /// finishes. The accepted job keeps ownership if the caller stops waiting.
+    ///
+    /// # Errors
+    /// Propagates candidate, admission, capacity, and store errors; no ACME permit is
+    /// needed when an existing candidate can be retried.
     pub(crate) async fn start_acme_renewal(
         self: &Arc<Self>,
         id: String,
@@ -236,6 +283,14 @@ impl ProxyRuntime {
         .await
     }
 
+    /// Rechecks renewal eligibility inside an admitted job before persisting a renewal.
+    ///
+    /// The job holds an ACME permit and continues issuance after returning initial metadata,
+    /// including if the caller drops its wait.
+    ///
+    /// # Errors
+    /// Returns `OperationInProgress` when capacity, admission, or due/allowed checks reject
+    /// the renewal; certificate lookup and preparation failures are propagated.
     pub(crate) async fn start_scheduled_acme_renewal(
         self: &Arc<Self>,
         id: String,
@@ -272,6 +327,13 @@ impl ProxyRuntime {
         .await
     }
 
+    /// Starts a persisted ACME retry under a runtime-owned job and global permit.
+    ///
+    /// Returns metadata once retry preparation succeeds; the job retains the request and
+    /// permit while issuance continues independently of the caller's wait.
+    ///
+    /// # Errors
+    /// Returns admission/capacity errors or the store's retry-preparation failure.
     pub(crate) async fn start_scheduled_acme_retry(
         self: &Arc<Self>,
         id: String,
@@ -295,7 +357,12 @@ impl ProxyRuntime {
         .await
     }
 
-    /// Bound automatic issuance by challenge type and remove HTTP challenges before activation; early exits retain failed-pass evidence.
+    /// Runs an admitted issuance attempt, stages its result, and attempts activation.
+    ///
+    /// Owns the request and runtime while network work runs outside bounded storage
+    /// workers. HTTP registrations are removed after the order attempt; DNS cleanup is
+    /// recovered from persisted intents on success or failure. Failures are recorded
+    /// best-effort, and order timeouts do not prove that a provider mutation was undone.
     async fn issue_acme_inner(
         self: Arc<Self>,
         id: String,
@@ -388,23 +455,37 @@ impl ProxyRuntime {
         self.finish_failed_acme_issue(&id, issue_error, pass).await;
     }
 
-    /// Finish the failed operation and attempt DNS cleanup before classifying cancellation; cleanup failures retain their own evidence.
+    /// Finish the failed operation and classify its persisted outcome after DNS cleanup; cleanup failures retain their own evidence.
     async fn finish_failed_acme_issue(
         self: &Arc<Self>,
         id: &str,
         issue_error: Option<CertificateError>,
         pass: Pass,
     ) {
-        let cancelled = matches!(issue_error.as_ref(), Some(CertificateError::AcmeCancelled));
-        if let Some(error) = issue_error {
-            acme_store!(@unit self; [id, error]; store => store.finish_failed(&id, error));
-        }
+        let outcome = if let Some(error) = issue_error {
+            let id = id.to_owned();
+            self.storage_async(move |runtime| async move {
+                runtime.certificate_store.finish_failed(&id, error).await
+            })
+            .await
+            .ok()
+        } else {
+            None
+        };
         self.recover_dns_cleanup_one(id).await;
-        if cancelled {
+        if matches!(outcome, Some(FailedIssueOutcome::Cancelled)) {
             pass.finish(Outcome::Cancelled);
         }
     }
 
+    /// Reconciles old DNS intents before allowing a new order to create proofs.
+    ///
+    /// Returns no intents after complete cleanup, or bounded unconfirmed delegated
+    /// writes whose authority must remain available for later recovery.
+    ///
+    /// # Errors
+    /// Returns store/provider errors or `DnsCleanupFailed` when retained intents cannot
+    /// safely coexist with the requested order.
     async fn prepare_dns_challenges(
         self: &Arc<Self>,
         id: &str,
@@ -436,6 +517,11 @@ impl ProxyRuntime {
         Ok(retained)
     }
 
+    /// Removes owned DNS proofs and requires every persisted intent to be resolved.
+    ///
+    /// # Errors
+    /// Propagates reconciliation errors, or returns `DnsCleanupFailed` when ambiguous
+    /// provider writes still require retained cleanup authority.
     async fn cleanup_dns_challenges(
         self: &Arc<Self>,
         id: &str,
@@ -453,6 +539,15 @@ impl ProxyRuntime {
         }
     }
 
+    /// Cleans DNS intents in sequence and persists the remaining recovery work.
+    ///
+    /// Returns unresolved ambiguous writes: an empty provider read cannot disprove an
+    /// accepted POST. Provider awaits run outside storage workers; each successful cleanup
+    /// is followed by a bounded store update before advancing.
+    ///
+    /// # Errors
+    /// Propagates provider/store errors and maps the overall cleanup timeout to
+    /// `DnsCleanupFailed`; interrupted work remains represented by persisted intents.
     async fn reconcile_dns_challenges(
         self: &Arc<Self>,
         id: &str,

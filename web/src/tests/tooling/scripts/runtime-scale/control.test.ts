@@ -382,6 +382,14 @@ describe('scale report evidence and privacy', () => {
         missing.resources = []
         expect(buildScaleReport(missing).summary.passed).toBe(false)
     })
+
+    test('a cancelled scale run preserves its category and cannot pass', () => {
+        const input = reportInput()
+        input.failure = { stage: 'cleanup', category: 'cancelled' }
+        const report = buildScaleReport(input)
+        expect(report.failure).toEqual({ stage: 'cleanup', category: 'cancelled' })
+        expect(report.summary.passed).toBe(false)
+    })
     test('hard bounds, retained growth and non-final resource failures prevent success', () => {
         for (const overrides of [
             { oomKilled: true },

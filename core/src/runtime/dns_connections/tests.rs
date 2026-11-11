@@ -149,6 +149,8 @@ async fn multizone_encryption_rotation_restart_and_redaction() {
     ));
     task.abort();
 }
+/// Exercises destructive edits against live references, then verifies malformed persisted state
+/// cannot be accepted as an empty registry.
 #[tokio::test]
 async fn references_block_delete_and_zone_removal_and_malformed_store_fails_closed() {
     let (store, task, _) = fixture().await;
@@ -445,6 +447,8 @@ async fn unknown_provider_requests_never_reach_storage_or_network() {
     task.abort();
 }
 
+/// Checks the persisted v1 provider identity and credential round trip, including rejection of an
+/// unknown stored provider even when a valid provider is supplied by the caller.
 #[tokio::test]
 async fn provider_resolution_preserves_registry_v1_and_rejects_unknown_stored_provider() {
     let (store, task, _) = fixture().await;
@@ -497,6 +501,8 @@ fn strict_validation_rejects_bad_ids_names_tokens_and_reference_shapes() {
     assert!(serde_json::from_value::<Reference>(serde_json::json!({"connectionId":ID,"zoneId":zone_id('a'),"consumer":{"type":"dns01","id":USER,"extra":"rejected"}})).is_err());
 }
 
+/// Covers validation, provider and filesystem failures without publishing an unpersisted revision,
+/// then checks that a rolled-back clock cannot move registry timestamps backwards.
 #[tokio::test]
 async fn failures_preserve_state_and_clock_rollback_keeps_timestamp_order() {
     let (store, task, status) = fixture().await;
@@ -568,6 +574,8 @@ async fn failures_preserve_state_and_clock_rollback_keeps_timestamp_order() {
     task.abort();
 }
 
+/// Adds a reference while provider validation has yielded and verifies the final commit rechecks
+/// that reference before allowing a zone to be removed.
 #[tokio::test]
 async fn reference_added_during_provider_validation_prevents_zone_removal() {
     let (store, task, _) = fixture().await;
@@ -601,6 +609,10 @@ pub(super) struct IoPause {
     release: std::sync::mpsc::Receiver<()>,
 }
 impl IoPause {
+    /// Signals entry into blocking I/O, then waits for the test to release it.
+    ///
+    /// # Panics
+    /// Panics if the test drops the release sender or does not release the pause within five seconds.
     pub(super) fn wait(self) {
         let _ = self.entered.send(());
         self.release
@@ -608,6 +620,8 @@ impl IoPause {
             .expect("test must release blocked registry I/O");
     }
 }
+/// Pauses the store's next instrumented I/O operation and returns its entry notification and
+/// release sender, allowing cancellation tests to coordinate without blocking the Tokio thread.
 fn pause_io(
     store: &Store,
 ) -> (

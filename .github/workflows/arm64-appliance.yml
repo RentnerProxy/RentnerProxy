@@ -101,9 +101,26 @@ jobs:
               if: env.RUN_CHECK == 'true'
               run: bun --no-env-file --no-orphans .github/scripts/ci/production-smoke-ci.ts production
 
+            - name: Prepare bounded background failure report
+              if: env.RUN_CHECK == 'true'
+              run: 'printf ''%s\n'' ''{"summary":{"passed":false,"capacity":"insufficient"},"failure":"runner-not-completed"}'' > "$RUNNER_TEMP/background-workers.json"'
+
             - name: Native request draining and clean shutdown
               if: env.RUN_CHECK == 'true'
               run: bun --no-env-file --no-orphans .github/scripts/ci/appliance-drain-smoke.ts
+
+            - name: Native bounded background worker correctness scenarios
+              if: env.RUN_CHECK == 'true'
+              run: 'bun --no-env-file --no-orphans scripts/runtime-scale/background-run.ts --policies 100 --duration-seconds 120 --image "rentnerproxy-smoke-${RENTNERPROXY_SMOKE_RUN}:appliance" --report "$RUNNER_TEMP/background-workers.json"'
+
+            - name: Store bounded ARM64 background report
+              if: ${{ env.RUN_CHECK == 'true' && always() }}
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+              with:
+                  name: arm64-background-workers-report-${{ github.run_attempt }}
+                  path: '${{ runner.temp }}/background-workers.json'
+                  if-no-files-found: error
+                  retention-days: 14
 
             - name: Clean up this run and summarize
               if: ${{ env.RUN_CHECK == 'true' && (always() && steps.bun.outcome == 'success') }}

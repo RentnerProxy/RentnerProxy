@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { eq } from 'drizzle-orm'
+import { sql } from 'drizzle-orm'
+import { DATABASE_CONNECTION_BUDGET } from '@/config/database.config.ts'
 
 import { db } from '@/db/index.ts'
 import { systemSettings, users } from '@/db/schema.ts'
@@ -10,6 +12,74 @@ const integrationTest =
     process.env.RENTNERPROXY_DATABASE_INTEGRATION === '1' && getDatabaseUrl() ? test : test.skip
 
 describe('PostgreSQL integration', () => {
+    integrationTest(
+        'bounds the shared pool while eight background transactions leave interactive capacity',
+        async () => {
+            let release!: () => void
+            const gate = new Promise<void>((resolve) => {
+                release = resolve
+            })
+            const pids = new Set<number>()
+            let admitted = 0
+            const hold = () =>
+                db.transaction(async (transaction) => {
+                    await transaction.execute(sql`set local statement_timeout = '2000ms'`)
+                    await transaction.execute(sql`set local lock_timeout = '2000ms'`)
+                    await transaction.execute(sql`set local transaction_timeout = '3000ms'`)
+                    const [row] = await transaction.execute<{ pid: number }>(
+                        sql`select pg_backend_pid() pid`,
+                    )
+                    pids.add(row!.pid)
+                    admitted++
+                    await gate
+                })
+            const background = Array.from(
+                { length: DATABASE_CONNECTION_BUDGET.backgroundTransactions },
+                hold,
+            )
+            const waitFor = async (count: number) => {
+                const deadline = Date.now() + 2000
+                for (;;) {
+                    if (admitted >= count) return
+                    if (Date.now() > deadline)
+                        throw new Error(
+                            'Pool admission did not complete within its fixture deadline.',
+                        )
+                    // oxlint-disable-next-line no-await-in-loop -- Polls owned test transaction admission, never application work.
+                    await Bun.sleep(1)
+                }
+            }
+            let saturation: Promise<unknown>[] = []
+            try {
+                await waitFor(DATABASE_CONNECTION_BUDGET.backgroundTransactions)
+                const management = await Promise.all(
+                    Array.from({ length: DATABASE_CONNECTION_BUDGET.interactiveHeadroom }, () =>
+                        db.execute(sql`select 1 as ready`),
+                    ),
+                )
+                expect(management.every((rows) => rows[0]?.ready === 1)).toBe(true)
+                saturation = Array.from(
+                    { length: DATABASE_CONNECTION_BUDGET.interactiveHeadroom },
+                    hold,
+                )
+                await waitFor(DATABASE_CONNECTION_BUDGET.maxConnections)
+                let overflowAdmitted = false
+                const overflow = db.execute(sql`select 1 as ready`).then(() => {
+                    overflowAdmitted = true
+                })
+                await Bun.sleep(25)
+                expect(overflowAdmitted).toBe(false)
+                expect(pids.size).toBe(DATABASE_CONNECTION_BUDGET.maxConnections)
+                release()
+                await overflow
+                expect(overflowAdmitted).toBe(true)
+            } finally {
+                release()
+                await Promise.all([...background, ...saturation])
+            }
+        },
+    )
+
     integrationTest(
         'uses PostgreSQL 18, the application schema, and the updated_at trigger',
         async () => {

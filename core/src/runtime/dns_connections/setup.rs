@@ -44,6 +44,11 @@ impl Store {
             .ok_or(Error::ConnectionNotFound)?;
         snapshot(entry, zone, revision)
     }
+    /// Builds a provider for a verified zone at the requested connection revision.
+    ///
+    /// The registry lock spans revision validation and current-key decryption, but is
+    /// released when the provider is returned. Stale, unverified or unreadable access
+    /// fails before provider construction.
     pub(in crate::runtime) async fn setup_provider(
         &self,
         id: &str,

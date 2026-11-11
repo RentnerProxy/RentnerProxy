@@ -61,6 +61,7 @@ pub(crate) struct Store {
     io_pause: std::sync::Mutex<Option<tests::IoPause>>,
 }
 impl Store {
+    /// Creates a lazily loaded registry with separate registry, binding, check and key locks.
     pub(crate) fn new(path: PathBuf) -> Self {
         Self {
             path,
@@ -79,6 +80,10 @@ impl Store {
             io_pause: std::sync::Mutex::new(None),
         }
     }
+    /// Reads the current installation key on a blocking worker without caching it.
+    ///
+    /// The worker owns the key-I/O lock through completion even if its async waiter
+    /// is cancelled. Key lookup and worker failures become `CredentialsUnavailable`.
     async fn key(&self) -> Result<[u8; 32], Error> {
         let guard = Arc::clone(&self.key_io).lock_owned().await;
         #[cfg(test)]
@@ -125,6 +130,10 @@ impl Store {
         }
         .to_owned())
     }
+    /// Decrypts and validates a stored token using the current installation key.
+    ///
+    /// Key, authentication, UTF-8 and token-validation failures return
+    /// `CredentialsUnavailable`, so an unreadable credential cannot be used.
     async fn decrypt(&self, entry: &Entry) -> Result<String, Error> {
         let aad = format!("dns-connection:{}:v1", entry.metadata.id);
         let bytes = encryption::decrypt_bytes(&entry.secret, &aad, &self.key().await?)
@@ -141,6 +150,11 @@ impl Store {
             .map(|e| e.metadata.clone())
             .collect())
     }
+    /// Checks provider access and selected zones without certifying DNS write permission.
+    ///
+    /// Uses a supplied token when present; otherwise decrypts the stored credential with
+    /// the current key. Before returning a successful result for a stored connection,
+    /// its ID and revision are rechecked after the provider request.
     pub(crate) async fn test(&self, request: TestRequest) -> Result<TestResult, Error> {
         if let Some(id) = &request.connection_id {
             validation::id(id)?;
@@ -201,6 +215,11 @@ impl Store {
             dns_write_verified: false,
         })
     }
+    /// Validates provider access and commits an encrypted, revision-checked connection.
+    ///
+    /// Rejects overlapping permission checks, removed zones still in use and registry
+    /// limits. The final registry guard transfers into commit through disk replacement
+    /// and cache publication; persistence errors may follow a successful replacement.
     pub(crate) async fn save(&self, id: String, request: SaveRequest) -> Result<Metadata, Error> {
         let _checks = self
             .checks
@@ -339,6 +358,10 @@ impl Store {
         self.commit(state, next).await?;
         Ok(metadata)
     }
+    /// Deletes the expected revision only when no consumers or permission checks remain.
+    ///
+    /// Commit owns the registry guard through persistence and cache publication.
+    /// A storage error may leave a replaced file, requiring a reload on the next access.
     pub(crate) async fn delete(&self, id: &str, expected_revision: u32) -> Result<(), Error> {
         validation::id(id)?;
         if expected_revision == 0 {
@@ -360,6 +383,10 @@ impl Store {
         self.commit(state, next).await?;
         Ok(())
     }
+    /// Checks the selected connection and zone and verifies its token can be decrypted.
+    ///
+    /// The registry lock spans validation and key lookup. Missing or unreadable
+    /// credentials fail closed; this check does not certify DNS write permission.
     pub(crate) async fn validate_reference(
         &self,
         reference: Reference,
