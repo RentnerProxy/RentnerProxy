@@ -129,7 +129,10 @@ async function pollMaintenance(): Promise<void> {
               )
     if (destructive) {
         if (status?.id === destructive.id) lastMaintenance = status
-        else if (lastMaintenance?.id === destructive.id && !('detailsUnavailable' in lastMaintenance))
+        else if (
+            lastMaintenance?.id === destructive.id &&
+            !('detailsUnavailable' in lastMaintenance)
+        )
             lastMaintenance = { ...lastMaintenance, ...destructive }
         else if (!destructivelyQuiesced || lastMaintenance?.id === destructive.id)
             lastMaintenance = historicalRestoreMaintenanceSchema.parse({

@@ -50,11 +50,34 @@ function admissionOutcome(error: ResourceAdmissionError): WorkerOutcome {
     return 'deferred'
 }
 
+/** An owned lease remains unsafe for restore until its original fenced release succeeds. */
+class CertificateJobCleanupError extends Error {
+    constructor(cause: unknown) {
+        super('Certificate job lease cleanup failed', { cause })
+        this.name = 'CertificateJobCleanupError'
+    }
+}
+
+const pendingReleases = new Map<
+    CertificateJobRow,
+    {
+        changes: Parameters<typeof releaseClaimedCertificateJob>[1]
+        error: CertificateJobCleanupError
+    }
+>()
+
 /** Release an owned lease after worker cancellation while retaining SQL admission and the original token fence. */
-function releaseCertificateJob(
+async function releaseCertificateJob(
     ...args: Parameters<typeof releaseClaimedCertificateJob>
 ): Promise<void> {
-    return withBackgroundDatabaseContext(() => releaseClaimedCertificateJob(...args), null)
+    try {
+        await withBackgroundDatabaseContext(() => releaseClaimedCertificateJob(...args), null)
+        pendingReleases.delete(args[0])
+    } catch (cause) {
+        const error = new CertificateJobCleanupError(cause)
+        pendingReleases.set(args[0], { changes: args[1], error })
+        throw error
+    }
 }
 
 async function saveJobCertificateMetadata(
@@ -193,6 +216,7 @@ async function processCertificateJob(
         )
         return manualState === 'failed' || metadata.status === 'failed' ? 'failure' : 'deferred'
     } catch (error) {
+        if (error instanceof CertificateJobCleanupError) throw error
         if (signal?.aborted) {
             await releaseCertificateJob(job, {})
             return 'cancelled'
@@ -232,6 +256,14 @@ export async function runCertificateJobsOnce(
     runtime = certificateJobRuntime,
     signal?: AbortSignal,
 ): Promise<WorkerOutcome> {
+    if (signal?.aborted) return 'cancelled'
+    // Reuse the next supervised tick for bounded recovery; never admit more leases
+    // while an earlier batch still owns an unconfirmed release.
+    const recovered = await Promise.allSettled(
+        [...pendingReleases].map(([job, retained]) => releaseCertificateJob(job, retained.changes)),
+    )
+    const recoveryFailure = recovered.find((result) => result.status === 'rejected')
+    if (recoveryFailure?.status === 'rejected') throw recoveryFailure.reason
     if (signal?.aborted) return 'cancelled'
     const claims = await Promise.allSettled(Array.from({ length: 4 }, () => claimCertificateJob()))
     const results = await Promise.allSettled(
@@ -315,7 +347,13 @@ export async function stopCertificateJobWorker(): Promise<void> {
     controller.abort()
     if (timer) clearTimeout(timer)
     timer = null
-    await drainWorker(Promise.resolve(running))
+    await drainWorker(
+        (async () => {
+            await running
+            const retained = pendingReleases.values().next().value
+            if (retained) throw retained.error
+        })(),
+    )
 }
 
 workerObservability.sample('certificate_jobs', { concurrency: 4 })
