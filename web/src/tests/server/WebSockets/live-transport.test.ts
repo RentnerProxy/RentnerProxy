@@ -241,9 +241,11 @@ describe('live WebSocket transport', () => {
     })
 })
 
-test.each(['resolve', 'reject'] as const)(
-    'late response body cancellation retains all permits and shutdown ownership until cancel %s',
-    async (outcome) => {
+test.each([
+    ['late', 'resolve'], ['late', 'reject'], ['non-OK', 'resolve'], ['non-OK', 'reject'],
+] as const)(
+    '%s response body cancellation retains all permits and shutdown ownership until cancel %s',
+    async (phase, outcome) => {
         const slots = BACKGROUND_RESOURCE_ENVELOPE.realtime.running
         const responses = Array.from({ length: slots }, () => Promise.withResolvers<Response>())
         const cancel = Promise.withResolvers<void>()
@@ -254,7 +256,7 @@ test.each(['resolve', 'reject'] as const)(
             drained = false
         const runtime = createLiveWebSocketRuntime({
             allowedOrigin: 'http://allowed.test',
-            snapshotTimeoutMs: 5,
+            snapshotTimeoutMs: phase === 'late' ? 5 : 5_000,
             readSnapshot: () =>
                 responses[reads++]?.promise ?? Response.json({ revision: 'unexpected fresh read' }),
         })
@@ -265,8 +267,9 @@ test.each(['resolve', 'reject'] as const)(
                 }),
                 { upgrade: () => false } as unknown as Bun.Server<RuntimeSocketData>,
             )
-        const initial = await Promise.all(Array.from({ length: slots }, request))
-        expect(initial.every((result) => result.response?.status === 503)).toBe(true)
+        const initial = Promise.all(Array.from({ length: slots }, request))
+        if (phase === 'late')
+            expect((await initial).every((result) => result.response?.status === 503)).toBe(true)
         try {
             for (const response of responses)
                 response.resolve(
@@ -277,9 +280,11 @@ test.each(['resolve', 'reject'] as const)(
                                 return cancel.promise
                             },
                         }),
+                        { status: phase === 'late' ? 200 : 403 },
                     ),
                 )
             await cancelled.promise
+            expect((await initial).every((result) => result.response?.status === (phase === 'late' ? 503 : 403))).toBe(true)
             const next = request().then((result) => {
                 nextSettled = true
                 return result

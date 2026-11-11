@@ -97,6 +97,54 @@ async function flush() {
 }
 
 describe('host monitoring worker', () => {
+    test.each(['success', 'cleanup failure'] as const)(
+        'an empty claim read retains normal polling while an admitted probe can settle: %s',
+        async (outcome) => {
+            const timer = scheduler()
+            const probe = Promise.withResolvers<void>()
+            let clock = 0,
+                claims = 0,
+                dueReads = 0,
+                releases = 0
+            const worker = createHostMonitoringWorker(
+                dependencies({
+                    now: () => clock,
+                    schedule: timer.schedule,
+                    claim: async () => (claims++ === 0 ? ['owned'] : []),
+                    nextAdmissionAt: async () => { dueReads++; return null },
+                    runClaim: async () => {
+                        await probe.promise
+                        if (outcome === 'cleanup failure')
+                            throw new HostMonitoringCleanupError(new Error('failed release'))
+                    },
+                    releaseCancelled: async (claim) => {
+                        expect(claim).toBe('owned')
+                        releases++
+                    },
+                }),
+            )
+            try {
+                worker.start()
+                await worker.runOnce()
+                timer.fire()
+                await worker.runOnce()
+                expect(dueReads).toBe(0)
+                expect(timer.delays.at(-1)).toBe(HOST_MONITORING_LIMITS.pollIntervalMs)
+                probe.resolve()
+                await flush()
+                clock = 1_000
+                timer.fire()
+                await worker.runOnce()
+                expect(releases).toBe(outcome === 'cleanup failure' ? 1 : 0)
+                expect(dueReads).toBe(1)
+                expect(timer.pending.size).toBe(1)
+            } finally {
+                probe.resolve()
+                await worker.stop()
+            }
+        },
+    )
+
     test('idle/disabled admission sleeps until durable next-due with one timer and wakes on changes', async () => {
         const time = scheduler()
         let current = 1_000

@@ -17,8 +17,6 @@ const ingest = createBackupAuditIngestor({
     acknowledge: (cursor, signal) => backupsController.acknowledgeAudit(cursor, signal),
     transaction: (run) =>
         getBackgroundDatabase('housekeeping').transaction(async (transaction) => {
-            await transaction.execute(sql`set local statement_timeout = '5000ms'`)
-            await transaction.execute(sql`set local lock_timeout = '5000ms'`)
             await transaction
                 .insert(systemSettings)
                 .values({ key: CURSOR_KEY, value: sql`${{ storeId: null, sequence: 0 }}` })

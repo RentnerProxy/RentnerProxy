@@ -13,6 +13,50 @@ import { domainDiagnosticsResultSchema } from '@/lib/RuntimeDiagnostics/domainDi
 import { assertNativeMonitoringFixture } from '../../../../../scripts/runtime-scale/monitoring-native.ts'
 import { runBunScript } from '@/tests/Helpers/runBunScript.ts'
 
+test('a failed probe lease release reaches the real worker drain and capacity report', async () => {
+    const output = await runBunScript(`
+        import assert from 'node:assert/strict'
+        import { mock } from 'bun:test'
+        process.env.RENTNERPROXY_DATABASE_INTEGRATION = '1'
+        process.env.DATABASE_URL = 'postgresql://fixture@127.0.0.1/rentnerproxy_upstream_test'
+        mock.module('@tanstack/react-start/server-only', () => ({}))
+        let releases = 0, claims = 0, closed = false
+        const query = () => {
+            const result = Promise.resolve([])
+            let chain
+            chain = new Proxy({}, { get: (_, key) => key === 'then' ? result.then.bind(result) : () => chain })
+            return chain
+        }
+        const db = {
+            select: query, insert: query, update: query, delete: query,
+            execute: async () => [{ due: 0, active: 0, lock_waiters: 0, lock_wait_ms: 0 }],
+            transaction: async operation => operation(db),
+        }
+        mock.module('./db/index.ts', () => ({ db, closeDatabaseForRestoreMaintenance: async () => { closed = true } }))
+        const claim = { policy: { id: 'owned-policy', proxyHostId: 'owned-host', nextCheckAt: new Date() }, leaseToken: 'original-token' }
+        mock.module('./server/HostMonitoring/host-monitoring.repository.ts', () => ({
+            claimDueHostMonitoringPolicies: async () => claims++ === 0 ? [claim] : [],
+            readHostMonitoringClaimContexts: async claims => claims.map(() => null),
+            completeHostMonitoringClaims: async () => [], pruneHostMonitoringHistory: async () => {},
+            releaseHostMonitoringClaim: async current => {
+                assert.equal(current, claim)
+                releases++
+                process.emit('SIGTERM')
+                throw new Error('release SQL unavailable')
+            },
+        }))
+        const { runMonitoringCapacity } = await import('../../scripts/runtime-scale/monitoring.ts')
+        const result = await runMonitoringCapacity({ hosts: 100, periods: 2, profile: 'mixed', runtime: 'simulated' })
+        assert.equal(result.passed, false)
+        assert.ok(result.failures.includes('Monitoring worker stop failed'))
+        assert.ok(result.failures.includes('Monitoring worker drain failed'))
+        assert.equal(releases, 1)
+        assert.equal(closed, true)
+        console.log(JSON.stringify({ releases, closed, passed: result.passed }))
+    `, { cwd: new URL('../../..', import.meta.url) })
+    expect(JSON.parse(output.trim().split('\n').at(-1)!)).toEqual({ releases: 1, closed: true, passed: false })
+})
+
 test.each(['success', 'delete failure'] as const)(
     'a failed stop checkpoint retains actual writers before all owned cleanup stages: %s',
     async (mode) => {
