@@ -14,7 +14,10 @@ import { advanceRestoreAdmission, isDestructiveRestore } from './restore-admissi
 
 const directory = '/run/rentnerproxy/maintenance'
 let lastMaintenance: ManagedBackupMaintenance | null = null
-let restartingBootstrap = false
+let restartingBootstrapId: string | null = null
+// A receipt for the replacement already in use must not quiesce this process under the old ID.
+// Its unresolved failure still remains in `waiting` and blocks mutation admission.
+let replacementRestoreId: string | null = null
 let destructivelyQuiesced = false
 let waiting = new Set<string>()
 let fenceOperationId: string | null = null
@@ -59,7 +62,7 @@ async function quiesce() {
 }
 
 async function acknowledge(id: string): Promise<void> {
-    if (restartingBootstrap) return
+    if (id === restartingBootstrapId) return
     const temporary = directory + '/.web-quiesced-' + randomUUID() + '.json'
     try {
         const file = await open(temporary, 'wx', 0o600)
@@ -88,30 +91,40 @@ async function pollMaintenance(): Promise<void> {
         status?.operation === 'restore' &&
         status.state !== 'succeeded' &&
         status.phase === 'restarting'
-    )
-        restartingBootstrap = true
-    if (restartingBootstrap) {
-        if (status?.operation === 'restore' && status.id === lastMaintenance?.id)
-            lastMaintenance = status
-        if (waiting.size === 0 && status?.state === 'succeeded' && status.phase === 'complete') {
+    ) {
+        restartingBootstrapId = status.id
+        replacementRestoreId = status.id
+    }
+    // Only the restore whose replacement this process booted may bypass its own drain.
+    // A later root operation must use the ordinary preparation/quiescence path.
+    if (restartingBootstrapId !== null && status && status.id !== restartingBootstrapId)
+        restartingBootstrapId = null
+    if (restartingBootstrapId !== null) {
+        lastMaintenance =
+            status?.operation === 'restore' && status.id === restartingBootstrapId ? status : null
+        if (
+            waiting.size === 0 &&
+            lastMaintenance?.state === 'succeeded' &&
+            lastMaintenance.phase === 'complete'
+        ) {
             fence.release()
             fenceOperationId = null
-            restartingBootstrap = false
+            restartingBootstrapId = null
             return
         }
         // This new process already uses the replacement DB. Prepare read-only viewers
         // while root establishes readiness; never stop its workers or close that DB.
-        if (status?.operation === 'restore') {
-            lastMaintenance = status
-            prepareFence(status.id, false)
-        }
+        if (lastMaintenance) prepareFence(lastMaintenance.id, false)
         return
     }
     const destructive =
         status?.operation === 'restore' && waiting.has(status.id) && isDestructiveRestore(status)
             ? status
             : observation.restoreResults.findLast(
-                  (receipt) => waiting.has(receipt.id) && isDestructiveRestore(receipt),
+                  (receipt) =>
+                      receipt.id !== replacementRestoreId &&
+                      waiting.has(receipt.id) &&
+                      isDestructiveRestore(receipt),
               )
     if (destructive) {
         if (status?.id === destructive.id) lastMaintenance = status
@@ -197,7 +210,8 @@ export async function withRestoreMaintenanceFence(
         return new Response(null, { status: 503, headers: { 'Cache-Control': 'no-store' } })
     }
     if (
-        restartingBootstrap &&
+        restartingBootstrapId !== null &&
+        lastMaintenance?.id === restartingBootstrapId &&
         request.method === 'GET' &&
         ['/health/ready', '/health/live'].includes(new URL(request.url).pathname)
     )
