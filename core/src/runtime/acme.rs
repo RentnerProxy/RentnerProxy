@@ -87,7 +87,7 @@ impl ProxyRuntime {
         let pass = self.background.begin(Worker::Orders);
         let work = match acme_store!(self; [id]; store => store.begin_dns_cleanup(&id)) {
             Ok(Some(work)) => work,
-            Ok(None) => {
+            Ok(None) | Err(CertificateError::OperationInProgress) => {
                 pass.finish(Outcome::Idle);
                 return;
             }
@@ -385,10 +385,14 @@ impl ProxyRuntime {
             });
             return;
         }
+        let cancelled = matches!(issue_error.as_ref(), Some(CertificateError::AcmeCancelled));
         if let Some(error) = issue_error {
             acme_store!(@unit self; [id, error]; store => store.finish_failed(&id, error));
         }
         self.recover_dns_cleanup_one(&id).await;
+        if cancelled {
+            pass.finish(Outcome::Cancelled);
+        }
     }
 
     async fn prepare_dns_challenges(
