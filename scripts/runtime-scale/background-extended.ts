@@ -32,11 +32,7 @@ export type ExtendedRecoveryStage =
 export async function waitForMonitoringDrain(
     readWorkerRunning: () => Promise<number>,
     readSnapshot: () => Promise<ReturnType<typeof backgroundSnapshotSchema.parse>>,
-    waitFor: (
-        check: () => Promise<boolean>,
-        message: string,
-        timeoutMs: number,
-    ) => Promise<void>,
+    waitFor: (check: () => Promise<boolean>, message: string, timeoutMs: number) => Promise<void>,
     checkCancellation: () => void = () => {},
 ) {
     let previousObservations = -1
@@ -47,7 +43,8 @@ export async function waitForMonitoringDrain(
             const [running, snapshot] = await Promise.all([readWorkerRunning(), readSnapshot()])
             assert.ok(Number.isSafeInteger(running) && running >= 0)
             const drained =
-                running === 0 && snapshot.policies.every((policy) => !policy.enabled && !policy.leased)
+                running === 0 &&
+                snapshot.policies.every((policy) => !policy.enabled && !policy.leased)
             if (drained && snapshot.observations.length === previousObservations) stableReads++
             else stableReads = 0
             previousObservations = snapshot.observations.length

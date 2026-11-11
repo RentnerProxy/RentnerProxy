@@ -18,21 +18,30 @@ import { createHostMonitoringBatcher } from '../../web/src/server/HostMonitoring
 import { HostMonitoringCleanupError } from '../../web/src/server/HostMonitoring/Types/host-monitoring-worker.types.ts'
 
 /** Bound the owned 64-claim cleanup to the class's running slots, preserving each original token and drain failure. */
-export function createIsolationClaimRelease(release: (claim: HostMonitoringClaim) => Promise<boolean>) {
+export function createIsolationClaimRelease(
+    release: (claim: HostMonitoringClaim) => Promise<boolean>,
+) {
     const batch = createHostMonitoringBatcher<HostMonitoringClaim, boolean>({
         size: BACKGROUND_DATABASE_POLICY.classes.monitoring.running,
         delayMs: 0,
-        run: (claims) => Promise.allSettled(claims.map((claim) =>
-            withBackgroundDatabaseContext(() => release(claim), null, 'monitoring'),
-        )),
+        run: (claims) =>
+            Promise.allSettled(
+                claims.map((claim) =>
+                    withBackgroundDatabaseContext(() => release(claim), null, 'monitoring'),
+                ),
+            ),
     })
-    return (claim: HostMonitoringClaim) => batch(claim).catch((cause: unknown) => {
-        throw new HostMonitoringCleanupError(cause)
-    })
+    return (claim: HostMonitoringClaim) =>
+        batch(claim).catch((cause: unknown) => {
+            throw new HostMonitoringCleanupError(cause)
+        })
 }
 
 /** Await every fixed pool query and expose failures as failed evidence; shutdown never admits another pool read. */
-export async function readIsolationPoolSaturation(query: () => Promise<unknown>, stopping: boolean) {
+export async function readIsolationPoolSaturation(
+    query: () => Promise<unknown>,
+    stopping: boolean,
+) {
     if (stopping) return Response.json({ requested: 0, succeeded: 0, failed: 0 }, { status: 503 })
     const requested = isolationContract.workerConnections
     const results = await Promise.allSettled(Array.from({ length: requested }, async () => query()))

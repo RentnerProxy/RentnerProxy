@@ -242,7 +242,10 @@ describe('live WebSocket transport', () => {
 })
 
 test.each([
-    ['late', 'resolve'], ['late', 'reject'], ['non-OK', 'resolve'], ['non-OK', 'reject'],
+    ['late', 'resolve'],
+    ['late', 'reject'],
+    ['non-OK', 'resolve'],
+    ['non-OK', 'reject'],
 ] as const)(
     '%s response body cancellation retains all permits and shutdown ownership until cancel %s',
     async (phase, outcome) => {
@@ -284,7 +287,11 @@ test.each([
                     ),
                 )
             await cancelled.promise
-            expect((await initial).every((result) => result.response?.status === (phase === 'late' ? 503 : 403))).toBe(true)
+            expect(
+                (await initial).every(
+                    (result) => result.response?.status === (phase === 'late' ? 503 : 403),
+                ),
+            ).toBe(true)
             const next = request().then((result) => {
                 nextSettled = true
                 return result
