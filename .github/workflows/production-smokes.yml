@@ -291,9 +291,13 @@ jobs:
               run: |
                   mkdir -p "$RUNNER_TEMP/runtime-reliability-report"
                   printf '%s\n' '{"summary":{"passed":false,"requestedDurationReached":false},"failure":"runner-not-completed"}' > "$RUNNER_TEMP/runtime-reliability-report/report.json"
+                  printf '%s\n' '{"summary":{"passed":false,"capacity":"insufficient"},"failure":"runner-not-completed"}' > "$RUNNER_TEMP/runtime-reliability-report/background.json"
             - name: Run isolated short runtime reliability fixture
               if: needs.changes.outputs.runtime == 'true'
               run: 'bun --no-env-file --no-orphans scripts/runtime-reliability/run.ts --profile short --image "rentnerproxy-smoke-${RENTNERPROXY_SMOKE_RUN}:appliance" --capture-resources true --report "$RUNNER_TEMP/runtime-reliability-report/report.json"'
+            - name: Run bounded background worker correctness scenarios
+              if: needs.changes.outputs.runtime == 'true'
+              run: 'bun --no-env-file --no-orphans scripts/runtime-scale/background-run.ts --policies 100 --duration-seconds 120 --image "rentnerproxy-smoke-${RENTNERPROXY_SMOKE_RUN}:appliance" --report "$RUNNER_TEMP/runtime-reliability-report/background.json"'
             - name: "Remove this run's private Docker resources"
               if: "always() && steps.bun.outcome == 'success'"
               run: bun --no-env-file .github/scripts/ci/production-smoke-ci.ts cleanup
@@ -303,6 +307,15 @@ jobs:
               with:
                   name: pr-runtime-reliability-report-${{ github.run_attempt }}
                   path: '${{ runner.temp }}/runtime-reliability-report/report.json'
+                  if-no-files-found: error
+                  retention-days: 14
+
+            - name: Store bounded background worker report
+              if: "always() && needs.changes.outputs.runtime == 'true'"
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+              with:
+                  name: pr-background-workers-report-${{ github.run_attempt }}
+                  path: '${{ runner.temp }}/runtime-reliability-report/background.json'
                   if-no-files-found: error
                   retention-days: 14
 
