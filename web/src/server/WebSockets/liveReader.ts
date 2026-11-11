@@ -100,7 +100,7 @@ export async function readSubscriptionSnapshot(
         void response.body?.cancel().catch(() => undefined)
     })
     try {
-        const reading = readBoundedJson(response, maxPayloadBytes, signal)
+        const reading = readBoundedJson(response, maxPayloadBytes, signal, trackWork)
         trackWork?.(reading)
         const data = await Promise.race([reading, bodyAbort.promise])
         return { kind: 'success', data }

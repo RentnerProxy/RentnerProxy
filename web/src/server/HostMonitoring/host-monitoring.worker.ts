@@ -24,7 +24,7 @@ export function createHostMonitoringWorker<Claim>(
     let recoveryAt = 0
     let recoveryDelay = 1_000
     const running = new Set<Promise<void>>()
-    const unavailable = new Set<'claim' | 'probe' | 'prune'>()
+    const unavailable = new Set<'claim' | 'due' | 'probe' | 'prune'>()
     const now = dependencies.now ?? Date.now
     const recoveryNow = dependencies.now ?? performance.now.bind(performance)
     const setTimer =
@@ -64,7 +64,7 @@ export function createHostMonitoringWorker<Claim>(
     }
 
     /** Deduplicates sanitized availability warnings until the failing subsystem recovers. */
-    function warn(source: 'claim' | 'probe' | 'prune', signal: AbortSignal) {
+    function warn(source: 'claim' | 'due' | 'probe' | 'prune', signal: AbortSignal) {
         if (signal.aborted || unavailable.has(source)) return
         const notify = unavailable.size === 0
         unavailable.add(source)
@@ -180,6 +180,7 @@ export function createHostMonitoringWorker<Claim>(
                             try {
                                 // eslint-disable-next-line no-await-in-loop -- Read durable due time only after an empty claim batch.
                                 const due = await dependencies.nextAdmissionAt()
+                                unavailable.delete('due')
                                 if (
                                     !signal.aborted &&
                                     failedClaims.size === 0 &&
@@ -196,7 +197,7 @@ export function createHostMonitoringWorker<Claim>(
                                         ),
                                     )
                             } catch {
-                                warn('claim', signal)
+                                warn('due', signal)
                             }
                         }
                         return
