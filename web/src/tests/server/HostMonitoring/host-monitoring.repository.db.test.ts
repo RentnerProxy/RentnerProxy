@@ -1163,6 +1163,17 @@ describe('durable scheduled monitoring repository', () => {
             cross join generate_series(1, 1000)
             where p.id in (${ownedIds})
         `)
+            const expectedSamples = await db.execute<{ policy_id: string; identity: string }>(sql`
+            select policy_id, md5(string_agg(id::text, ',' order by id)) as identity
+            from (
+                select policy_id, id,
+                    row_number() over (partition by policy_id order by checked_at desc, id desc) as sample_rank
+                from "rentnerproxy"."host_check_observations"
+                where policy_id in (${ownedIds})
+            ) ranked
+            where sample_rank <= ${Math.floor(HOST_MONITORING_LIMITS.maxObservations / policies.length)}
+            group by policy_id order by policy_id
+        `)
             for (let page = 0; page < 4; page++) {
                 // oxlint-disable-next-line no-await-in-loop -- Each retention page commits before the next bounded sweep.
                 await pruneHostMonitoringHistory()
@@ -1188,6 +1199,17 @@ describe('durable scheduled monitoring repository', () => {
             expect(counts?.max_incidents).toBeLessThanOrEqual(1_000)
             expect(counts?.observations).toBeGreaterThan(90_000)
             expect(counts?.incidents).toBeGreaterThan(9_000)
+            const retainedSamples = await db.execute<{
+                policy_id: string
+                identity: string
+            }>(sql`
+            select policy_id, md5(string_agg(id::text, ',' order by id)) as identity
+            from "rentnerproxy"."host_check_observations"
+            where policy_id in (${ownedIds})
+            group by policy_id order by policy_id
+        `)
+            // Equal timestamps still retain precisely the newest IDs in every fair share.
+            expect([...retainedSamples]).toEqual([...expectedSamples])
         },
         20_000,
     )

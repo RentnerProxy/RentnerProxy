@@ -79,3 +79,67 @@ test('stored busy results defer admission without claiming success or hiding act
         recovered: { success: 1, state: 'idle' },
     })
 })
+
+test('aborted probe and late-claim cleanup retain the shared SQL budget until one fenced release settles', async () => {
+    const output = await runBunScript(
+        `
+        import { mock } from 'bun:test'
+        import { admitDatabaseTransaction, withBackgroundDatabaseContext } from './db/background-admission.ts'
+        import { BACKGROUND_DATABASE_POLICY } from './config/background-resources.config.ts'
+        let dependencies, invoked = 0, owned
+        mock.module('@tanstack/react-start/server-only', () => ({}))
+        mock.module('./server/HostMonitoring/host-monitoring.worker.ts', () => ({ createHostMonitoringWorker: value => (dependencies = value, {}) }))
+        mock.module('./server/HostMonitoring/host-monitoring.repository.ts', () => ({
+            claimDueHostMonitoringPolicies: async () => [], completeHostMonitoringClaims: async () => [],
+            readHostMonitoringClaimContexts: async () => [], readNextHostMonitoringAdmissionAt: async () => null, pruneHostMonitoringHistory: async () => {},
+            releaseHostMonitoringClaims: claims => withBackgroundDatabaseContext(() => admitDatabaseTransaction(async () => {
+                if (claims.length !== 1 || claims[0] !== owned) throw new Error('Claim fence identity changed')
+                invoked++
+                return claims.map(() => true)
+            }), undefined, 'monitoring'),
+        }))
+        mock.module('./server/HostMonitoring/host-monitoring.observability.ts', () => ({ sampleHostMonitoringBacklog: async () => {} }))
+        mock.module('./server/Controller/domain-diagnostics.server.ts', () => ({ inspectControllerDomain: async () => {} }))
+        mock.module('./server/WebSockets/applicationChanges.ts', () => ({ publishApplicationChange: () => {}, subscribeToApplicationChanges: () => () => {} }))
+        await import('./server/HostMonitoring/host-monitoring.worker.server.ts')
+        const results = []
+        for (const path of ['probe', 'late-claim']) {
+            invoked = 0
+            owned = { policy: { id: 'owned-policy' }, leaseToken: 'original-owned-token' }
+            let entered = 0, settled = false
+            const gate = Promise.withResolvers(), ready = Promise.withResolvers()
+            const held = Array.from({ length: BACKGROUND_DATABASE_POLICY.classes.monitoring.running }, () => withBackgroundDatabaseContext(() =>
+                admitDatabaseTransaction(async () => { if (++entered === BACKGROUND_DATABASE_POLICY.classes.monitoring.running) ready.resolve(); await gate.promise }), undefined, 'monitoring'))
+            await ready.promise
+            const cancellation = new AbortController(); cancellation.abort()
+            const pending = (path === 'probe'
+                ? dependencies.runClaim(owned, cancellation.signal)
+                : withBackgroundDatabaseContext(() => dependencies.releaseCancelled(owned), cancellation.signal))
+                .then(() => ({ outcome: 'released' }), error => ({ outcome: error.code ?? error.reason }))
+                .then(value => { settled = true; return value })
+            await Bun.sleep(10)
+            const before = { entered, invoked, settled }
+            gate.resolve()
+            const result = await pending
+            await Promise.all(held)
+            results.push({ path, before, invoked, ...result })
+        }
+        console.log(JSON.stringify(results))
+    `,
+        { cwd: new URL('../../..', import.meta.url) },
+    )
+    expect(JSON.parse(output.trim().split('\n').at(-1)!)).toEqual([
+        {
+            path: 'probe',
+            before: { entered: 2, invoked: 0, settled: false },
+            invoked: 1,
+            outcome: 'aborted',
+        },
+        {
+            path: 'late-claim',
+            before: { entered: 2, invoked: 0, settled: false },
+            invoked: 1,
+            outcome: 'released',
+        },
+    ])
+})

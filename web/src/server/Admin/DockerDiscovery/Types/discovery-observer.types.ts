@@ -21,7 +21,12 @@ export interface DiscoveryObserverDependencies {
         signal: AbortSignal,
         assertCurrent: () => void,
         resetBudget: boolean,
-    ) => Promise<{ enabled: boolean; again: boolean }>
+    ) => Promise<{
+        enabled: boolean
+        again: boolean
+        /** The applied receipt committed or a durable newer intent superseded it. */
+        receiptSettled?: boolean
+    }>
     readonly subscribe: (invalidate: () => void) => () => void
     readonly failed: () => Promise<void>
 }

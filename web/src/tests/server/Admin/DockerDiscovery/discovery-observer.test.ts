@@ -2,6 +2,7 @@
 import { afterEach, expect, jest, mock, spyOn, test } from 'bun:test'
 import {
     createDiscoveryObserver,
+    DiscoveryFinalizationError,
     DiscoverySuperseded,
 } from '@/server/Admin/DockerDiscovery/discovery-observer.ts'
 import type {
@@ -363,4 +364,77 @@ test('stop aborts collection admission and drains an in-flight pass before retur
     await stopping
     expect(f.dependencies.reconcile).not.toHaveBeenCalled()
     expect(f.dependencies.watch).not.toHaveBeenCalled()
+})
+
+test('a failed admitted receipt rejects repeated stops after collection aborts', async () => {
+    const finalizing = Promise.withResolvers<{ enabled: boolean; again: boolean }>()
+    const error = new DiscoveryFinalizationError(new Error('receipt unavailable'))
+    const f = fixture({ reconcile: () => finalizing.promise })
+    const starting = f.worker.start()
+    await settle()
+    const stopping = f.worker.stop()
+    void stopping.catch(() => undefined)
+    finalizing.reject(error)
+    await starting
+    await expect(stopping).rejects.toBe(error)
+    await expect(f.worker.stop()).rejects.toBe(error)
+    expect(f.dependencies.failed).not.toHaveBeenCalled()
+})
+
+test.each([false, true])(
+    'receipt failure remains a drain failure until its durable finalization is confirmed: %s',
+    async (receiptSettled) => {
+        const error = new DiscoveryFinalizationError(new Error('receipt unavailable'))
+        const f = fixture({
+            reconcile: async () => {
+                throw error
+            },
+        })
+        const warning = spyOn(console, 'warn').mockImplementation(() => undefined)
+        await f.worker.start()
+        f.dependencies.reconcile.mockResolvedValue({ enabled: true, again: false, receiptSettled })
+        await f.worker.trigger()
+        if (receiptSettled) await f.worker.stop()
+        else await expect(f.worker.stop()).rejects.toBe(error)
+        expect(f.dependencies.failed).toHaveBeenCalledTimes(1)
+        warning.mockRestore()
+    },
+)
+
+test('a completed settings read clears a retained receipt failure after durable disable', async () => {
+    const error = new DiscoveryFinalizationError(new Error('receipt unavailable'))
+    const f = fixture({
+        reconcile: async () => {
+            throw error
+        },
+    })
+    const warning = spyOn(console, 'warn').mockImplementation(() => undefined)
+    await f.worker.start()
+    expect(f.dependencies.failed).toHaveBeenCalledTimes(1)
+    f.enabled(false)
+    await f.worker.trigger()
+    expect(f.dependencies.enabled).toHaveBeenCalledTimes(2)
+    expect(f.dependencies.read).toHaveBeenCalledTimes(1)
+    expect(f.dependencies.reconcile).toHaveBeenCalledTimes(1)
+    await f.worker.stop()
+    await f.worker.stop()
+    warning.mockRestore()
+})
+
+test('an unsuccessful settings read cannot clear a retained receipt failure', async () => {
+    const error = new DiscoveryFinalizationError(new Error('receipt unavailable'))
+    const f = fixture({
+        reconcile: async () => {
+            throw error
+        },
+    })
+    const warning = spyOn(console, 'warn').mockImplementation(() => undefined)
+    await f.worker.start()
+    f.enabled(false)
+    f.dependencies.enabled.mockRejectedValueOnce(new Error('settings unavailable'))
+    await f.worker.trigger()
+    await expect(f.worker.stop()).rejects.toBe(error)
+    await expect(f.worker.stop()).rejects.toBe(error)
+    expect(f.dependencies.reconcile).toHaveBeenCalledTimes(1)
+    warning.mockRestore()
 })

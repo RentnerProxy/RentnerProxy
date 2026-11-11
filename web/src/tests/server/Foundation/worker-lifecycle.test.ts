@@ -30,6 +30,325 @@ afterEach(() => {
 })
 
 describe('worker lifecycle', () => {
+    for (const event of ['shutdown', 'maintenance'] as const) {
+        for (const outcome of [
+            'success',
+            'start failure',
+            'cleanup failure',
+            'pending early stop',
+            'drain timeout',
+            'nested timeout',
+        ] as const) {
+            test(`${event} owns deferred start settlement and late cleanup after ${outcome}`, async () => {
+                const output = await runBunScript(
+                    `
+                    import { mock } from 'bun:test'
+                    mock.module('@tanstack/react-start/server-only', () => ({}))
+                    mock.module('./server/Backups/restore-maintenance-status.server.ts', () => ({ readRestoreMaintenanceObservation: async () => ({ maintenance: null, restoreResults: [] }) }))
+                    mock.module('./server/Foundation/event-loop-observation.ts', () => ({ startEventLoopObservation() {} }))
+                    const { createWorkerLifecycleSupervisor } = await import('./server/Foundation/worker-lifecycle.server.ts')
+                    const { WorkerDrainTimeoutError } = await import('./server/Foundation/Types/worker-lifecycle.types.ts')
+                    const { workerObservability } = await import('./server/Foundation/worker-observability.ts')
+                    const timers = new Map()
+                    globalThis.setTimeout = (callback, milliseconds) => { const timer = {}; timers.set(timer, { callback, milliseconds }); return timer }
+                    globalThis.clearTimeout = timer => timers.delete(timer)
+                    const fire = milliseconds => { const entry = [...timers].find(([, value]) => value.milliseconds === milliseconds); if (!entry) throw new Error('Missing deadline'); timers.delete(entry[0]); entry[1].callback() }
+                    const flush = async () => { for (let index = 0; index < 50; index++) await Promise.resolve() }
+                    const started = Promise.withResolvers(), entered = Promise.withResolvers(), cleanup = Promise.withResolvers()
+                    const lateStart = Promise.withResolvers()
+                    const earlyCleanup = Promise.withResolvers()
+                    void cleanup.promise.catch(() => {})
+                    const failure = new Error('late start/cleanup failure')
+                    let writes = false, stops = 0, checkpoint = 'pending'
+                    const supervisor = createWorkerLifecycleSupervisor()
+                    const initializing = supervisor.startWorkerLifecycle(async () => ({
+                        start: async () => { entered.resolve(); await started.promise; writes = true; if ('${outcome}' === 'start failure') throw failure },
+                        stop: async () => { stops++; if (stops === 1) { if ('${outcome}' === 'pending early stop') await earlyCleanup.promise; return }; await cleanup.promise; writes = false },
+                    }), 'npm_import_cleanup', { startupTimeoutMs: 5, drainTimeoutMs: 50 })
+                    void initializing.catch(() => {})
+                    await entered.promise
+                    let stopping
+                    if ('${event}' === 'maintenance') stopping = supervisor.stopWorkersForRestoreMaintenance()
+                    else { const pending = []; process.emit('rentnerproxy:shutdown', pending); stopping = Promise.all(pending) }
+                    void stopping.then(() => { checkpoint = 'success' }, () => { checkpoint = 'failure' })
+                    await flush()
+                    if ('${outcome}' === 'nested timeout') started.reject(new WorkerDrainTimeoutError(lateStart.promise.then(() => { writes = true })))
+                    else fire(5)
+                    await flush()
+                    const beforeStart = checkpoint
+                    if ('${outcome}' === 'drain timeout') { fire(50); await flush() }
+                    if ('${outcome}' === 'nested timeout') lateStart.resolve()
+                    else started.resolve()
+                    await flush()
+                    earlyCleanup.resolve(); await flush()
+                    const beforeCleanup = { checkpoint, writes, stops }
+                    if ('${outcome}' === 'cleanup failure') cleanup.reject(failure)
+                    else cleanup.resolve()
+                    const [result] = await Promise.allSettled([stopping])
+                    if ('${outcome}' === 'drain timeout') {
+                        if (result.status !== 'rejected' || !(result.reason instanceof WorkerDrainTimeoutError)) throw new Error('Missing bounded checkpoint failure')
+                        await result.reason.drained
+                        if ('${event}' === 'maintenance') {
+                            const [again] = await Promise.allSettled([supervisor.stopWorkersForRestoreMaintenance()])
+                            if (again.status !== 'rejected' || again.reason !== result.reason) throw new Error('Restore checkpoint forgot its deadline failure')
+                        }
+                    }
+                    await Promise.allSettled([initializing])
+                    await flush()
+                    console.log(JSON.stringify({ beforeStart, beforeCleanup, checkpoint, writes,
+                        exactFailure: result.status === 'rejected' && result.reason === failure,
+                        state: workerObservability.snapshot().workers.find(value => value.id === 'npm_import_cleanup').state }))
+                `,
+                    { cwd: new URL('../../..', import.meta.url) },
+                )
+                expect(JSON.parse(output.trim().split('\n').at(-1)!)).toEqual({
+                    beforeStart: 'pending',
+                    beforeCleanup: {
+                        checkpoint: outcome === 'drain timeout' ? 'failure' : 'pending',
+                        writes: true,
+                        stops: 2,
+                    },
+                    checkpoint:
+                        outcome === 'success' ||
+                        outcome === 'nested timeout' ||
+                        outcome === 'pending early stop'
+                            ? 'success'
+                            : 'failure',
+                    writes: outcome === 'cleanup failure',
+                    exactFailure: outcome === 'start failure' || outcome === 'cleanup failure',
+                    state:
+                        outcome === 'success' ||
+                        outcome === 'pending early stop' ||
+                        outcome === 'drain timeout' ||
+                        outcome === 'nested timeout'
+                            ? event === 'maintenance'
+                                ? 'maintenance_paused'
+                                : 'stopped'
+                            : 'failed',
+                })
+            })
+        }
+    }
+    test.each(['resolve', 'cancel'] as const)(
+        'a cooperative asynchronous start shares one cleanup effect across idempotent stops: %s',
+        async (settlement) => {
+            const entered = Promise.withResolvers<void>()
+            const cancelled = Promise.withResolvers<void>()
+            const cleanup = Promise.withResolvers<void>()
+            let stops = 0
+            let stopCalls = 0
+            let sharedCleanup: Promise<void> | undefined
+            const supervisor = createWorkerLifecycleSupervisor()
+            const initializing = supervisor.startWorkerLifecycle(async () => ({
+                start: async (signal) => {
+                    entered.resolve()
+                    await cancelled.promise
+                    if (settlement === 'cancel') throw signal!.reason
+                },
+                stop: () => {
+                    stopCalls++
+                    sharedCleanup ??= (async () => {
+                        stops++
+                        cancelled.resolve()
+                        await cleanup.promise
+                    })()
+                    return sharedCleanup
+                },
+            }))
+            await entered.promise
+            let drained = false
+            const stopping = supervisor.stopWorkersForRestoreMaintenance().then(() => {
+                drained = true
+            })
+            await Bun.sleep(1)
+            expect(stops).toBe(1)
+            expect(stopCalls).toBe(1)
+            expect(drained).toBe(false)
+            cleanup.resolve()
+            await Promise.all([
+                stopping,
+                initializing,
+                supervisor.stopWorkersForRestoreMaintenance(),
+            ])
+            expect(stops).toBe(1)
+            expect(stopCalls).toBe(2)
+            expect(drained).toBe(true)
+        },
+    )
+    test('retries a transient pre-start status read without stopping an unstarted singleton', async () => {
+        const output = await runBunScript(
+            `
+            import { mock } from 'bun:test'
+            mock.module('@tanstack/react-start/server-only', () => ({}))
+            let reads = 0, loads = 0, starts = 0, stops = 0
+            mock.module('./server/Backups/restore-maintenance-status.server.ts', () => ({
+                readRestoreMaintenanceObservation: async () => {
+                    if (++reads === 1) throw new Error('transient fixture read failure')
+                    return { maintenance: null, restoreResults: [] }
+                },
+            }))
+            mock.module('./server/Foundation/event-loop-observation.ts', () => ({ startEventLoopObservation() {} }))
+            const { createWorkerLifecycleSupervisor } = await import('./server/Foundation/worker-lifecycle.server.ts')
+            const cleanup = Promise.withResolvers()
+            const cleanupEntered = Promise.withResolvers()
+            const singleton = { start() { starts++ }, stop: () => { stops++; cleanupEntered.resolve(); return cleanup.promise } }
+            const supervisor = createWorkerLifecycleSupervisor()
+            await supervisor.startWorkerLifecycle(async () => { loads++; return singleton }, 'npm_import_cleanup', { retryDelayMs: 1 })
+            const recovered = { reads, loads, starts, stops }
+            let drained = false
+            const stopping = supervisor.stopWorkersForRestoreMaintenance().then(() => { drained = true })
+            await cleanupEntered.promise
+            await Promise.resolve()
+            const beforeCleanup = drained
+            cleanup.resolve()
+            await stopping
+            console.log(JSON.stringify({ recovered, beforeCleanup, drained, stops }))
+        `,
+            { cwd: new URL('../../..', import.meta.url) },
+        )
+        expect(JSON.parse(output.trim().split('\n').at(-1)!)).toEqual({
+            recovered: { reads: 2, loads: 1, starts: 1, stops: 0 },
+            beforeCleanup: false,
+            drained: true,
+            stops: 1,
+        })
+    })
+    for (const event of ['shutdown', 'maintenance'] as const) {
+        for (const deadline of ['complete', 'timeout'] as const) {
+            test(`${event} retains a late load and its cleanup after startup ${deadline}`, async () => {
+                const output = await runBunScript(
+                    `
+                    import { mock } from 'bun:test'
+                    mock.module('@tanstack/react-start/server-only', () => ({}))
+                    mock.module('./server/Backups/restore-maintenance-status.server.ts', () => ({ readRestoreMaintenanceObservation: async () => ({ maintenance: null, restoreResults: [] }) }))
+                    mock.module('./server/Foundation/event-loop-observation.ts', () => ({ startEventLoopObservation() {} }))
+                    const { createWorkerLifecycleSupervisor } = await import('./server/Foundation/worker-lifecycle.server.ts')
+                    const { WorkerDrainTimeoutError } = await import('./server/Foundation/Types/worker-lifecycle.types.ts')
+                    const { workerObservability } = await import('./server/Foundation/worker-observability.ts')
+                    workerObservability.reset()
+                    const timers = new Set()
+                    globalThis.setTimeout = (callback, milliseconds) => { const timer = { callback, milliseconds }; timers.add(timer); return timer }
+                    globalThis.clearTimeout = timer => timers.delete(timer)
+                    const fire = milliseconds => {
+                        const timer = [...timers].find(value => value.milliseconds === milliseconds)
+                        if (!timer) throw new Error('Expected owned deadline unavailable')
+                        timers.delete(timer); timer.callback()
+                    }
+                    const flush = async () => { for (let index = 0; index < 40; index++) await Promise.resolve() }
+                    const loaded = Promise.withResolvers()
+                    const cleanup = Promise.withResolvers()
+                    let starts = 0, stops = 0, checkpoint = 'pending', failure, actual = 'pending'
+                    const worker = { start() { starts++ }, stop() { stops++; return cleanup.promise } }
+                    const supervisor = createWorkerLifecycleSupervisor()
+                    const initializing = supervisor.startWorkerLifecycle(() => loaded.promise, 'npm_import_cleanup', { startupTimeoutMs: 7, drainTimeoutMs: 11 })
+                    void initializing.catch(() => {})
+                    let draining
+                    if ('${event}' === 'maintenance') draining = supervisor.stopWorkersForRestoreMaintenance()
+                    else { const pending = []; process.emit('rentnerproxy:shutdown', pending); draining = Promise.all(pending) }
+                    void draining.then(() => { checkpoint = 'success' }, error => { checkpoint = 'failure'; failure = error })
+                    const read = () => workerObservability.snapshot().workers.find(value => value.id === 'npm_import_cleanup')
+                    fire(7)
+                    await flush()
+                    const afterStartup = { checkpoint, state: read().state }
+                    if ('${deadline}' === 'timeout') {
+                        fire(11); await flush()
+                        if (!(failure instanceof WorkerDrainTimeoutError)) throw new Error('Missing bounded stop failure')
+                        void failure.drained.then(() => { actual = 'success' }, () => { actual = 'failure' })
+                    }
+                    loaded.resolve(worker)
+                    await flush()
+                    const afterLoad = { checkpoint, actual, state: read().state, starts, stops }
+                    cleanup.resolve()
+                    if (failure) await failure.drained
+                    else await draining
+                    const [initial] = await Promise.allSettled([initializing])
+                    if ('${event}' === 'maintenance' && failure && (initial.status !== 'rejected' || initial.reason !== failure))
+                        throw new Error('Initialization forgot the failed maintenance checkpoint')
+                    await flush()
+                    if ('${event}' === 'maintenance' && failure) {
+                        const [repeated] = await Promise.allSettled([supervisor.stopWorkersForRestoreMaintenance()])
+                        if (repeated.status !== 'rejected' || repeated.reason !== failure) throw new Error('Failed restore checkpoint was forgotten')
+                    }
+                    console.log(JSON.stringify({ afterStartup, afterLoad,
+                        finished: { checkpoint, state: read().state, starts, stops, drainTimeout: read().counters.drainTimeout } }))
+                `,
+                    { cwd: new URL('../../..', import.meta.url) },
+                )
+                expect(JSON.parse(output.trim().split('\n').at(-1)!)).toEqual({
+                    afterStartup: { checkpoint: 'pending', state: 'stopping' },
+                    afterLoad: {
+                        checkpoint: deadline === 'timeout' ? 'failure' : 'pending',
+                        actual: 'pending',
+                        state: 'stopping',
+                        starts: 0,
+                        stops: 1,
+                    },
+                    finished: {
+                        checkpoint: deadline === 'timeout' ? 'failure' : 'success',
+                        state: event === 'maintenance' ? 'maintenance_paused' : 'stopped',
+                        starts: 0,
+                        stops: 1,
+                        drainTimeout: deadline === 'timeout' ? 1 : 0,
+                    },
+                })
+            })
+        }
+    }
+
+    test.each(['load', 'cleanup'] as const)(
+        'a failed late %s rejects the actual drain instead of granting restore quiescence',
+        async (failureAt) => {
+            const output = await runBunScript(
+                `
+            import { mock } from 'bun:test'
+            mock.module('@tanstack/react-start/server-only', () => ({}))
+            mock.module('./server/Backups/restore-maintenance-status.server.ts', () => ({ readRestoreMaintenanceObservation: async () => ({ maintenance: null, restoreResults: [] }) }))
+            mock.module('./server/Foundation/event-loop-observation.ts', () => ({ startEventLoopObservation() {} }))
+            const { createWorkerLifecycleSupervisor } = await import('./server/Foundation/worker-lifecycle.server.ts')
+            const { WorkerDrainTimeoutError } = await import('./server/Foundation/Types/worker-lifecycle.types.ts')
+            const { workerObservability } = await import('./server/Foundation/worker-observability.ts')
+            workerObservability.reset()
+            const timers = new Map()
+            globalThis.setTimeout = (callback, milliseconds) => { const timer = {}; timers.set(timer, { callback, milliseconds }); return timer }
+            globalThis.clearTimeout = timer => timers.delete(timer)
+            const fire = milliseconds => { const [timer, value] = [...timers].find(([, value]) => value.milliseconds === milliseconds); timers.delete(timer); value.callback() }
+            const flush = async () => { for (let index = 0; index < 40; index++) await Promise.resolve() }
+            const loaded = Promise.withResolvers()
+            const cleanup = Promise.withResolvers()
+            const lateFailure = new Error('late fixture load failed')
+            const supervisor = createWorkerLifecycleSupervisor()
+            const initializing = supervisor.startWorkerLifecycle(() => loaded.promise, 'npm_import_cleanup', { startupTimeoutMs: 7, drainTimeoutMs: 11 })
+            void initializing.catch(() => {})
+            let checkpoint = 'pending', failure
+            const draining = supervisor.stopWorkersForRestoreMaintenance()
+            void draining.then(() => { checkpoint = 'success' }, error => { checkpoint = 'failure'; failure = error })
+            fire(7); await flush()
+            const beforeDeadline = checkpoint
+            fire(11); await flush()
+            if (!(failure instanceof WorkerDrainTimeoutError)) throw new Error('Missing bounded stop failure')
+            if ('${failureAt}' === 'load') loaded.reject(lateFailure)
+            else {
+                loaded.resolve({ start() { throw new Error('Late worker must never start') }, stop: () => cleanup.promise })
+                await flush()
+                cleanup.reject(lateFailure)
+            }
+            const [actual] = await Promise.allSettled([failure.drained])
+            await Promise.allSettled([initializing, draining])
+            await flush()
+            const worker = workerObservability.snapshot().workers.find(value => value.id === 'npm_import_cleanup')
+            console.log(JSON.stringify({ beforeDeadline, checkpoint, failedLateLoad: actual.status === 'rejected' && actual.reason === lateFailure, state: worker.state }))
+        `,
+                { cwd: new URL('../../..', import.meta.url) },
+            )
+            expect(JSON.parse(output.trim().split('\n').at(-1)!)).toEqual({
+                beforeDeadline: 'pending',
+                checkpoint: 'failure',
+                failedLateLoad: true,
+                state: 'failed',
+            })
+        },
+    )
+
     test('nested stop deadlines retain a running sibling before propagating an actual failure', async () => {
         const writing = Promise.withResolvers<void>()
         const [inner] = await Promise.allSettled([drainWorker(writing.promise, 0)])

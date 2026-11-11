@@ -1,5 +1,6 @@
 import '@tanstack/react-start/server-only'
 import { HOST_MONITORING_LIMITS } from '@/config/host-monitoring.config.ts'
+import { withBackgroundDatabaseContext } from '@/db/background-admission.ts'
 import { observeWorkerOperation } from '@/server/Foundation/worker-operation.ts'
 import { workerObservability } from '@/server/Foundation/worker-observability.ts'
 import { inspectControllerDomain } from '@/server/Controller/domain-diagnostics.server.ts'
@@ -24,6 +25,7 @@ import type {
     HostMonitoringCompletion,
 } from './Types/host-monitoring.repository.types.ts'
 import type { HostMonitoringProbeContext } from './Types/host-monitoring-probe.types.ts'
+import { HostMonitoringCleanupError } from './Types/host-monitoring-worker.types.ts'
 
 const readContext = createHostMonitoringBatcher<
     HostMonitoringClaim,
@@ -51,7 +53,7 @@ const complete = createHostMonitoringBatcher<HostMonitoringCompletion, boolean>(
 })
 
 // Coalesce a cancelled 64-probe flight into one fenced transaction within the drain budget.
-const release = createHostMonitoringBatcher<HostMonitoringClaim, boolean>({
+const releaseBatch = createHostMonitoringBatcher<HostMonitoringClaim, boolean>({
     size: HOST_MONITORING_LIMITS.workerConcurrency,
     delayMs: 0,
     /** Keep repeated policies in separate ordered transactions so every old/new token retains its own fence and result. */
@@ -74,7 +76,10 @@ const release = createHostMonitoringBatcher<HostMonitoringClaim, boolean>({
         for (const current of batches) {
             try {
                 // oxlint-disable-next-line no-await-in-loop -- A later token for the same policy must follow the earlier fenced release.
-                const values = await releaseHostMonitoringClaims(current)
+                const values = await withBackgroundDatabaseContext(
+                    () => releaseHostMonitoringClaims(current),
+                    null,
+                )
                 if (values.length !== current.length)
                     throw new Error('Invalid monitoring release result.')
                 released ||= values.some(Boolean)
@@ -94,6 +99,12 @@ const release = createHostMonitoringBatcher<HostMonitoringClaim, boolean>({
         return results
     },
 })
+
+/** Retain failed cleanup ownership separately from ordinary probe errors, without bypassing SQL admission or changing claim fences. */
+const release = (claim: HostMonitoringClaim) =>
+    releaseBatch(claim).catch((cause: unknown) => {
+        throw new HostMonitoringCleanupError(cause)
+    })
 
 export const hostMonitoringWorker = createHostMonitoringWorker({
     claim: (limit) =>

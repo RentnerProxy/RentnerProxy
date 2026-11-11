@@ -2,9 +2,70 @@
 import { expect, spyOn, test } from 'bun:test'
 import { createRuntimeReconciler } from '@/server/Foundation/runtime-reconciler.server.ts'
 import { workerObservability } from '@/server/Foundation/worker-observability.ts'
+import {
+    admitDatabaseTransaction,
+    withBackgroundDatabaseContext,
+} from '@/db/background-admission.ts'
+import { BACKGROUND_DATABASE_POLICY } from '@/config/background-resources.config.ts'
 
 const read = () =>
     workerObservability.snapshot().workers.find((worker) => worker.id === 'proxy_reconciliation')!
+
+test('an independent reconciler outlives its first discovery owner while retaining shared SQL admission', async () => {
+    const owner = new AbortController()
+    let loads = 0
+    let drifts = 0
+    const reconciler = createRuntimeReconciler(
+        {
+            load: () => admitDatabaseTransaction(async () => ++loads),
+            revision: () => 'revision',
+            apply: async () => true,
+            drift: {
+                check: () =>
+                    admitDatabaseTransaction(async () => {
+                        drifts++
+                        return false
+                    }),
+            },
+        },
+        { name: 'independent', timeoutMs: 100, stopTimeoutMs: 100 },
+    )
+    const occupied = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    let admitted = 0
+    let held: Promise<void>[] = []
+    try {
+        expect(await withBackgroundDatabaseContext(() => reconciler(), owner.signal)).toBe(
+            'applied',
+        )
+        owner.abort()
+        held = Array.from({ length: BACKGROUND_DATABASE_POLICY.classes.critical.running }, () =>
+            withBackgroundDatabaseContext(() =>
+                admitDatabaseTransaction(async () => {
+                    if (++admitted === BACKGROUND_DATABASE_POLICY.classes.critical.running)
+                        occupied.resolve()
+                    await release.promise
+                }),
+            ),
+        )
+        await occupied.promise
+        const before = loads
+        const reconciling = reconciler()
+        const drifting = withBackgroundDatabaseContext(() => reconciler.checkDrift(), owner.signal)
+        await Bun.sleep(0)
+        expect(loads).toBe(before)
+        expect(drifts).toBe(0)
+        release.resolve()
+        expect(await reconciling).toBe('applied')
+        await drifting
+        expect(loads).toBe(before + 2)
+        expect(drifts).toBe(1)
+    } finally {
+        release.resolve()
+        await Promise.allSettled(held)
+        await reconciler.stop()
+    }
+})
 
 for (const recovery of ['new-revision', 'manual-retry'] as const) {
     test(

@@ -1,6 +1,7 @@
 // oxlint-disable no-await-in-loop -- Observe the serialized status polls before changing the root fixture.
 import { afterEach, expect, mock, test } from 'bun:test'
 import type { ManagedBackupMaintenance } from '@/lib/Backups/Types/backups.types.ts'
+import { advanceRestoreAdmission } from '@/server/Backups/restore-admission.ts'
 
 const original: ManagedBackupMaintenance = {
     id: '01900000-0000-7000-8000-000000000001',
@@ -45,6 +46,28 @@ async function waitForRead() {
     expect(read.mock.calls.length).toBeGreaterThan(previous)
 }
 
+test('the shared admission decision preserves missing evidence and never mutates its previous cursor', () => {
+    const previous = new Set([original.id])
+    const observation = { maintenance: null, restoreResults: [] }
+    expect([...advanceRestoreAdmission(previous, observation)]).toEqual([original.id])
+    expect([...previous]).toEqual([original.id])
+    expect(observation).toEqual({ maintenance: null, restoreResults: [] })
+    const exhausted = new Set(
+        Array.from(
+            { length: 100 },
+            (_, index) => `01900000-0000-7000-8000-${index.toString(16).padStart(12, '0')}`,
+        ),
+    )
+    const before = [...exhausted]
+    expect(() =>
+        advanceRestoreAdmission(exhausted, {
+            maintenance: { ...original, id: '01900000-0000-7000-8000-000000999999' },
+            restoreResults: [],
+        }),
+    ).toThrow('restore_admission_history_exhausted')
+    expect([...exhausted]).toEqual(before)
+})
+
 test('an overwritten pre-destructive failure admits startup using its original root receipt', async () => {
     maintenance = original
     restoreResults = []
@@ -63,6 +86,49 @@ test('an overwritten pre-destructive failure admits startup using its original r
     restoreResults = [{ ...original, state: 'failed' }]
     await initializing
     expect(start).toHaveBeenCalledTimes(1)
+})
+
+test.each([
+    'hidden failure',
+    'older recovery',
+    'newer preflight failure',
+    'newer recovery',
+] as const)('initial admission uses ordered restore receipts: %s', async (scenario) => {
+    maintenance = {
+        ...original,
+        id: '01900000-0000-7000-8000-000000000005',
+        operation: 'delete',
+        state: 'succeeded',
+    }
+    const unsafe: Result = { ...original, state: 'failed', phase: 'database' }
+    // Root journal position proves ordering; random operation IDs do not.
+    const recovery: Result = {
+        ...original,
+        id: '01900000-0000-7000-8000-000000000000',
+        state: 'succeeded',
+        phase: 'complete',
+    }
+    restoreResults = scenario === 'older recovery' ? [recovery, unsafe] : [unsafe]
+    if (scenario === 'newer preflight failure')
+        restoreResults.push({ ...recovery, state: 'failed', phase: 'validating' })
+    if (scenario === 'newer recovery') restoreResults.push(recovery)
+    const start = mock(() => undefined)
+    const stop = mock(async () => undefined)
+    const supervisor = createWorkerLifecycleSupervisor()
+    const initializing = supervisor.startWorkerLifecycle(async () => ({ start, stop }))
+    try {
+        await waitForRead()
+        if (scenario !== 'newer recovery') {
+            expect(start).not.toHaveBeenCalled()
+            restoreResults.push({ ...recovery, id: '01900000-0000-7000-8000-000000000006' })
+        }
+        await initializing
+        expect(start).toHaveBeenCalledTimes(1)
+    } finally {
+        await supervisor.stopWorkersForRestoreMaintenance()
+        await initializing
+    }
+    expect(stop).toHaveBeenCalledTimes(1)
 })
 
 test.each(['active', 'destructive failure', 'missing original'] as const)(
@@ -115,7 +181,7 @@ test.each(['active', 'destructive failure', 'missing original'] as const)(
     },
 )
 
-test('a status read failure and fresh worker retry retain the original restore fence until its safe receipt arrives', async () => {
+test('a transient status read retains the unstarted worker and original restore fence until its safe receipt arrives', async () => {
     maintenance = original
     restoreResults = []
     const start = mock(() => undefined)
@@ -134,14 +200,18 @@ test('a status read failure and fresh worker retry retain the original restore f
     read.mockRejectedValueOnce(
         Object.assign(new Error('fixture status read failure'), { code: 'EIO' }),
     )
-    const until = Date.now() + 2_000
-    while (load.mock.calls.length < 2 && Date.now() < until) await Bun.sleep(1)
-    expect(load).toHaveBeenCalledTimes(2)
+    // Observe both the rejected read and its retry before checking retained ownership.
     await waitForRead()
-    expect(stop).toHaveBeenCalledTimes(1)
+    await waitForRead()
+    expect(load).toHaveBeenCalledTimes(1)
+    expect(stop).not.toHaveBeenCalled()
     expect(start).not.toHaveBeenCalled()
 
     restoreResults = [{ ...original, state: 'failed', phase: 'validating' }]
     await initializing
     expect(start).toHaveBeenCalledTimes(1)
+    const pending: Array<Promise<void>> = []
+    process.emit('rentnerproxy:shutdown', pending)
+    await Promise.all(pending)
+    expect(stop).toHaveBeenCalledTimes(1)
 })

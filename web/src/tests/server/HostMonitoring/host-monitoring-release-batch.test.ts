@@ -111,3 +111,52 @@ test('duplicate policies retain each old/new token result and a failed earlier b
         },
     })
 })
+
+test('cancelled fenced cleanup retains the monitoring SQL budget and waits for its real permit', async () => {
+    const output = await runBunScript(
+        `
+        import { mock } from 'bun:test'
+        import { withBackgroundDatabaseContext, admitDatabaseTransaction, backgroundDatabaseResourceSnapshot } from './db/background-admission.ts'
+        let dependencies, invoked = 0, resource
+        mock.module('@tanstack/react-start/server-only', () => ({}))
+        mock.module('./server/HostMonitoring/host-monitoring.worker.ts', () => ({ createHostMonitoringWorker: value => (dependencies = value, {}) }))
+        mock.module('./server/HostMonitoring/host-monitoring.repository.ts', () => ({
+            claimDueHostMonitoringPolicies: async () => [], completeHostMonitoringClaims: async () => [],
+            readHostMonitoringClaimContexts: async () => [], readNextHostMonitoringAdmissionAt: async () => null,
+            pruneHostMonitoringHistory: async () => {},
+            releaseHostMonitoringClaims: claims => admitDatabaseTransaction(async selected => {
+                invoked++; resource = selected; return claims.map(() => true)
+            }),
+        }))
+        mock.module('./server/HostMonitoring/host-monitoring.observability.ts', () => ({ sampleHostMonitoringBacklog: async () => {} }))
+        mock.module('./server/Controller/domain-diagnostics.server.ts', () => ({ inspectControllerDomain: async () => {} }))
+        mock.module('./server/WebSockets/applicationChanges.ts', () => ({ publishApplicationChange: () => {}, subscribeToApplicationChanges: () => () => {} }))
+        await import('./server/HostMonitoring/host-monitoring.worker.server.ts')
+        const gate = Promise.withResolvers(), ready = Promise.withResolvers()
+        let occupied = 0
+        const held = Array.from({ length: 2 }, () => withBackgroundDatabaseContext(() => admitDatabaseTransaction(async () => {
+            if (++occupied === 2) ready.resolve()
+            await gate.promise
+        }), undefined, 'monitoring'))
+        await ready.promise
+        const controller = new AbortController(); controller.abort()
+        const result = withBackgroundDatabaseContext(() => dependencies.releaseCancelled({ policy: { id: 'owned' } }), controller.signal, 'monitoring')
+            .then(() => 'released', error => error.reason)
+        await Bun.sleep(10)
+        const before = { invoked, ...backgroundDatabaseResourceSnapshot().monitoring }
+        gate.resolve()
+        const outcome = await result
+        await Promise.all(held)
+        console.log(JSON.stringify({ before: { invoked: before.invoked, running: before.running, pending: before.pending },
+            outcome, invoked, resource, after: backgroundDatabaseResourceSnapshot().monitoring.running }))
+    `,
+        { cwd: new URL('../../..', import.meta.url) },
+    )
+    expect(JSON.parse(output.trim().split('\n').at(-1)!)).toEqual({
+        before: { invoked: 0, running: 2, pending: 1 },
+        outcome: 'released',
+        invoked: 1,
+        resource: 'monitoring',
+        after: 0,
+    })
+})
