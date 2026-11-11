@@ -2,7 +2,10 @@ import { expect, spyOn, test } from 'bun:test'
 import { readBoundedStream, ResponseBodyLimitError } from '@/lib/Http/readBoundedStream.ts'
 
 test.each([
-    ['overflow', 'resolve'], ['overflow', 'reject'], ['abort', 'resolve'], ['abort', 'reject'],
+    ['overflow', 'resolve'],
+    ['overflow', 'reject'],
+    ['abort', 'resolve'],
+    ['abort', 'reject'],
 ] as const)(
     '%s reports its original failure and tracks the actual %s cancellation for the resource owner',
     async (phase, outcome) => {
@@ -11,7 +14,8 @@ test.each([
         const controller = new AbortController()
         const failure = new Error('caller abort')
         const tracked: Promise<unknown>[] = []
-        let calls = 0, settled = false
+        let calls = 0,
+            settled = false
         const body = new ReadableStream<Uint8Array>({
             start(source) {
                 if (phase === 'overflow') source.enqueue(Uint8Array.of(1, 2))
@@ -23,14 +27,18 @@ test.each([
             },
         })
         try {
-            const reading = readBoundedStream(body, 1, controller.signal, (work) => tracked.push(work))
+            const reading = readBoundedStream(body, 1, controller.signal, (work) =>
+                tracked.push(work),
+            )
             if (phase === 'abort') controller.abort(failure)
             await cancelled.promise
             if (phase === 'abort') await expect(reading).rejects.toBe(failure)
             else await expect(reading).rejects.toBeInstanceOf(ResponseBodyLimitError)
             expect(body.locked).toBe(false)
             expect(tracked).toHaveLength(1)
-            const drained = Promise.all(tracked).then(() => { settled = true })
+            const drained = Promise.all(tracked).then(() => {
+                settled = true
+            })
             await Bun.sleep(0)
             expect(settled).toBe(false)
             expect(calls).toBe(1)

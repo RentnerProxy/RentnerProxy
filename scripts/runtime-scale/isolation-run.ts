@@ -405,14 +405,21 @@ async function spawnRole(
     }
 }
 /** Send a control-marked loopback request with the pool fault's explicit budget or the normal sixteen-second deadline. */
-async function request(child: Pick<Child, 'ready'>, path: string, method = 'GET', signal?: AbortSignal) {
-    const deadline = AbortSignal.timeout(path === '/pool' ? isolationPoolFaultBudget.poolClientMs : isolationPoolFaultBudget.requestMs)
+async function request(
+    child: Pick<Child, 'ready'>,
+    path: string,
+    method = 'GET',
+    signal?: AbortSignal,
+) {
+    const deadline = AbortSignal.timeout(
+        path === '/pool'
+            ? isolationPoolFaultBudget.poolClientMs
+            : isolationPoolFaultBudget.requestMs,
+    )
     return fetch('http://127.0.0.1:' + child.ready.port + path, {
         method,
         headers: controlHeaders,
-        signal: signal
-            ? AbortSignal.any([signal, deadline])
-            : deadline,
+        signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
         redirect: 'error',
     })
 }
