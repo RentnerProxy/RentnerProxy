@@ -19,6 +19,11 @@ import type {
     HostMonitoringOutcome,
     HostMonitoringSettings,
 } from '@/lib/HostMonitoring/Types/host-monitoring.types.ts'
+import {
+    backgroundDatabaseResourceSnapshot,
+    withBackgroundDatabaseContext,
+} from '@/db/background-admission.ts'
+import { ResourceAdmissionError } from '@/server/Foundation/resource-admission.ts'
 import { getDatabaseUrl } from '@/server/env.server.ts'
 import { lockProxyRuntimeSettings } from '@/server/ProxyRuntime/proxy-runtime-settings.ts'
 import {
@@ -356,8 +361,86 @@ describe('durable scheduled monitoring repository', () => {
                     configuredBy: actorId,
                 })),
             )
+            const releaseSaturation = Promise.withResolvers<void>()
+            const holderEntered = Array.from({ length: 2 }, () => Promise.withResolvers<void>())
+            const holders = Array.from({ length: 10 }, (_, index) =>
+                withBackgroundDatabaseContext(
+                    () =>
+                        db.transaction(async (transaction) => {
+                            await transaction.execute(sql`select 1`)
+                            holderEntered[index]?.resolve()
+                            await releaseSaturation.promise
+                        }),
+                    undefined,
+                    'monitoring',
+                ),
+            )
+            const holdersSettled = Promise.allSettled(holders)
+            let firstAttempts: (
+                { result: HostMonitoringClaim[] } | { retryable: 'busy' | 'deadline' }
+            )[] = []
+            try {
+                await Promise.all(holderEntered.map((entered) => entered.promise))
+                expect(backgroundDatabaseResourceSnapshot().monitoring).toMatchObject({
+                    running: 2,
+                    pending: 8,
+                })
+
+                // Own all six first attempts. A full monitoring queue rejects admission before SQL starts.
+                firstAttempts = await Promise.all(
+                    Array.from({ length: 6 }, async () => {
+                        try {
+                            return { result: await claimDueHostMonitoringPolicies(16) }
+                        } catch (error) {
+                            if (
+                                error instanceof ResourceAdmissionError &&
+                                (error.reason === 'busy' || error.reason === 'deadline')
+                            )
+                                return { retryable: error.reason }
+                            throw error
+                        }
+                    }),
+                )
+                expect(firstAttempts).toEqual(
+                    Array.from({ length: 6 }, () => ({ retryable: 'busy' })),
+                )
+
+                releaseSaturation.resolve()
+                const holderOutcomes = await holdersSettled
+                expect(holderOutcomes.every((outcome) => outcome.status === 'fulfilled')).toBe(true)
+                expect(backgroundDatabaseResourceSnapshot().monitoring).toMatchObject({
+                    running: 0,
+                    pending: 0,
+                })
+            } finally {
+                releaseSaturation.resolve()
+                await holdersSettled
+            }
+
+            // Retry only typed failures that prove admission never started SQL; bound every logical claimer.
+            const claimWithAdmissionRetry = async (
+                attemptsStarted: number,
+            ): Promise<HostMonitoringClaim[]> => {
+                let attempts = attemptsStarted
+                while (attempts < 7) {
+                    attempts++
+                    try {
+                        return await claimDueHostMonitoringPolicies(16)
+                    } catch (error) {
+                        if (
+                            !(error instanceof ResourceAdmissionError) ||
+                            (error.reason !== 'busy' && error.reason !== 'deadline') ||
+                            attempts === 7
+                        )
+                            throw error
+                    }
+                }
+                throw new Error('Monitoring claim admission attempt limit exhausted.')
+            }
             const batches = await Promise.all(
-                Array.from({ length: 6 }, () => claimDueHostMonitoringPolicies(16)),
+                firstAttempts.map((firstAttempt) =>
+                    'result' in firstAttempt ? firstAttempt.result : claimWithAdmissionRetry(1),
+                ),
             )
             const active = batches.flat()
             expect(active).toHaveLength(64)
