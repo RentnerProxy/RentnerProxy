@@ -115,7 +115,7 @@ test.each(['active', 'destructive failure', 'missing original'] as const)(
     },
 )
 
-test('a status read failure and fresh worker retry retain the original restore fence until its safe receipt arrives', async () => {
+test('a transient status read retains the unstarted worker and original restore fence until its safe receipt arrives', async () => {
     maintenance = original
     restoreResults = []
     const start = mock(() => undefined)
@@ -134,14 +134,18 @@ test('a status read failure and fresh worker retry retain the original restore f
     read.mockRejectedValueOnce(
         Object.assign(new Error('fixture status read failure'), { code: 'EIO' }),
     )
-    const until = Date.now() + 2_000
-    while (load.mock.calls.length < 2 && Date.now() < until) await Bun.sleep(1)
-    expect(load).toHaveBeenCalledTimes(2)
+    // Observe both the rejected read and its retry before checking retained ownership.
     await waitForRead()
-    expect(stop).toHaveBeenCalledTimes(1)
+    await waitForRead()
+    expect(load).toHaveBeenCalledTimes(1)
+    expect(stop).not.toHaveBeenCalled()
     expect(start).not.toHaveBeenCalled()
 
     restoreResults = [{ ...original, state: 'failed', phase: 'validating' }]
     await initializing
     expect(start).toHaveBeenCalledTimes(1)
+    const pending: Array<Promise<void>> = []
+    process.emit('rentnerproxy:shutdown', pending)
+    await Promise.all(pending)
+    expect(stop).toHaveBeenCalledTimes(1)
 })

@@ -191,12 +191,13 @@ describe('host monitoring worker', () => {
         const released: string[] = []
         let probes = 0
         let warnings = 0
+        const failure = new Error('private release failure')
         const worker = createHostMonitoringWorker(
             dependencies({
                 claim: () => admitted.promise,
                 releaseCancelled: (claim) => {
                     released.push(claim)
-                    if (claim === 'failed') throw new Error('private release failure')
+                    if (claim === 'failed') throw failure
                     return cleaned.promise
                 },
                 runClaim: async () => {
@@ -209,19 +210,72 @@ describe('host monitoring worker', () => {
         )
         const tick = worker.runOnce()
         const stopping = worker.stop()
+        void tick.catch(() => undefined)
+        void stopping.catch(() => undefined)
         admitted.resolve(['failed', 'late', 'later'])
         await flush()
         expect(released).toEqual(['failed', 'late', 'later'])
         let stopped = false
-        void stopping.then(() => {
-            stopped = true
-        })
+        void stopping.then(
+            () => {
+                stopped = true
+            },
+            () => undefined,
+        )
         await flush()
         expect(stopped).toBeFalse()
         cleaned.resolve()
-        await stopping
-        await tick
+        await expect(stopping).rejects.toBe(failure)
+        await expect(tick).rejects.toBe(failure)
         expect({ probes, warnings }).toEqual({ probes: 0, warnings: 0 })
+    })
+
+    test('a timed-out stop preserves its failure and allows restart only after the real drain', async () => {
+        const output = await runBunScript(
+            `
+            import { mock } from 'bun:test'
+            mock.module('@tanstack/react-start/server-only', () => ({}))
+            const { createHostMonitoringWorker } = await import('./server/HostMonitoring/host-monitoring.worker.ts')
+            const { WorkerDrainTimeoutError } = await import('./server/Foundation/Types/worker-lifecycle.types.ts')
+            let deadline
+            globalThis.setTimeout = callback => { deadline = callback; return {} }
+            globalThis.clearTimeout = () => {}
+            const entered = Promise.withResolvers()
+            const done = Promise.withResolvers()
+            let claims = 0
+            const worker = createHostMonitoringWorker({
+                claim: async () => ++claims === 1 ? ['slow'] : [],
+                runClaim: async () => { entered.resolve(); await done.promise },
+                releaseCancelled: async () => {}, prune: async () => {}, unavailable() {},
+                schedule: () => () => {},
+            })
+            worker.start()
+            await entered.promise
+            const stopping = worker.stop()
+            void stopping.catch(() => {})
+            deadline()
+            const [result] = await Promise.allSettled([stopping])
+            if (result.status !== 'rejected' || !(result.reason instanceof WorkerDrainTimeoutError)) throw new Error('Missing drain timeout')
+            worker.start()
+            await worker.runOnce()
+            const whileDraining = claims
+            done.resolve()
+            await result.reason.drained
+            await Promise.resolve()
+            worker.start()
+            await worker.runOnce()
+            const afterDrain = claims
+            await worker.stop()
+            const [original] = await Promise.allSettled([stopping])
+            console.log(JSON.stringify({ whileDraining, afterDrain, retainedFailure: original.status === 'rejected' && original.reason === result.reason }))
+        `,
+            { cwd: new URL('../../..', import.meta.url) },
+        )
+        expect(JSON.parse(output.trim().split('\n').at(-1)!)).toEqual({
+            whileDraining: 1,
+            afterDrain: 2,
+            retainedFailure: true,
+        })
     })
 
     test('a failed probe does not abort a healthy sibling and shutdown awaits adapter cleanup', async () => {

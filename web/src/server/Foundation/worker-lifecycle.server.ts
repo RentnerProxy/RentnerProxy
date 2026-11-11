@@ -112,6 +112,9 @@ export function createWorkerLifecycleSupervisor() {
     ): Promise<void> {
         const controller = new AbortController()
         let worker: WorkerLifecycle | undefined
+        let startAttempted = false
+        // Startup deadlines bound the waiter; the load and any late cleanup stay owned.
+        let loading: Promise<void> | undefined
         let stopping: Promise<void> | null = null
         const state = (value: BackgroundWorkerState) => {
             if (id) workerObservability.state(id, value)
@@ -148,9 +151,18 @@ export function createWorkerLifecycleSupervisor() {
             return reading
         }
         /** Bound worker loading while retaining its completion promise for late-instance cleanup. */
-        const drainLoaded = async (loading: Promise<WorkerLifecycle>) => {
-            await drainWorker(loading, options.startupTimeoutMs)
-            return loading
+        const drainLoaded = async (
+            pendingLoad: Promise<WorkerLifecycle>,
+            ownedLoad: Promise<void>,
+        ) => {
+            try {
+                await drainWorker(pendingLoad, options.startupTimeoutMs)
+            } catch (error) {
+                if (error instanceof WorkerDrainTimeoutError)
+                    throw new WorkerDrainTimeoutError(ownedLoad)
+                throw error
+            }
+            return pendingLoad
         }
         // A retry may replace the worker, but cannot forget a restore whose safe result is unconfirmed.
         const waiting = new Set<string>()
@@ -161,14 +173,22 @@ export function createWorkerLifecycleSupervisor() {
                 if (controller.signal.aborted) return
                 state('starting')
                 try {
-                    const loading = load(controller.signal).then((loaded) => {
-                        if (loaded === stoppedWorker) throw new WorkerStoppedInstanceError()
-                        worker = loaded
-                        if (controller.signal.aborted)
-                            void stopLoaded().catch(() => state('failed'))
-                        return loaded
-                    })
-                    worker = await drainLoaded(loading)
+                    if (!worker) {
+                        const pendingLoad = load(controller.signal).then((loaded) => {
+                            if (loaded === stoppedWorker) throw new WorkerStoppedInstanceError()
+                            worker = loaded
+                            return loaded
+                        })
+                        const ownedLoad = pendingLoad.then(async () => {
+                            if (controller.signal.aborted) await stopLoaded()
+                        })
+                        loading = ownedLoad
+                        const settledLoad = () => {
+                            if (loading === ownedLoad) loading = undefined
+                        }
+                        void ownedLoad.then(settledLoad, settledLoad)
+                        worker = await drainLoaded(pendingLoad, ownedLoad)
+                    }
                     let observation = await readStatus()
                     if (waiting.size > 0 || shouldWait(observation.maintenance)) {
                         state('maintenance_paused')
@@ -204,6 +224,7 @@ export function createWorkerLifecycleSupervisor() {
                         return
                     }
                     state('idle')
+                    startAttempted = true
                     await drainWorker(
                         Promise.resolve(worker.start(controller.signal)),
                         options.startupTimeoutMs,
@@ -212,16 +233,19 @@ export function createWorkerLifecycleSupervisor() {
                 } catch (error) {
                     if (controller.signal.aborted) return
                     if (error instanceof WorkerDrainTimeoutError) controller.abort()
-                    if (worker) {
-                        await drainWorker(stopLoaded(), options.drainTimeoutMs)
-                        worker = undefined
-                    }
-                    if (
+                    const terminal =
                         error instanceof WorkerDrainTimeoutError ||
                         error instanceof WorkerStoppedInstanceError ||
                         attempt === attempts ||
                         options.classifyFailure?.(error) === 'terminal'
-                    ) {
+                    // Retry transient restore reads with the same never-started instance.
+                    // A failed start or terminal attempt still owns mandatory cleanup.
+                    if (worker && (startAttempted || terminal)) {
+                        await drainWorker(stopLoaded(), options.drainTimeoutMs)
+                        worker = undefined
+                        startAttempted = false
+                    }
+                    if (terminal) {
                         state('failed')
                         if (id) workerObservability.count(id, 'exhausted')
                         throw error
@@ -239,7 +263,7 @@ export function createWorkerLifecycleSupervisor() {
             controller.abort()
             if (!stopping) state('stopping')
             stopping ??= drainWorker(
-                settleWorkerTasks([stopLoaded(), initializing.then(stopLoaded)]),
+                settleWorkerTasks([stopLoaded(), initializing.then(stopLoaded), loading ?? null]),
                 options.drainTimeoutMs,
             ).then(
                 () => state(maintenanceStopped ? 'maintenance_paused' : 'stopped'),
