@@ -31,6 +31,8 @@ func run(args []string) error {
 	return validate(args[0], info)
 }
 
+// validate enforces each shipped binary's own compiler, dependency and CGO policy;
+// approval of one profile never permits the other profile's toolchain or forks.
 func validate(profile string, info *debug.BuildInfo) error {
 	var expected map[string]string
 	compiler := "go1.27.3"
