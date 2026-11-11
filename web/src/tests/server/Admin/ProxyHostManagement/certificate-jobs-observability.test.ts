@@ -190,13 +190,14 @@ test.each([
     { reason: 'deadline', cleanupFails: false },
     { reason: 'busy', cleanupFails: true },
 ])(
-    'critical SQL pressure defers an owned job without changing controller errors or retry intent: %j',
+    'critical SQL pressure preserves job intent and rejects an unconfirmed owned release: %j',
     async ({ reason, cleanupFails }) => {
         const output = await runBunScript(
             `
             import { mock } from 'bun:test'
             process.env.DATABASE_URL = 'postgresql://unit:unit@127.0.0.1:1/rentnerproxy_unit'
             const { ResourceAdmissionError } = await import('./server/Foundation/resource-admission.ts')
+            const cleanupError = new ResourceAdmissionError('deadline')
             const job = { id: 'job', certificateId: 'certificate', stage: 'issuing', lastErrorCode: 'retained_provider_error', retryRequested: true, leaseToken: 'owned' }
             let claimed = false, network = 0
             const patches = []
@@ -205,7 +206,7 @@ test.each([
                 withCertificateJobClaim: async () => { throw new ResourceAdmissionError('${reason}') },
                 releaseCertificateJob: async (_, changes) => {
                     patches.push(changes)
-                    if (${cleanupFails}) throw new ResourceAdmissionError('deadline')
+                    if (${cleanupFails}) throw cleanupError
                     Object.assign(job, changes, { leaseToken: null })
                 },
             }))
@@ -216,15 +217,22 @@ test.each([
             const { workerObservability } = await import('./server/Foundation/worker-observability.ts')
             const { observeWorkerOperation } = await import('./server/Foundation/worker-operation.ts')
             const { runCertificateJobsOnce } = await import('./server/Admin/ProxyHostManagement/certificate-jobs.worker.server.ts')
-            const outcome = await observeWorkerOperation('certificate_jobs', () => runCertificateJobsOnce(), undefined, value => value)
+            let outcome = null, cleanupFailure = null
+            try {
+                outcome = await observeWorkerOperation('certificate_jobs', () => runCertificateJobsOnce(), undefined, value => value)
+            } catch (error) {
+                if (!${cleanupFails}) throw error
+                cleanupFailure = { typed: error.name === 'CertificateJobCleanupError', sameCause: error.cause === cleanupError }
+            }
             const worker = workerObservability.snapshot().workers.find(value => value.id === 'certificate_jobs')
-            console.log(JSON.stringify({ outcome, job, patches, network, counters: worker.counters, lastSuccessAt: worker.lastSuccessAt }))
+            console.log(JSON.stringify({ outcome, cleanupFailure, job, patches, network, counters: worker.counters, lastSuccessAt: worker.lastSuccessAt }))
         `,
             { cwd: new URL('../../../..', import.meta.url) },
         )
         const result = JSON.parse(output.trim().split('\n').at(-1)!)
         expect(result).toMatchObject({
-            outcome: 'deferred',
+            outcome: cleanupFails ? null : 'deferred',
+            cleanupFailure: cleanupFails ? { typed: true, sameCause: true } : null,
             network: 0,
             patches: [{}],
             lastSuccessAt: null,
@@ -235,11 +243,11 @@ test.each([
                 leaseToken: cleanupFails ? 'owned' : null,
             },
             counters: {
-                deferred: 1,
-                failure: 0,
+                deferred: cleanupFails ? 0 : 1,
+                failure: cleanupFails ? 1 : 0,
                 success: 0,
-                retry: cleanupFails ? 2 : 1,
-                admissionRejected: cleanupFails ? 2 : 1,
+                retry: 1,
+                admissionRejected: 1,
             },
         })
     },
