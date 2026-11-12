@@ -23,7 +23,7 @@ type Result = Pick<ManagedBackupMaintenance, 'id' | 'operation' | 'state' | 'pha
 let maintenance: ManagedBackupMaintenance | null = original
 let restoreResults: Result[] = []
 const read = mock(async () => ({ maintenance, restoreResults }))
-mock.module('@/server/Backups/restore-maintenance-status.server.ts', () => ({
+await mock.module('@/server/Backups/restore-maintenance-status.server.ts', () => ({
     readRestoreMaintenanceObservation: read,
 }))
 const { createWorkerLifecycleSupervisor } =

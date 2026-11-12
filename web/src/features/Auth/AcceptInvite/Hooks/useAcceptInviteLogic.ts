@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import {
     displayNameSchema,
     getPasswordConfirmationMessage,
@@ -17,6 +18,7 @@ import { acceptInviteFormSchema } from '../validation.ts'
 import type { AcceptInviteFormValues } from '../Types/accept-invite-form.types.ts'
 
 export default function useAcceptInviteLogic() {
+    const runAction = useAsyncAction()
     const token = useFragmentToken()
     const navigate = useNavigate()
     const router = useRouter()
@@ -60,7 +62,7 @@ export default function useAcceptInviteLogic() {
             handleSubmit: (event) => {
                 event.preventDefault()
                 event.stopPropagation()
-                void form.handleSubmit()
+                runAction(() => form.handleSubmit())
             },
             validateDisplayName: ({ value }) => getValidationMessage(displayNameSchema, value),
             validatePassword: ({ value }) => getValidationMessage(newPasswordSchema, value),

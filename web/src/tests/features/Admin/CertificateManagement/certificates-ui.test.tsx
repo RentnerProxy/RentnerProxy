@@ -82,7 +82,7 @@ const retryCertificateJobHandlerMock = mock(async () => ({
     message: 'admin.proxyHosts.certificateJob.errors.actionFailed',
 }))
 
-mock.module('@/features/Admin/ProxyHostManagement/CertificateJobs/middleware.ts', () => ({
+await mock.module('@/features/Admin/ProxyHostManagement/CertificateJobs/middleware.ts', () => ({
     requestProxyHostCertificateHandler: requestProxyHostCertificateHandlerMock,
     retryCertificateJobHandler: retryCertificateJobHandlerMock,
 }))
@@ -203,7 +203,7 @@ const checkManualDnsHandlerMock = mock(
         },
     }),
 )
-mock.module('@/features/Admin/CertificateManagement/middleware.ts', () => ({
+await mock.module('@/features/Admin/CertificateManagement/middleware.ts', () => ({
     inspectCertificateDnsSetupHandler: inspectCertificateDnsSetupHandlerMock,
     checkManualDnsHandler: checkManualDnsHandlerMock,
     continueManualDnsHandler: continueManualDnsHandlerMock,
@@ -247,7 +247,7 @@ const deleteTrustedCaHandlerMock = mock(async (_input: unknown) => ({
     message: 'admin.trustedCas.messages.deleted',
     runtimeStatus: 'applied' as const,
 }))
-mock.module('@/features/Admin/TrustedCaManagement/middleware.ts', () => ({
+await mock.module('@/features/Admin/TrustedCaManagement/middleware.ts', () => ({
     getTrustedCasHandler: getTrustedCasHandlerMock,
     getAssignableTrustedCasHandler: mock(async () => [trustedCa]),
     createTrustedCaHandler: createTrustedCaHandlerMock,

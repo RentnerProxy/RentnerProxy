@@ -166,7 +166,7 @@ describe('database migration bootstrap', () => {
                         await lockConnection`select pg_advisory_unlock(${MIGRATION_ADVISORY_LOCK_ID})`
                     }
                 } finally {
-                    lockConnection.release()
+                    await lockConnection.release()
                     if (migration !== undefined) {
                         await migration.catch(() => undefined)
                     }
@@ -192,7 +192,7 @@ describe('database migration bootstrap', () => {
 
                 expect(transactionPid[0]?.pid).toBe(reservedPid[0]?.pid)
             } finally {
-                reserved.release()
+                await reserved.release()
                 await client.close()
             }
         },

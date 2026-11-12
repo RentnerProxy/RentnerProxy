@@ -1,7 +1,6 @@
 import useTranslationStore from '@/shared/Language/Hooks/useTranslationStore.ts'
 import { CustomColorPicker, type CustomColorPickerDesign } from '@rentnerkev/picker'
 import { Palette } from 'lucide-react'
-import { type CSSProperties } from 'react'
 
 import { DEFAULT_ACCENT_COLOR } from '@/config/appearance.config.ts'
 import { accentCssVariables } from '@/lib/Theme/accentPalette.ts'
@@ -36,7 +35,7 @@ export default function UserAppearancePanel({ userId }: UserAppearancePanelProps
         <section
             className="min-w-0 rounded-2xl border border-border bg-surface p-[clamp(1.15rem,4vw,1.75rem)] shadow-surface"
             aria-labelledby="user-appearance-heading"
-            style={accentCssVariables(state.previewColor) as CSSProperties}
+            style={accentCssVariables(state.previewColor)}
         >
             <div className="flex items-start gap-3">
                 <Palette aria-hidden="true" className="mt-0.5 size-5 shrink-0 text-brand-text" />

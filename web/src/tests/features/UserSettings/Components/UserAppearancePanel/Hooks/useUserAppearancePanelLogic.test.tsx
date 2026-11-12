@@ -24,11 +24,11 @@ const updateAccent = mock(
 const successToast = mock((_message: string, _options: { title: string }) => undefined)
 const errorToast = mock((_message: string, _options: { title: string }) => undefined)
 
-mock.module('@/features/UserSettings/middleware.ts', () => ({
+await mock.module('@/features/UserSettings/middleware.ts', () => ({
     updateCurrentUserAccentColorHandler: updateAccent,
 }))
 const toastPackage = await import('@rentnerkev/toasts')
-mock.module('@rentnerkev/toasts', () => ({
+await mock.module('@rentnerkev/toasts', () => ({
     ...toastPackage,
     toast: { ...toastPackage.toast, success: successToast, error: errorToast },
 }))

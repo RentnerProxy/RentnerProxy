@@ -7,10 +7,7 @@ import { useCallback, useState } from 'react'
 
 import { toast } from '@rentnerkev/toasts'
 import useTranslationStore from '@/shared/Language/Hooks/useTranslationStore.ts'
-import type {
-    ProxyHttpSettings,
-    ProxyHostConfigEditorData,
-} from '@/lib/ProxyRuntime/Types/proxy-runtime.types.ts'
+import type { ProxyHttpSettings } from '@/lib/ProxyRuntime/Types/proxy-runtime.types.ts'
 import {
     getProxyHostConfigEditorHandler,
     resetProxyHostConfigEditorHandler,
@@ -44,7 +41,7 @@ export default function useProxyConfigEditorLogic({
         refetchOnWindowFocus: false,
         refetchOnReconnect: false,
     })
-    const data = query.data as ProxyHostConfigEditorData | undefined
+    const data = query.data
     const {
         settings,
         baseRevision,

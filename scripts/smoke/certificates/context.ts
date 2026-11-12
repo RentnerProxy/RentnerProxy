@@ -123,7 +123,7 @@ function assertCertificateIssued(metadata: Record<string, unknown>): void {
 async function freePort(): Promise<number> {
     const server = Bun.serve({ port: 0, fetch: () => new Response(null, { status: 204 }) })
     const port = server.port ?? 0
-    server.stop(true)
+    await server.stop(true)
     assert.ok(port > 0)
     return port
 }

@@ -37,6 +37,81 @@ function subscription(index: number): LiveTopicSubscription {
     return result
 }
 
+test('a detached snapshot failure closes its connection and releases admission', async () => {
+    const closed = Promise.withResolvers<number>()
+    const manager = createSubscriptionManager({
+        snapshotTimeoutMs: 1_000,
+        maxPayloadBytes: 65_536,
+        readSnapshot: async () => {
+            throw new Error('private transport details')
+        },
+        closeUnavailable: (_connection, status) => closed.resolve(status),
+        closeUnauthorized: () => {},
+        closeBackpressured: () => {},
+    })
+    const connection = subscription(0).connection
+    try {
+        expect(manager.subscribe(connection, 'app-events', {}, '{}')).toBe(true)
+        expect(await closed.promise).toBe(503)
+        await manager.drainResources()
+        expect(manager.resourceUsage().running).toBe(0)
+        expect(manager.resourceUsage().pending).toBe(0)
+    } finally {
+        manager.dispose(connection)
+    }
+})
+
+test.each(['subscription replacement', 'connection closure'] as const)(
+    'ignores a late snapshot failure after %s',
+    async (change) => {
+        const entered = Promise.withResolvers<void>()
+        const delayed = Promise.withResolvers<never>()
+        const closed: number[] = []
+        let reads = 0
+        const manager = createSubscriptionManager({
+            snapshotTimeoutMs: 1_000,
+            maxPayloadBytes: 65_536,
+            readSnapshot: async () => {
+                reads++
+                if (reads === 1) {
+                    entered.resolve()
+                    await delayed.promise
+                }
+                return { kind: 'success', data: { revision: 'current' } }
+            },
+            closeUnavailable: (_connection, status) => {
+                closed.push(status)
+            },
+            closeUnauthorized: () => {},
+            closeBackpressured: () => {},
+        })
+        const connection = subscription(0).connection
+        try {
+            manager.subscribe(connection, 'app-events', {}, '{}')
+            await entered.promise
+            if (change === 'subscription replacement') {
+                manager.subscribe(connection, 'app-events', {}, '{}')
+            } else {
+                connection.closed = true
+            }
+            delayed.reject(new Error('late transport failure'))
+            await manager.drainResources()
+            await Bun.sleep(0)
+            expect(closed).toEqual([])
+            expect(manager.resourceUsage().running).toBe(0)
+            expect(manager.resourceUsage().pending).toBe(0)
+            if (change === 'subscription replacement') {
+                expect(reads).toBe(2)
+                expect(connection.subscriptions.get('app-events')?.active).toBe(true)
+            }
+        } finally {
+            manager.dispose(connection)
+            if (reads > 0) delayed.reject(new Error('test cleanup'))
+            await manager.drainResources()
+        }
+    },
+)
+
 test('handshake storms share the sampling budget and shutdown aborts queued admission before authorization reads', async () => {
     let reads = 0
     const finish = Promise.withResolvers<void>()

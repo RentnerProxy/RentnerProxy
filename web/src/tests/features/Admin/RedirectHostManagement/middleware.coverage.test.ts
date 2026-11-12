@@ -4,8 +4,8 @@ import { createMiddlewareHarness } from '@/tests/Helpers/middlewareCoverage.ts'
 import { RedirectHostDomainError } from '@/server/Admin/RedirectHostManagement/redirect-hosts.errors.ts'
 import { CertificateDomainError } from '@/server/Admin/CertificateManagement/certificates.errors.ts'
 
-const boundary = createMiddlewareHarness()
-boundary.mockServices('@/server/Admin/RedirectHostManagement/redirect-hosts.service.ts', [
+const boundary = await createMiddlewareHarness()
+await boundary.mockServices('@/server/Admin/RedirectHostManagement/redirect-hosts.service.ts', [
     'searchRedirectHostsService',
     'createRedirectHostService',
     'deleteRedirectHostService',
@@ -13,13 +13,13 @@ boundary.mockServices('@/server/Admin/RedirectHostManagement/redirect-hosts.serv
     'enableRedirectHostService',
     'updateRedirectHostService',
 ])
-boundary.mockServices('@/server/Admin/HostTags/host-list.service.ts', [
+await boundary.mockServices('@/server/Admin/HostTags/host-list.service.ts', [
     'getRedirectHostPageService',
 ])
-boundary.mockServices('@/server/Admin/CertificateManagement/certificates.service.ts', [
+await boundary.mockServices('@/server/Admin/CertificateManagement/certificates.service.ts', [
     'getAssignableCertificatesService',
 ])
-boundary.mockServices('@/server/ProxyRuntime/proxy-runtime.service.ts', [
+await boundary.mockServices('@/server/ProxyRuntime/proxy-runtime.service.ts', [
     'applyRedirectConfigurationService',
     'getRedirectRuntimeStatusService',
 ])

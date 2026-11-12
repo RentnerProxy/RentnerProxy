@@ -308,7 +308,9 @@ async function prepareManagementProxy() {
         await waitForRestoreCheckpoint(async () => (ready ? true : undefined))
         return () => {
             stream?.close()
-            void upstream.stop(true)
+            void upstream.stop(true).catch(() => {
+                console.error('[restore-probe] Upstream shutdown failed')
+            })
         }
     } catch (error) {
         stream?.close()

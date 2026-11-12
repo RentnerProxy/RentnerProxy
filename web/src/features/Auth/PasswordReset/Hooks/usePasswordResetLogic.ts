@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import {
     getPasswordConfirmationMessage,
     getValidationMessage,
@@ -16,6 +17,7 @@ import { passwordConfirmationInputSchema } from '../validation.ts'
 import type { PasswordResetFormValues } from '../Types/password-reset-form.types.ts'
 
 export default function usePasswordResetLogic() {
+    const runAction = useAsyncAction()
     const token = useFragmentToken()
     const navigate = useNavigate()
     const { t } = useTranslationStore()
@@ -57,7 +59,7 @@ export default function usePasswordResetLogic() {
             handleSubmit: (event) => {
                 event.preventDefault()
                 event.stopPropagation()
-                void form.handleSubmit()
+                runAction(() => form.handleSubmit())
             },
             validatePassword: ({ value }) => getValidationMessage(newPasswordSchema, value),
             validateConfirmPassword: ({ value }) =>

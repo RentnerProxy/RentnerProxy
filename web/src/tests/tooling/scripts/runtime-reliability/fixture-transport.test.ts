@@ -68,7 +68,7 @@ describe('isolated runtime fixture transport', () => {
             ).toBe(400)
             expect((await request(servers.primary.port!)).status).toBe(200)
         } finally {
-            servers.stop()
+            await servers.stop()
         }
     })
     test('validates network-local hostname for current and Alpha6 fixture adapters', () => {

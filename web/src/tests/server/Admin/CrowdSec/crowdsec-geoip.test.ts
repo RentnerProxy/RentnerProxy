@@ -26,8 +26,8 @@ const construct = mock(function (
 ) {
     return { get: lookup }
 })
-mock.module('node:fs/promises', () => ({ open }))
-mock.module('mmdb-lib', () => ({ Reader: construct }))
+await mock.module('node:fs/promises', () => ({ open }))
+await mock.module('mmdb-lib', () => ({ Reader: construct }))
 
 const { createGeoReader, enrichCrowdSecCountryCodes } =
     await import('@/server/Admin/CrowdSec/crowdsec-geoip.server.ts')

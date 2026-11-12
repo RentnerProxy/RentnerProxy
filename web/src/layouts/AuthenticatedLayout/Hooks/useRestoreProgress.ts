@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useRouter } from '@tanstack/react-router'
@@ -10,6 +11,7 @@ import useLiveQuery from '@/shared/Live/Hooks/useLiveQuery.ts'
 
 /** Retain restore blockers through disconnects and retire them only after verified recovery or a safe preflight dismissal. */
 export default function useRestoreProgress(beforeHide?: () => void) {
+    const runAction = useAsyncAction()
     const queryClient = useQueryClient()
     const router = useRouter()
     const { t } = useTranslationStore()
@@ -119,7 +121,7 @@ export default function useRestoreProgress(beforeHide?: () => void) {
                         current.current === retry.owner &&
                         !retiredOperations.current.has(retry.target.id)
                     )
-                        void handleRestoreSnapshot({ maintenance: retry.target })
+                        runAction(() => handleRestoreSnapshot({ maintenance: retry.target }))
                 }, waitMs)
             }
             if (
@@ -203,7 +205,7 @@ export default function useRestoreProgress(beforeHide?: () => void) {
                 }
             }
         },
-        [beforeHide, queryClient, router, t, retireOperation, cancelRefreshRetry],
+        [beforeHide, queryClient, router, t, retireOperation, cancelRefreshRetry, runAction],
     )
     const status = useLiveQuery<unknown>({
         topic: 'backup-restore',

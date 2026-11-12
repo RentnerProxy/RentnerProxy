@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import type { TwoFactorLoginLogicResult } from '../Types/two-factor-login-logic.types.ts'
 import { revalidateLogic, useForm } from '@tanstack/react-form'
 import { useMutation, useQuery } from '@tanstack/react-query'
@@ -16,6 +17,7 @@ import {
 
 /** Coordinates second-factor verification and toast feedback for each completed status request. */
 export default function useTwoFactorLoginLogic() {
+    const runAction = useAsyncAction()
     const navigate = useNavigate()
     const router = useRouter()
     const { t } = useTranslationStore()
@@ -130,7 +132,7 @@ export default function useTwoFactorLoginLogic() {
             handleSubmit: (event) => {
                 event.preventDefault()
                 event.stopPropagation()
-                void form.handleSubmit()
+                runAction(() => form.handleSubmit())
             },
             validateCredential: ({ value }) =>
                 getTwoFactorCredentialError(form.getFieldValue('mode'), value),

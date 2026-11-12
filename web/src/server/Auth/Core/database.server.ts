@@ -7,7 +7,7 @@ type DatabaseTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0]
 
 function wrapTransaction(current: DatabaseTransaction): DatabaseTransaction {
     const wrapped: DatabaseTransaction = new Proxy(current, {
-        get(target, property, receiver) {
+        get(target, property, receiver): unknown {
             if (property !== 'transaction') return Reflect.get(target, property, receiver)
             return <TResult>(operation: (nested: DatabaseTransaction) => Promise<TResult>) =>
                 withCommittedApplicationChanges(
@@ -31,7 +31,7 @@ function transaction<TResult>(
 }
 
 const database = new Proxy(db, {
-    get(target, property, receiver) {
+    get(target, property, receiver): unknown {
         return property === 'transaction' ? transaction : Reflect.get(target, property, receiver)
     },
 })

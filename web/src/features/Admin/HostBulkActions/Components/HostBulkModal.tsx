@@ -3,7 +3,6 @@ import { CustomSelect } from '@rentnerkev/select/select'
 import { Modal } from '@/shared/Modal/index.tsx'
 import useTranslationStore from '@/shared/Language/Hooks/useTranslationStore.ts'
 import HostTagSelect from '@/features/Admin/HostTags/Components/HostTagSelect.tsx'
-import type { BulkHostAction } from '@/lib/HostBulkActions/Types/bulk-hosts.types.ts'
 import type { BulkHostModalProps } from '../Types/bulk-hosts-ui.types.ts'
 import useHostBulkModalLogic from '../Hooks/useHostBulkModalLogic.ts'
 
@@ -57,9 +56,7 @@ export default function HostBulkModal(props: BulkHostModalProps) {
                     value={state.values.type}
                     options={state.actionOptions}
                     disabled={state.pending}
-                    onValueChange={(value) =>
-                        handler.handleTypeChange(value as BulkHostAction['type'])
-                    }
+                    onValueChange={(value) => handler.handleTypeChange(value)}
                 />
                 {state.values.type === 'addTags' || state.values.type === 'removeTags' ? (
                     <HostTagSelect

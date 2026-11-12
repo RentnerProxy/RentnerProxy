@@ -270,7 +270,7 @@ test('controlled Docker events wait for the overlap barrier and change only deta
         expect(candidate.Config.Labels['rentnerproxy.port']).toBe('9001')
         await reader.cancel()
     } finally {
-        engine.stop()
+        await engine.stop()
     }
 })
 
@@ -308,7 +308,7 @@ test('cancelling one paused Docker stream preserves the other stream for the arm
         expect(engine.stats()).toMatchObject({ streams: 5, emitted: 256 })
         await final.cancel()
     } finally {
-        engine.stop()
+        await engine.stop()
     }
 })
 

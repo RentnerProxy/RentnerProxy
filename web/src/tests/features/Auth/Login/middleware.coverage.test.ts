@@ -1,6 +1,6 @@
 import { beforeEach, expect, mock, test } from 'bun:test'
 import { createMiddlewareHarness } from '@/tests/Helpers/middlewareCoverage.ts'
-const boundary = createMiddlewareHarness()
+const boundary = await createMiddlewareHarness()
 let cookie: string | null = null
 const clear = mock(() => {
     cookie = null
@@ -13,24 +13,24 @@ const challengeCookie = mock((id: string, expires: unknown) => {
     cookie = id
     boundary.calls.push({ name: 'challengeCookie', arguments: [id, expires] })
 })
-mock.module('@/server/Auth/Access/cookies.server.ts', () => ({
+await mock.module('@/server/Auth/Access/cookies.server.ts', () => ({
     clearMfaChallengeCookie: clear,
     getMfaChallengeCookie: () => cookie,
     setMfaChallengeCookie: challengeCookie,
     setSessionCookie: session,
 }))
-boundary.mockServices('@/server/Auth/Login/login.service.ts', ['loginService'])
-boundary.mockServices('@/server/Auth/Passkey/passkey.service.ts', [
+await boundary.mockServices('@/server/Auth/Login/login.service.ts', ['loginService'])
+await boundary.mockServices('@/server/Auth/Passkey/passkey.service.ts', [
     'beginDiscoverablePasskeyAuthenticationService',
     'finishDiscoverablePasskeyAuthenticationService',
 ])
-boundary.mockServices('@/server/Auth/TwoFactor/two-factor.service.ts', [
+await boundary.mockServices('@/server/Auth/TwoFactor/two-factor.service.ts', [
     'completeLoginMfaWithRecoveryCodeService',
     'completeLoginMfaWithTotpService',
     'getTwoFactorStatusService',
 ])
-boundary.mockServices('@/server/Valkey/auth-challenges.service.ts', ['getAuthChallenge'])
-boundary.mockServices(
+await boundary.mockServices('@/server/Valkey/auth-challenges.service.ts', ['getAuthChallenge'])
+await boundary.mockServices(
     '@/server/Auth/transport.server.ts',
     ['enforceSensitiveLimit', 'enforceAnonymousSensitiveLimit', 'enforceLoginMfaLimit'],
     {

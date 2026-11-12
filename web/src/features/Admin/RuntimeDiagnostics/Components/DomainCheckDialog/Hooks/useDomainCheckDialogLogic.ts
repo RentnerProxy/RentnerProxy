@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from '@rentnerkev/toasts'
@@ -24,6 +25,7 @@ export default function useDomainCheckDialogLogic({
     host,
     permissions,
 }: DomainCheckDialogProps): DomainCheckDialogLogic {
+    const runAction = useAsyncAction()
     const { t, locale, language } = useTranslationStore()
     const queryClient = useQueryClient()
     const canCheck = permissions.includes(
@@ -246,7 +248,7 @@ export default function useDomainCheckDialogLogic({
                 onOpenChange(value)
             },
             handleCopy: () => {
-                void copySummary()
+                runAction(() => copySummary())
             },
         },
     }

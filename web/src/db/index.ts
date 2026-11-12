@@ -29,7 +29,7 @@ if (process.env.NODE_ENV !== 'production') {
 }
 const database = drizzle(client, { schema })
 export const db = new Proxy(database, {
-    get(target, property, receiver) {
+    get(target, property, receiver): unknown {
         if (property !== 'transaction') return Reflect.get(target, property, receiver)
         return <T>(
             operation: Parameters<typeof database.transaction<T>>[0],

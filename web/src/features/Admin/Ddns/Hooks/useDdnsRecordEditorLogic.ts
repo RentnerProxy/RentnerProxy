@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import {
     dnsProviderForId,
     supportsDdns,
@@ -17,6 +18,7 @@ import {
 } from '@/lib/DnsConnections/connectionEligibility.ts'
 
 export default function useDdnsRecordEditorLogic(props: DdnsRecordEditorProps) {
+    const runAction = useAsyncAction()
     const { t, language, locale } = useTranslationStore()
     const formId = useId()
     const [defaults] = useState(() => ddnsRecordEditorValues(props.editor.target))
@@ -188,7 +190,7 @@ export default function useDdnsRecordEditorLogic(props: DdnsRecordEditorProps) {
             },
             submit: (event: FormEvent<HTMLFormElement>) => {
                 event.preventDefault()
-                void form.handleSubmit()
+                runAction(() => form.handleSubmit())
             },
             changeConnection: (id: string) => {
                 form.setFieldValue('connectionId', id)

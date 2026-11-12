@@ -650,7 +650,7 @@ async fn renewal_events_retain_kind_after_current_operation_changes() {
         Err(CertificateError::StoreUnavailable)
     ));
     assert_eq!(
-        operations::events_page(&index, before.next_cursor.as_deref(), 20).unwrap(),
+        operations::events_page(&index, before.next_cursor.as_deref(), 20),
         renewed
     );
     index
@@ -659,7 +659,7 @@ async fn renewal_events_retain_kind_after_current_operation_changes() {
         .unwrap()
         .metadata
         .current_operation = Some(operations::new_operation(OperationKind::Issue).unwrap());
-    let page = operations::events_page(&index, before.next_cursor.as_deref(), 20).unwrap();
+    let page = operations::events_page(&index, before.next_cursor.as_deref(), 20);
     assert_eq!(page, renewed);
 }
 

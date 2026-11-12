@@ -31,7 +31,7 @@ describe('smoke response validation', () => {
             })
             expect(backendBodySchema.safeParse({ backend: 'a', user: 123 }).success).toBe(false)
         } finally {
-            servers.stop()
+            await servers.stop()
         }
     })
 

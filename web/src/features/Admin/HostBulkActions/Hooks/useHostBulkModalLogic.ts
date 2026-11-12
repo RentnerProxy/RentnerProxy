@@ -66,13 +66,12 @@ export default function useHostBulkModalLogic(props: BulkHostModalProps): BulkHo
         setPreview(null)
         setResult(null)
     }
-    const form = useForm({
-        defaultValues: {
-            type: types[0] ?? 'enable',
-            tagIds: [],
-            assignmentId: '',
-        } as BulkHostFormValues,
-    })
+    const defaultValues: BulkHostFormValues = {
+        type: types[0] ?? 'enable',
+        tagIds: [],
+        assignmentId: '',
+    }
+    const form = useForm({ defaultValues })
     const values = useStore(form.store, (state) => state.values)
     const certificates = useQuery({
         queryKey: certificateManagementQueryKeys.assignable,

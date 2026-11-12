@@ -31,6 +31,6 @@ export async function withInFlightBackgroundHead(operation: () => Promise<void>)
     } finally {
         release.resolve()
         await request.catch(() => undefined)
-        server.stop(true)
+        await server.stop(true)
     }
 }

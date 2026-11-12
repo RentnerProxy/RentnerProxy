@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import useManualDnsReadOnlyCheck from '../../Hooks/useManualDnsReadOnlyCheck.ts'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from '@rentnerkev/toasts'
@@ -74,6 +75,7 @@ export default function useManualDnsRequestSetup({
     reportValidationError,
     onSuccess,
 }: ManualDnsRequestSetupInputs) {
+    const runAction = useAsyncAction()
     const { t } = useTranslationStore()
     const queryClient = useQueryClient()
     const [prepared, setPrepared] = useState<PreparedManualDnsRequest | null>(null)
@@ -208,8 +210,8 @@ export default function useManualDnsRequestSetup({
             }
         }
         setOpen(true)
-        if (!preparedRef.current) void prepare()
-    }, [enabled, getInput, reportValidationError, prepare])
+        if (!preparedRef.current) runAction(() => prepare())
+    }, [enabled, getInput, reportValidationError, prepare, runAction])
     const submit = useCallback(async () => {
         const request = preparedRef.current
         if (!enabled || busyRef.current || !request) return

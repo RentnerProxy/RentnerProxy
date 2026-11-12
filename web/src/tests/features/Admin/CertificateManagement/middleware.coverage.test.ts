@@ -2,8 +2,8 @@ import { beforeEach, describe, expect, test } from 'bun:test'
 import { createMiddlewareHarness } from '@/tests/Helpers/middlewareCoverage.ts'
 import { CertificateDomainError } from '@/server/Admin/CertificateManagement/certificates.errors.ts'
 
-const boundary = createMiddlewareHarness()
-boundary.mockServices('@/server/Admin/CertificateManagement/certificates.service.ts', [
+const boundary = await createMiddlewareHarness()
+await boundary.mockServices('@/server/Admin/CertificateManagement/certificates.service.ts', [
     'actOnManualDnsService',
     'cancelDelegatedCertificateService',
     'deleteCertificateService',
@@ -15,11 +15,11 @@ boundary.mockServices('@/server/Admin/CertificateManagement/certificates.service
     'requestCertificateService',
     'searchCertificatesService',
 ])
-boundary.mockServices('@/server/Admin/CertificateManagement/dns-setup.service.ts', [
+await boundary.mockServices('@/server/Admin/CertificateManagement/dns-setup.service.ts', [
     'inspectCertificateDnsSetupService',
     'checkManualDnsService',
 ])
-boundary.mockServices('@/server/Admin/DnsConnections/dns-providers.service.ts', [
+await boundary.mockServices('@/server/Admin/DnsConnections/dns-providers.service.ts', [
     'getDnsProvidersService',
     'getCertificateDnsConnectionsService',
 ])

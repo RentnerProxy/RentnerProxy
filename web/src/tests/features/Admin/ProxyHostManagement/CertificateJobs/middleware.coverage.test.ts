@@ -8,15 +8,15 @@ class JobError extends Error {
         super(code)
     }
 }
-const boundary = createMiddlewareHarness()
-boundary.mockServices('@/server/Admin/ProxyHostManagement/certificate-jobs.service.ts', [
+const boundary = await createMiddlewareHarness()
+await boundary.mockServices('@/server/Admin/ProxyHostManagement/certificate-jobs.service.ts', [
     'createProxyHostWithCertificateService',
     'updateProxyHostWithCertificateService',
     'requestProxyHostCertificateService',
     'getCertificateJobProgressService',
     'retryCertificateJobService',
 ])
-mock.module('@/server/Admin/ProxyHostManagement/certificate-jobs.storage.server.ts', () => ({
+await mock.module('@/server/Admin/ProxyHostManagement/certificate-jobs.storage.server.ts', () => ({
     CertificateJobDomainError: JobError,
 }))
 const handlers = await import('@/features/Admin/ProxyHostManagement/CertificateJobs/middleware.ts')

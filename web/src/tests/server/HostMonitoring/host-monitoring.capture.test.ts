@@ -186,6 +186,29 @@ test('write failure publishes terminal state before a throwing revocation and ne
     expect(guards).toEqual([false])
 })
 
+test('a synchronous writer failure during the scheduled flush revokes capture without an unhandled rejection or retry', async () => {
+    let invalidations = 0,
+        writes = 0
+    const capture = createHostMonitoringCapture({
+        ...identity,
+        invalidate: () => {
+            invalidations++
+        },
+        write: () => {
+            writes++
+            throw new Error('injected synchronous write failure')
+        },
+    })
+    capture.record('admitted', claim)
+    await Bun.sleep(50)
+    expect(invalidations).toBe(2)
+    expect(writes).toBe(1)
+    capture.record('started', claim)
+    await expect(capture.flush()).resolves.toBeUndefined()
+    expect(invalidations).toBe(2)
+    expect(writes).toBe(1)
+})
+
 test('expiry marks terminal state before a throwing revocation without an uncaught timer error or another close', async () => {
     let invalidations = 0
     const guards: (boolean | undefined)[] = []

@@ -78,19 +78,19 @@ async function startMonitoringB2Web(setPhase: (phase: string) => void) {
     const maintenance = createMonitoringB2AttachmentFence()
     let changeControl: ReturnType<typeof Bun.serve> | undefined
     process.once('rentnerproxy:shutdown', (pending: Promise<void>[]) => {
-        changeControl?.stop(true)
+        if (changeControl) pending.push(changeControl.stop(true))
         pending.push(maintenance.drain(async () => {}))
     })
     if (design === 'A')
         process.once('rentnerproxy:maintenance', (pending: Promise<void>[]) => {
-            changeControl?.stop(true)
+            if (changeControl) pending.push(changeControl.stop(true))
             pending.push(maintenance.drain(async () => {}))
         })
     // Register before importing the original worker: its dependency graph imports server.js
     // and can observe a root maintenance operation during application initialization.
     if (design === 'B2')
         process.once('rentnerproxy:maintenance', (pending: Promise<void>[]) => {
-            changeControl?.stop(true)
+            if (changeControl) pending.push(changeControl.stop(true))
             pending.push(
                 (async () => {
                     await maintenance.drain(async () => {

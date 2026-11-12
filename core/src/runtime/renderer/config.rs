@@ -171,7 +171,7 @@ pub(super) fn render_config_inner(
             .iter()
             .filter(|host| host.certificate_id.is_some())
         {
-            https_routes.push(redirect_route(host)?);
+            https_routes.push(redirect_route(host));
         }
         if !certs.is_empty() {
             https_routes.push(super::default_site::default_site_route(
@@ -271,7 +271,7 @@ fn logging_config(state_root: &str) -> Value {
         "logs": {
             "default": {
                 "writer": { "output": "stderr" },
-                "encoder": filters.clone(),
+                "encoder": filters,
                 "exclude": ["http.log.access"]
             },
             "access": {

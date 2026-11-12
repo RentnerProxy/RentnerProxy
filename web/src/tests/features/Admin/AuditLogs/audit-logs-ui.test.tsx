@@ -69,7 +69,7 @@ const getAuditActorOptionsHandlerMock = mock(async () => [
     { id: secondActorId, displayName: 'Bob Viewer' },
 ])
 
-mock.module('@/features/Admin/AuditLogs/middleware.ts', () => ({
+await mock.module('@/features/Admin/AuditLogs/middleware.ts', () => ({
     getAuditActorOptionsHandler: getAuditActorOptionsHandlerMock,
     getAuditEventsHandler: getAuditEventsHandlerMock,
 }))

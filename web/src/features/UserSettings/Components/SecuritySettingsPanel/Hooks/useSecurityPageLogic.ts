@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import { startRegistration } from '@simplewebauthn/browser'
 import { useState } from 'react'
 
@@ -14,6 +15,7 @@ import type {
 } from '../Types/security-page.types.ts'
 
 export default function useSecurityPageLogic(userId: string) {
+    const runAction = useAsyncAction()
     const { t } = useTranslationStore()
     const security = useSecurityOperations(userId)
     const [nameRequest, setNameRequest] = useState<PasskeyNameRequest | null>(null)
@@ -82,7 +84,7 @@ export default function useSecurityPageLogic(userId: string) {
     }
 
     function requestEnableTotp() {
-        void beginTotpSetup()
+        runAction(() => beginTotpSetup())
     }
 
     function requestAddPasskey() {

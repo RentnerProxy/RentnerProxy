@@ -75,15 +75,17 @@ const database: PasskeyTestDatabase = {
         }
     },
 }
-mock.module('@tanstack/react-start/server-only', () => ({}))
-mock.module('@/server/Auth/Core/database.server.ts', () => ({ getAuthDatabase: () => database }))
-mock.module('@/server/Configuration/management-origin.server.ts', () => ({
+await mock.module('@tanstack/react-start/server-only', () => ({}))
+await mock.module('@/server/Auth/Core/database.server.ts', () => ({
+    getAuthDatabase: () => database,
+}))
+await mock.module('@/server/Configuration/management-origin.server.ts', () => ({
     getRuntimeWebAuthnConfiguration: async () => ({
         origin: 'https://unit.invalid',
         rpId: 'unit.invalid',
     }),
 }))
-mock.module('@/server/Valkey/auth-challenges.service.ts', () => ({
+await mock.module('@/server/Valkey/auth-challenges.service.ts', () => ({
     createAuthChallenge: async () => {
         throw new Error('Not used')
     },
@@ -93,7 +95,7 @@ mock.module('@/server/Valkey/auth-challenges.service.ts', () => ({
         return { kind, challenge: 'challenge', userId }
     },
 }))
-mock.module('@simplewebauthn/server', () => ({
+await mock.module('@simplewebauthn/server', () => ({
     generateAuthenticationOptions: async () => {
         throw new Error('Not used')
     },
@@ -115,14 +117,14 @@ mock.module('@simplewebauthn/server', () => ({
         }
     },
 }))
-mock.module('@/server/Auth/Access/authorization.service.ts', () => ({
+await mock.module('@/server/Auth/Access/authorization.service.ts', () => ({
     requireActiveSessionForSession: async () => undefined,
     requireSessionPermission: async () => undefined,
 }))
-mock.module('@/server/Auth/Access/rbac.service.ts', () => ({
+await mock.module('@/server/Auth/Access/rbac.service.ts', () => ({
     requirePermissionInTransaction: async () => undefined,
 }))
-mock.module('@/server/Auth/Access/sessions.service.ts', () => ({
+await mock.module('@/server/Auth/Access/sessions.service.ts', () => ({
     createSessionInTransaction: async () => {
         if (!active) throw new AuthDomainError('user_not_active', 'Inactive fixture user')
         events.push('session-created')
@@ -133,7 +135,7 @@ mock.module('@/server/Auth/Access/sessions.service.ts', () => ({
         events.push('others-revoked')
     },
 }))
-mock.module('@/server/Audit/audit.service.ts', () => ({
+await mock.module('@/server/Audit/audit.service.ts', () => ({
     appendAuditEventInTransactionService: async () => {
         events.push('audit')
     },

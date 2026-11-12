@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import useQuickAction from '@/shared/QuickActions/Hooks/useQuickActions.ts'
 import { toast } from '@rentnerkev/toasts'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -24,6 +25,7 @@ function unwrap<T>(response: DdnsResponse<T>): T {
     return response.value
 }
 export default function useDdnsLogic({ permissions, api, liveEnabled = true }: DdnsPageProps) {
+    const runAction = useAsyncAction()
     const queryClient = useQueryClient()
     const { t } = useTranslationStore()
     const formatter = useDateTimeFormatter()
@@ -156,9 +158,11 @@ export default function useDdnsLogic({ permissions, api, liveEnabled = true }: D
                     ),
                     { title: t('toast.titles.error') },
                 )
-                void Promise.all(
-                    DDNS_LIVE_QUERY_KEYS.map((queryKey) =>
-                        queryClient.invalidateQueries({ queryKey }),
+                runAction(() =>
+                    Promise.all(
+                        DDNS_LIVE_QUERY_KEYS.map((queryKey) =>
+                            queryClient.invalidateQueries({ queryKey }),
+                        ),
                     ),
                 )
             } finally {
@@ -166,7 +170,7 @@ export default function useDdnsLogic({ permissions, api, liveEnabled = true }: D
                 setIsPending(false)
             }
         },
-        [canManage, t, queryClient],
+        [canManage, t, queryClient, runAction],
     )
     const accept = useCallback(
         async (updated: DdnsSnapshot, message: string) => {
@@ -182,10 +186,10 @@ export default function useDdnsLogic({ permissions, api, liveEnabled = true }: D
             setSettingsEditor(null)
             setDeletion(null)
             toast.success(t(message), { title: t('toast.titles.success') })
-            void queryClient.invalidateQueries({ queryKey: ['dns-connections'] })
-            void queryClient.invalidateQueries({ queryKey: DDNS_QUERY_KEYS.providers })
+            runAction(() => queryClient.invalidateQueries({ queryKey: ['dns-connections'] }))
+            runAction(() => queryClient.invalidateQueries({ queryKey: DDNS_QUERY_KEYS.providers }))
         },
-        [t, queryClient],
+        [t, queryClient, runAction],
     )
     const restorePaused = snapshot?.restorePaused
     const apply = useCallback(
@@ -227,20 +231,22 @@ export default function useDdnsLogic({ permissions, api, liveEnabled = true }: D
     const toggle = useCallback(
         (target: DdnsTarget) => {
             if (!locked)
-                void apply(
-                    {
-                        ...draft,
-                        targets: draft.targets.map((item) =>
-                            item.id === target.id ? { ...item, enabled: !item.enabled } : item,
-                        ),
-                    },
-                    revision,
-                    target.enabled
-                        ? 'admin.ddns.messages.recordDisabled'
-                        : 'admin.ddns.messages.recordEnabled',
+                runAction(() =>
+                    apply(
+                        {
+                            ...draft,
+                            targets: draft.targets.map((item) =>
+                                item.id === target.id ? { ...item, enabled: !item.enabled } : item,
+                            ),
+                        },
+                        revision,
+                        target.enabled
+                            ? 'admin.ddns.messages.recordDisabled'
+                            : 'admin.ddns.messages.recordEnabled',
+                    ),
                 )
         },
-        [locked, apply, draft, revision],
+        [locked, apply, draft, revision, runAction],
     )
     const askDelete = useCallback(
         (target: DdnsTarget) => {
@@ -318,25 +324,32 @@ export default function useDdnsLogic({ permissions, api, liveEnabled = true }: D
                         })
                         return
                     }
-                    void apply(
-                        {
-                            ...draft,
-                            targets: draft.targets.filter((item) => item.id !== deletion.target.id),
-                        },
-                        deletion.revision,
-                        'admin.ddns.messages.recordDeleted',
+                    runAction(() =>
+                        apply(
+                            {
+                                ...draft,
+                                targets: draft.targets.filter(
+                                    (item) => item.id !== deletion.target.id,
+                                ),
+                            },
+                            deletion.revision,
+                            'admin.ddns.messages.recordDeleted',
+                        ),
                     )
                 }
             },
             enable: () => {
-                if (!locked) void apply(draft, revision, 'admin.ddns.messages.enabled', true)
+                if (!locked)
+                    runAction(() => apply(draft, revision, 'admin.ddns.messages.enabled', true))
             },
             disable: () => {
                 if (!isPending && available)
-                    void run(async () =>
-                        accept(
-                            unwrap(await api.disable({ expectedRevision: revision })),
-                            'admin.ddns.messages.disabled',
+                    runAction(() =>
+                        run(async () =>
+                            accept(
+                                unwrap(await api.disable({ expectedRevision: revision })),
+                                'admin.ddns.messages.disabled',
+                            ),
                         ),
                     )
             },
@@ -346,28 +359,32 @@ export default function useDdnsLogic({ permissions, api, liveEnabled = true }: D
                     settings?.enabled &&
                     draft.targets.some((target) => activeDdnsTarget(draft, target))
                 )
-                    void run(async () => {
-                        const batch = unwrap(await api.sync({ expectedRevision: revision }))
-                        const partial = batch.targets.some(
-                            (target) =>
-                                target.status === 'failed' ||
-                                (target.error !== null &&
-                                    !['family_disabled', 'target_disabled'].includes(target.error)),
-                        )
-                        const message = partial
-                            ? 'admin.ddns.messages.partial'
-                            : batch.targets.some((target) => target.status === 'updated')
-                              ? 'admin.ddns.messages.synced'
-                              : 'admin.ddns.messages.unchanged'
-                        toast[partial ? 'warning' : 'success'](t(message), {
-                            title: t(partial ? 'toast.titles.warning' : 'toast.titles.success'),
-                        })
-                        await Promise.all(
-                            DDNS_LIVE_QUERY_KEYS.map((queryKey) =>
-                                queryClient.invalidateQueries({ queryKey }),
-                            ),
-                        )
-                    })
+                    runAction(() =>
+                        run(async () => {
+                            const batch = unwrap(await api.sync({ expectedRevision: revision }))
+                            const partial = batch.targets.some(
+                                (target) =>
+                                    target.status === 'failed' ||
+                                    (target.error !== null &&
+                                        !['family_disabled', 'target_disabled'].includes(
+                                            target.error,
+                                        )),
+                            )
+                            const message = partial
+                                ? 'admin.ddns.messages.partial'
+                                : batch.targets.some((target) => target.status === 'updated')
+                                  ? 'admin.ddns.messages.synced'
+                                  : 'admin.ddns.messages.unchanged'
+                            toast[partial ? 'warning' : 'success'](t(message), {
+                                title: t(partial ? 'toast.titles.warning' : 'toast.titles.success'),
+                            })
+                            await Promise.all(
+                                DDNS_LIVE_QUERY_KEYS.map((queryKey) =>
+                                    queryClient.invalidateQueries({ queryKey }),
+                                ),
+                            )
+                        }),
+                    )
             },
         },
     }

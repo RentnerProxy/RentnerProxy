@@ -14,13 +14,13 @@ const success = mock(() => '')
 const error = mock(() => '')
 const translate = (key: string) => key
 let feedback: Record<string, string> = {}
-mock.module('@tanstack/react-router', () => ({
+await mock.module('@tanstack/react-router', () => ({
     useNavigate: () => navigate,
     useRouter: () => ({ invalidate }),
     useSearch: () => feedback,
 }))
-mock.module('@rentnerkev/toasts', () => ({ toast: { success, error } }))
-mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
+await mock.module('@rentnerkev/toasts', () => ({ toast: { success, error } }))
+await mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
     default: () => ({ t: translate }),
 }))
 const { default: Panel } =

@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import { useEffect, useId, useRef, useState } from 'react'
 import { useForm, useStore } from '@tanstack/react-form'
 import { toast } from '@rentnerkev/toasts'
@@ -36,6 +37,7 @@ const payload = (value: OffHostFormValues) => ({
 })
 
 export default function useOffHostBackupLogic(props: OffHostBackupProps): OffHostBackupLogicResult {
+    const runAction = useAsyncAction()
     const { t } = useTranslationStore()
     const id = useId()
     const [base, setBase] = useState(props.configuration)
@@ -128,7 +130,7 @@ export default function useOffHostBackupLogic(props: OffHostBackupProps): OffHos
         handler: {
             handleSubmit: (event) => {
                 event.preventDefault()
-                if (!locked && targetValid && savedKey) void form.handleSubmit()
+                if (!locked && targetValid && savedKey) runAction(() => form.handleSubmit())
             },
             handleTextChange: (name, value) => {
                 if (!locked) form.setFieldValue(name, value)

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { z } from 'zod'
+import { runDetachedTask } from '@/lib/Async/runDetachedTask.ts'
 import type { HostMonitoringClaim } from './Types/host-monitoring.repository.types.ts'
 
 const timestamp = z.number().finite().nonnegative()
@@ -172,7 +173,7 @@ export function createHostMonitoringCapture(options: {
         dirty = true
         if (!timer && !writing) {
             timer = setTimeout(() => {
-                void flush()
+                runDetachedTask(flush, () => terminate())
             }, 25)
             timer.unref()
         }

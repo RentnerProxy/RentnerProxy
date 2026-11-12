@@ -196,7 +196,7 @@ beforeEach(async () => {
     controller = fakeController()
 })
 afterEach(async () => {
-    controller?.server.stop(true)
+    await controller?.server.stop(true)
     controller = undefined
     for (const [key, value] of originalControllerEnvironment) {
         if (value === undefined) delete process.env[key]

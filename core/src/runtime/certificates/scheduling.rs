@@ -13,10 +13,10 @@ pub(super) fn max_retry_deadline(
     candidate: OffsetDateTime,
 ) -> Option<String> {
     let candidate = candidate.format(&Rfc3339).ok()?;
-    max_retry_deadline_string(existing, &candidate).or(Some(candidate))
+    Some(max_retry_deadline_string(existing, &candidate))
 }
 
-pub(super) fn max_retry_deadline_string(existing: Option<&str>, candidate: &str) -> Option<String> {
+pub(super) fn max_retry_deadline_string(existing: Option<&str>, candidate: &str) -> String {
     match existing {
         Some(existing)
             if OffsetDateTime::parse(existing, &Rfc3339)
@@ -24,9 +24,9 @@ pub(super) fn max_retry_deadline_string(existing: Option<&str>, candidate: &str)
                 .zip(OffsetDateTime::parse(candidate, &Rfc3339).ok())
                 .is_some_and(|(existing, candidate)| existing >= candidate) =>
         {
-            Some(existing.to_owned())
+            existing.to_owned()
         }
-        _ => Some(candidate.to_owned()),
+        _ => candidate.to_owned(),
     }
 }
 
@@ -153,3 +153,7 @@ pub(super) fn valid_fingerprint(value: &str) -> bool {
         && value.starts_with("sha256:")
         && value[7..].bytes().all(|byte| byte.is_ascii_hexdigit())
 }
+
+#[cfg(test)]
+#[path = "../../../tests/private/certificate_scheduling.rs"]
+mod tests;

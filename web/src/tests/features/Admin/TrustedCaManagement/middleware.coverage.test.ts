@@ -3,8 +3,8 @@ import { PERMISSIONS } from '@/config/permissions.config.ts'
 import { createMiddlewareHarness } from '@/tests/Helpers/middlewareCoverage.ts'
 import { TrustedCaDomainError } from '@/server/Admin/TrustedCaManagement/trusted-cas.errors.ts'
 
-const boundary = createMiddlewareHarness()
-boundary.mockServices('@/server/Admin/TrustedCaManagement/trusted-cas.service.ts', [
+const boundary = await createMiddlewareHarness()
+await boundary.mockServices('@/server/Admin/TrustedCaManagement/trusted-cas.service.ts', [
     'createTrustedCaService',
     'deleteTrustedCaService',
     'getAssignableTrustedCasService',

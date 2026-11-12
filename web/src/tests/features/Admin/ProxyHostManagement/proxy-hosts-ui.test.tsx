@@ -176,7 +176,7 @@ const resetProxyConfigEditorHandlerMock = mock(async (): Promise<ProxyHostAction
     runtimeStatus: 'applied',
 }))
 
-mock.module('@/features/Admin/ProxyHostManagement/middleware.ts', () => ({
+await mock.module('@/features/Admin/ProxyHostManagement/middleware.ts', () => ({
     getProxyHostUpstreamHealthHandler: getProxyHostUpstreamHealthHandlerMock,
     getProxyConfigEditorHandler: getProxyConfigEditorHandlerMock,
     saveProxyConfigEditorHandler: saveProxyConfigEditorHandlerMock,
@@ -198,14 +198,14 @@ mock.module('@/features/Admin/ProxyHostManagement/middleware.ts', () => ({
     updateProxyHostHandler: updateProxyHostHandlerMock,
 }))
 
-mock.module('@/features/Admin/HostTags/middleware.ts', () => ({
+await mock.module('@/features/Admin/HostTags/middleware.ts', () => ({
     getHostTagCatalogHandler: async () => ({ revision: 0, tags: [] }),
     mutateHostTagHandler: async () => ({ success: true, value: { revision: 1, tags: [] } }),
 }))
 
 const getAssignableCertificatesHandlerMock = mock(async (): Promise<CertificateSummary[]> => [])
 const getAssignableAccessPoliciesHandlerMock = mock(async (): Promise<AccessPolicySummary[]> => [])
-mock.module('@/features/Admin/AccessPolicyManagement/middleware.ts', () => ({
+await mock.module('@/features/Admin/AccessPolicyManagement/middleware.ts', () => ({
     getAssignableAccessPoliciesHandler: getAssignableAccessPoliciesHandlerMock,
 }))
 const requestCertificateHandlerMock = mock(async () => ({
@@ -239,7 +239,7 @@ const retryCertificateJobHandlerMock = mock(
 )
 const getCertificateJobProgressHandlerMock = mock(async (): Promise<CertificateJobSummary[]> => [])
 
-mock.module('@/features/Admin/ProxyHostManagement/CertificateJobs/middleware.ts', () => ({
+await mock.module('@/features/Admin/ProxyHostManagement/CertificateJobs/middleware.ts', () => ({
     createProxyHostWithCertificateHandler: createProxyHostWithCertificateHandlerMock,
     updateProxyHostWithCertificateHandler: updateProxyHostWithCertificateHandlerMock,
     requestProxyHostCertificateHandler: requestProxyHostCertificateHandlerMock,
@@ -263,7 +263,7 @@ const getCertificateDnsProviders = mock(async () => {
         },
     ]
 })
-mock.module('@/features/Admin/CertificateManagement/middleware.ts', () => ({
+await mock.module('@/features/Admin/CertificateManagement/middleware.ts', () => ({
     inspectCertificateDnsSetupHandler: mock(async () => ({
         success: false,
         message: 'admin.certificates.errors.actionFailed',
@@ -317,11 +317,11 @@ const assignableTrustedCa = {
     updatedAt: new Date('2026-01-01T00:00:00Z'),
 }
 const getAssignableTrustedCasHandlerMock = mock(async () => [assignableTrustedCa])
-mock.module('@/features/Admin/TrustedCaManagement/middleware.ts', () => ({
+await mock.module('@/features/Admin/TrustedCaManagement/middleware.ts', () => ({
     getAssignableTrustedCasHandler: getAssignableTrustedCasHandlerMock,
 }))
 
-mock.module('@/features/Admin/RuntimeDiagnostics/middleware.ts', () => ({
+await mock.module('@/features/Admin/RuntimeDiagnostics/middleware.ts', () => ({
     exportRuntimeSupportReportHandler: mock(() => {
         throw new Error('Unexpected support report download in proxy-host tests.')
     }),
@@ -358,7 +358,7 @@ const getHostMonitoringHistoryMock = mock(async () => ({
     nextCursor: null,
 }))
 const saveHostMonitoringPolicyMock = mock(async () => monitoringPolicy)
-mock.module('@/lib/HostMonitoring/hostMonitoringClient.ts', () => ({
+await mock.module('@/lib/HostMonitoring/hostMonitoringClient.ts', () => ({
     HostMonitoringClientError,
     getHostMonitoringSummary: getHostMonitoringSummaryMock,
     getHostMonitoringPolicy: getHostMonitoringPolicyMock,

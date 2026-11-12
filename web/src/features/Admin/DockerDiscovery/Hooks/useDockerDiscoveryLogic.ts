@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from '@rentnerkev/toasts'
@@ -30,6 +31,7 @@ export default function useDockerDiscoveryLogic({
     api,
     liveEnabled = true,
 }: DockerDiscoveryPageProps): DockerDiscoveryLogicResult {
+    const runAction = useAsyncAction()
     const { t } = useTranslationStore()
     const queryClient = useQueryClient()
     const canView =
@@ -104,10 +106,10 @@ export default function useDockerDiscoveryLogic({
         (selection ? { ...selection, state: 'unavailable' as const } : null)
     useEffect(() => {
         if (!canView) {
-            void queryClient.cancelQueries({ queryKey: DOCKER_DISCOVERY_QUERY_KEY })
+            runAction(() => queryClient.cancelQueries({ queryKey: DOCKER_DISCOVERY_QUERY_KEY }))
             queryClient.removeQueries({ queryKey: DOCKER_DISCOVERY_QUERY_KEY })
         }
-    }, [canView, queryClient])
+    }, [canView, queryClient, runAction])
     async function run(operation: () => Promise<unknown>, message: string): Promise<boolean> {
         if (pending.current || !canManage) return false
         pending.current = true
@@ -299,25 +301,29 @@ export default function useDockerDiscoveryLogic({
             disable: () => {
                 const current = latest()
                 if (!locked && current)
-                    void run(
-                        () =>
-                            api.change({
-                                expectedRevision: current.management.revision,
-                                action: 'disable',
-                            }),
-                        'admin.dockerDiscovery.messages.disabled',
+                    runAction(() =>
+                        run(
+                            () =>
+                                api.change({
+                                    expectedRevision: current.management.revision,
+                                    action: 'disable',
+                                }),
+                            'admin.dockerDiscovery.messages.disabled',
+                        ),
                     )
             },
             retry: () => {
                 const current = latest()
                 if (!locked && current)
-                    void run(
-                        () =>
-                            api.change({
-                                expectedRevision: current.management.revision,
-                                action: 'retry',
-                            }),
-                        'admin.dockerDiscovery.messages.retrying',
+                    runAction(() =>
+                        run(
+                            () =>
+                                api.change({
+                                    expectedRevision: current.management.revision,
+                                    action: 'retry',
+                                }),
+                            'admin.dockerDiscovery.messages.retrying',
+                        ),
                     )
             },
         },

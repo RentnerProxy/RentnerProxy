@@ -29,7 +29,7 @@ describe('smoke scenario context', () => {
             const response = await fetch('http://127.0.0.1:' + context.backend!.port)
             expect(await response.text()).toBe('appliance-real-traffic-fixture-run')
         } finally {
-            context.backend?.stop(true)
+            await context.backend?.stop(true)
         }
     })
 

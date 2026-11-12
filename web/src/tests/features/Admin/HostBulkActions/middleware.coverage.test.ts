@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, test } from 'bun:test'
 import { createMiddlewareHarness } from '@/tests/Helpers/middlewareCoverage.ts'
 
-const boundary = createMiddlewareHarness()
+const boundary = await createMiddlewareHarness()
 const names = ['previewBulkService', 'applyBulkService']
-boundary.mockServices('@/server/Admin/HostBulkActions/bulk-hosts.storage.server.ts', [], {
+await boundary.mockServices('@/server/Admin/HostBulkActions/bulk-hosts.storage.server.ts', [], {
     bulkHostServices: {
         preview: async (input: unknown) => {
             boundary.calls.push({ name: names[0]!, arguments: [input] })

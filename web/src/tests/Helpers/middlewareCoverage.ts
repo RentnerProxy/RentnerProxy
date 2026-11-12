@@ -5,7 +5,7 @@ import type {
     BoundaryValidator,
 } from './Types/middleware-coverage.types.ts'
 
-export function createMiddlewareHarness() {
+export async function createMiddlewareHarness() {
     const calls: BoundaryCall[] = []
     const values = new Map<string, unknown>()
     const failures = new Map<string, unknown>()
@@ -19,13 +19,17 @@ export function createMiddlewareHarness() {
             if (failures.has(name)) throw failures.get(name)
             return values.get(name)
         }
-    const mockServices = (path: string, names: string[], exports: Record<string, unknown> = {}) => {
-        mock.module(path, () => ({
+    const mockServices = async (
+        path: string,
+        names: string[],
+        exports: Record<string, unknown> = {},
+    ) => {
+        await mock.module(path, () => ({
             ...Object.fromEntries(names.map((name) => [name, service(name)])),
             ...exports,
         }))
     }
-    mock.module('@tanstack/react-start', () => ({
+    await mock.module('@tanstack/react-start', () => ({
         createServerOnlyFn: (handler: unknown) => handler,
         createServerFn: ({ method }: { method: string }) => {
             let validator: BoundaryValidator | undefined
@@ -50,7 +54,7 @@ export function createMiddlewareHarness() {
             return builder
         },
     }))
-    mock.module('@tanstack/react-start/server', () => ({
+    await mock.module('@tanstack/react-start/server', () => ({
         setResponseHeader: (name: string, value: string) => headers.set(name, value),
         setResponseStatus: (value: number) => {
             status = value
@@ -58,12 +62,12 @@ export function createMiddlewareHarness() {
         getRequest: () => new Request('https://example.test'),
         getRequestIP: () => '127.0.0.1',
     }))
-    mockServices('@/server/Auth/Access/authorization.service.ts', [
+    await mockServices('@/server/Auth/Access/authorization.service.ts', [
         'requirePermissionService',
         'requireSessionService',
         'requireSessionPermission',
     ])
-    mock.module('@/server/Auth/transport.server.ts', () => ({
+    await mock.module('@/server/Auth/transport.server.ts', () => ({
         enforceSensitiveLimit: service('enforceSensitiveLimit'),
         localizedActionFailure: (error: unknown, fallback: string) => {
             calls.push({ name: 'localizedActionFailure', arguments: [error, fallback] })

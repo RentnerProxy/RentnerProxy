@@ -224,8 +224,8 @@ describe('live WebSocket transport', () => {
         } as unknown as Bun.ServerWebSocket<RuntimeSocketData>
 
         try {
-            runtime.websocket.open?.(socket)
-            runtime.websocket.message?.(
+            await runtime.websocket.open?.(socket)
+            await runtime.websocket.message?.(
                 socket,
                 JSON.stringify({ type: 'subscribe', topic: 'app-events', query: {} }),
             )

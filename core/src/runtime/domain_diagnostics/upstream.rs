@@ -155,14 +155,11 @@ pub(super) async fn probe(
             initial_tls,
         );
     }
-    let roots = match trust(host, cas, system_ca) {
-        Ok(roots) => roots,
-        Err(()) => {
-            return (
-                Stage::skipped(),
-                Stage::new(Status::Failed, Code::TlsFailed).elapsed(start),
-            );
-        }
+    let Ok(roots) = trust(host, cas, system_ca) else {
+        return (
+            Stage::skipped(),
+            Stage::new(Status::Failed, Code::TlsFailed).elapsed(start),
+        );
     };
     crate::runtime::tls::ensure_crypto_provider();
     let server = host
@@ -190,17 +187,14 @@ pub(super) async fn probe(
     } else {
         server.to_owned()
     };
-    let url = match reqwest::Url::parse(&format!(
+    let Ok(url) = reqwest::Url::parse(&format!(
         "{}://{}:{}/",
         host.forward_scheme, authority, host.forward_port
-    )) {
-        Ok(url) => url,
-        Err(_) => {
-            return (
-                Stage::new(Status::Failed, Code::UpstreamUnreachable).elapsed(start),
-                initial_tls,
-            );
-        }
+    )) else {
+        return (
+            Stage::new(Status::Failed, Code::UpstreamUnreachable).elapsed(start),
+            initial_tls,
+        );
     };
     let mut last = Stage::new(Status::Failed, Code::UpstreamUnreachable);
     let mut tls = initial_tls;
@@ -224,14 +218,11 @@ pub(super) async fn probe(
         if https && !verified {
             builder = builder.tls_danger_accept_invalid_certs(true);
         }
-        let client = match builder.build() {
-            Ok(client) => client,
-            Err(_) => {
-                return (
-                    Stage::new(Status::Failed, Code::UpstreamUnreachable).elapsed(start),
-                    tls,
-                );
-            }
+        let Ok(client) = builder.build() else {
+            return (
+                Stage::new(Status::Failed, Code::UpstreamUnreachable).elapsed(start),
+                tls,
+            );
         };
         let response = timeout_at(
             deadline,

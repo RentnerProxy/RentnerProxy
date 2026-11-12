@@ -5,9 +5,11 @@ import { mountHook } from '@/tests/features/UserSettings/hookCoverageSupport.ts'
 const change = mock(async (_input: unknown) => ({ success: true, message: 'password-saved' }))
 const success = mock(() => {})
 const error = mock(() => {})
-mock.module('@/features/UserSettings/middleware.ts', () => ({ changePasswordHandler: change }))
-mock.module('@rentnerkev/toasts', () => ({ toast: { success, error } }))
-mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
+await mock.module('@/features/UserSettings/middleware.ts', () => ({
+    changePasswordHandler: change,
+}))
+await mock.module('@rentnerkev/toasts', () => ({ toast: { success, error } }))
+await mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
     default: () => ({ t: (key: string) => key }),
 }))
 const { default: useChangePasswordLogic } =

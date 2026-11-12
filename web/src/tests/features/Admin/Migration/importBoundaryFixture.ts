@@ -20,9 +20,9 @@ export class ZoraxySourceError extends Error {
         super(code)
     }
 }
-export function importBoundaryFixture() {
-    const boundary = createMiddlewareHarness()
-    boundary.mockServices(
+export async function importBoundaryFixture() {
+    const boundary = await createMiddlewareHarness()
+    await boundary.mockServices(
         '@/server/Admin/NpmImport/npm-import.service.ts',
         [
             'applyImportService',
@@ -34,16 +34,16 @@ export function importBoundaryFixture() {
         ],
         { NpmImportError: ImportError },
     )
-    boundary.mockServices('@/server/Admin/Migration/migration-export.service.ts', [
+    await boundary.mockServices('@/server/Admin/Migration/migration-export.service.ts', [
         'exportMigrationConfigurationService',
     ])
-    mock.module('@/server/Admin/NpmImport/npm-source.ts', () => ({ NpmSourceError }))
-    mock.module('@/server/Admin/Migration/portable.ts', () => ({ PortableSourceError }))
-    mock.module('@/server/Admin/Migration/zoraxy.ts', () => ({ ZoraxySourceError }))
-    mock.module('@/server/env.server.ts', () => ({
+    await mock.module('@/server/Admin/NpmImport/npm-source.ts', () => ({ NpmSourceError }))
+    await mock.module('@/server/Admin/Migration/portable.ts', () => ({ PortableSourceError }))
+    await mock.module('@/server/Admin/Migration/zoraxy.ts', () => ({ ZoraxySourceError }))
+    await mock.module('@/server/env.server.ts', () => ({
         getPublicOrigin: () => 'https://proxy.example',
     }))
-    mock.module('@/server/Admin/NpmImport/npm-temp.ts', () => ({
+    await mock.module('@/server/Admin/NpmImport/npm-temp.ts', () => ({
         withNpmSqliteUpload: async (
             request: Request,
             action: (path: string, fingerprint: string) => Promise<unknown>,

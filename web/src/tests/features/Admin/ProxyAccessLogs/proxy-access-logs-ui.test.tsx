@@ -64,7 +64,7 @@ const getProxyAccessLogsHandlerMock = mock(
     },
 )
 
-mock.module('@/features/Admin/ProxyAccessLogs/middleware.ts', () => ({
+await mock.module('@/features/Admin/ProxyAccessLogs/middleware.ts', () => ({
     getProxyAccessLogsHandler: getProxyAccessLogsHandlerMock,
 }))
 
@@ -74,7 +74,7 @@ const useLiveQueryMock = mock(
         onData: (data: ProxyAccessLogsResult) => void | Promise<void>
     }) => 'inactive',
 )
-mock.module('@/shared/Live/Hooks/useLiveQuery.ts', () => ({ default: useLiveQueryMock }))
+await mock.module('@/shared/Live/Hooks/useLiveQuery.ts', () => ({ default: useLiveQueryMock }))
 
 const { default: ProxyAccessLogsPage } = await import('@/features/Admin/ProxyAccessLogs/index.tsx')
 

@@ -47,8 +47,9 @@ export interface OidcProvidersLogicResult {
         handleEdit: (provider: OidcProviderSummary) => void
         handleClose: () => void
         handleSave: () => Promise<void>
-        handleTest: (provider: OidcProviderSummary) => Promise<void>
-        handleCopy: () => Promise<void>
+        handleTest: (provider: OidcProviderSummary) => void
+        handleSubmit: (event: FormEvent<HTMLFormElement>) => void
+        handleCopy: () => void
         handleDelete: (provider: OidcProviderSummary | null) => void
         handleConfirmDelete: () => Promise<void>
         handleDiscard: () => void
@@ -77,3 +78,4 @@ export interface AccountPolicyEditorProps {
         | 'handleMappingRoles'
     >
 }
+import type { FormEvent } from 'react'

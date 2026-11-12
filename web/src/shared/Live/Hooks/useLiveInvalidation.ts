@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import type {
     LiveRevisionSnapshot,
     UseLiveInvalidationOptions,
@@ -13,6 +14,7 @@ export default function useLiveInvalidation({
     enabled,
     queryKeys,
 }: UseLiveInvalidationOptions): ReturnType<typeof useLiveQuery> {
+    const runAction = useAsyncAction()
     const queryClient = useQueryClient()
     const revisionRef = useRef<string | undefined>(undefined)
     const onData = useCallback(
@@ -21,15 +23,19 @@ export default function useLiveInvalidation({
             const previousRevision = revisionRef.current
             revisionRef.current = snapshot.revision
             if (previousRevision === snapshot.revision) return
-            void Promise.all(
-                queryKeys.map((queryKey) => queryClient.invalidateQueries({ queryKey })),
+            runAction(() =>
+                Promise.all(
+                    queryKeys.map((queryKey) => queryClient.invalidateQueries({ queryKey })),
+                ),
             )
         },
-        [queryClient, queryKeys],
+        [queryClient, queryKeys, runAction],
     )
     const onResume = useCallback(() => {
-        void Promise.all(queryKeys.map((queryKey) => queryClient.invalidateQueries({ queryKey })))
-    }, [queryClient, queryKeys])
+        runAction(() =>
+            Promise.all(queryKeys.map((queryKey) => queryClient.invalidateQueries({ queryKey }))),
+        )
+    }, [queryClient, queryKeys, runAction])
 
     const status = useLiveQuery<LiveRevisionSnapshot>({
         topic,

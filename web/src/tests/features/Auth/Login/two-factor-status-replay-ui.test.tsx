@@ -9,11 +9,11 @@ if (!GlobalRegistrator.isRegistered)
     GlobalRegistrator.register({ settings: { device: { prefersReducedMotion: 'reduce' } } })
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 const status = mock(async () => ({ valid: false, methods: [] as string[] }))
-mock.module('@/features/Auth/Login/middleware.ts', () => ({
+await mock.module('@/features/Auth/Login/middleware.ts', () => ({
     getTwoFactorChallengeStatusHandler: status,
     completeTwoFactorLoginHandler: async () => ({ success: false, message: 'Invalid code.' }),
 }))
-mock.module('@tanstack/react-router', () => ({
+await mock.module('@tanstack/react-router', () => ({
     useNavigate: () => async () => {},
     useRouter: () => ({ invalidate: async () => {} }),
     useRouterState: () => undefined,

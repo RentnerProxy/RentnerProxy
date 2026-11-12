@@ -30,12 +30,12 @@ let providerListAvailable = false
 let providerListFailsClosed = false
 let providerCatalogDelay: Promise<void> | undefined
 let providerCatalogRequests = 0
-mock.module('@/features/Auth/Login/middleware.ts', () => ({
+await mock.module('@/features/Auth/Login/middleware.ts', () => ({
     loginHandler: login,
     beginPasskeyLoginHandler: passkeyLogin,
     finishPasskeyLoginHandler: async () => ({ success: false, message: 'Unavailable.' }),
 }))
-mock.module('@/features/Auth/Oidc/middleware.ts', () => ({
+await mock.module('@/features/Auth/Oidc/middleware.ts', () => ({
     getPublicOidcProvidersHandler: async () => {
         providerCatalogRequests += 1
         await providerCatalogDelay
@@ -45,7 +45,7 @@ mock.module('@/features/Auth/Oidc/middleware.ts', () => ({
         throw new Error('Provider list unavailable')
     },
 }))
-mock.module('@tanstack/react-router', () => ({
+await mock.module('@tanstack/react-router', () => ({
     useSearch: () => search,
     useNavigate: () => navigate,
     useRouter: () => ({ invalidate: async () => {} }),
@@ -53,7 +53,7 @@ mock.module('@tanstack/react-router', () => ({
     Link: ({ to, children }: { to: string; children: ReactNode }) => <a href={to}>{children}</a>,
 }))
 const toastPackage = await import('@rentnerkev/toasts')
-mock.module('@rentnerkev/toasts', () => ({
+await mock.module('@rentnerkev/toasts', () => ({
     ...toastPackage,
     toast: { ...toastPackage.toast, error: errorToast, info: infoToast, success: successToast },
 }))

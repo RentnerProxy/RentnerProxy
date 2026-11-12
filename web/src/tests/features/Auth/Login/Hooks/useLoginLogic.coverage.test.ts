@@ -10,24 +10,24 @@ const finish = mock(async (_input: unknown): Promise<never> => {
 const error = mock(() => {})
 const navigate = mock(async () => {})
 const invalidate = mock(async () => {})
-mock.module('@tanstack/react-router', () => ({
+await mock.module('@tanstack/react-router', () => ({
     useNavigate: () => navigate,
     useRouter: () => ({ invalidate }),
     useSearch: () => ({}),
 }))
-mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
+await mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
     default: () => ({ t: (key: string) => key }),
 }))
-mock.module('@rentnerkev/toasts', () => ({ toast: { error } }))
-mock.module('@simplewebauthn/browser', () => ({
+await mock.module('@rentnerkev/toasts', () => ({ toast: { error } }))
+await mock.module('@simplewebauthn/browser', () => ({
     startAuthentication: mock(async () => ({ id: 'assertion' })),
 }))
-mock.module('@/features/Auth/Login/middleware.ts', () => ({
+await mock.module('@/features/Auth/Login/middleware.ts', () => ({
     loginHandler: login,
     beginPasskeyLoginHandler: begin,
     finishPasskeyLoginHandler: finish,
 }))
-mock.module('@/features/Auth/Oidc/middleware.ts', () => ({
+await mock.module('@/features/Auth/Oidc/middleware.ts', () => ({
     getPublicOidcProvidersHandler: mock(async () => []),
 }))
 const { default: useLoginLogic } = await import('@/features/Auth/Login/Hooks/useLoginLogic.ts')

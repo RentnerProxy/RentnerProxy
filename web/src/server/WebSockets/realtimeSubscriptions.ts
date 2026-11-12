@@ -14,6 +14,7 @@ import {
 } from '@/server/Foundation/resource-admission.ts'
 import type { LiveTopic } from '@/lib/Live/Types/realtime.types.ts'
 import { comparisonKey, snapshotMessage } from '@/lib/Live/snapshot.ts'
+import { runDetachedTask } from '@/lib/Async/runDetachedTask.ts'
 
 function unsubscribe(connection: LiveConnectionData, topic: LiveTopic): void {
     const subscription = connection.subscriptions.get(topic)
@@ -136,9 +137,20 @@ export function createSubscriptionManager(options: SubscriptionManagerOptions) {
             subscription.abortController = null
             if (!deferred && subscription.pending && subscription.active && !connection.closed) {
                 subscription.pending = false
-                queueMicrotask(() => void sample(subscription))
+                queueMicrotask(() => requestSample(subscription))
             }
         }
+    }
+
+    function requestSample(subscription: LiveTopicSubscription): void {
+        runDetachedTask(
+            () => sample(subscription),
+            () => {
+                const { connection } = subscription
+                if (!subscription.active || connection.closed) return
+                options.closeUnavailable(connection, 503)
+            },
+        )
     }
 
     function subscribe(
@@ -165,8 +177,8 @@ export function createSubscriptionManager(options: SubscriptionManagerOptions) {
             active: true,
         }
         connection.subscriptions.set(topic, subscription)
-        subscription.timer = setInterval(() => void sample(subscription), subscription.intervalMs)
-        void sample(subscription)
+        subscription.timer = setInterval(() => requestSample(subscription), subscription.intervalMs)
+        requestSample(subscription)
         return true
     }
 
@@ -178,7 +190,8 @@ export function createSubscriptionManager(options: SubscriptionManagerOptions) {
 
     function sampleAll(): void {
         for (const connection of connections) {
-            for (const subscription of connection.subscriptions.values()) void sample(subscription)
+            for (const subscription of connection.subscriptions.values())
+                requestSample(subscription)
         }
     }
 

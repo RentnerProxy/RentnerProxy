@@ -64,7 +64,7 @@ export async function runMigrate(options: MigrationOptions = {}) {
         if (reserved !== undefined) {
             try {
                 if (migrationLockHeld) {
-                    const unlockResult = await reserved`
+                    const unlockResult = await reserved<{ unlocked: boolean }[]>`
                         select pg_advisory_unlock(${MIGRATION_ADVISORY_LOCK_ID}) as unlocked
                     `
                     if (unlockResult[0]?.unlocked !== true) {
@@ -75,7 +75,7 @@ export async function runMigrate(options: MigrationOptions = {}) {
                 cleanupError ??= error
             } finally {
                 try {
-                    reserved.release()
+                    await reserved.release()
                 } catch (error) {
                     cleanupError ??= error
                 }

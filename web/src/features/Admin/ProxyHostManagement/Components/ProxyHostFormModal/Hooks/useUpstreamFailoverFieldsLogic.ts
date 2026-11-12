@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import { useStore } from '@tanstack/react-form'
 import { UPSTREAM_FAILOVER_DEFAULTS } from '@/config/upstream-pools.config.ts'
 import { getUpstreamFailoverFormValues } from '@/lib/Admin/ProxyHostManagement/proxyHostFormValues.ts'
@@ -15,10 +16,11 @@ export default function useUpstreamFailoverFieldsLogic({
     form,
     isPending,
 }: Pick<UpstreamFailoverFieldsProps, 'form' | 'isPending'>): UpstreamFailoverFieldsLogicResult {
+    const runAction = useAsyncAction()
     const failover = useStore(form.store, (state) => state.values.upstreamPool?.failover)
     /** Refreshes dependent field errors after a submission attempt without validating untouched initial drafts. */
     const revalidate = () => {
-        if (form.state.submissionAttempts > 0) void form.validate('submit')
+        if (form.state.submissionAttempts > 0) runAction(() => form.validate('submit'))
     }
     const activeFields: UpstreamFailoverNumberField[] = [
         {

@@ -116,25 +116,25 @@ const reconcileMock = mock(async (_actorId: string) => {
     return runtimeStatus
 })
 
-mock.module('@/server/Auth/Core/database.server.ts', () => ({
+await mock.module('@/server/Auth/Core/database.server.ts', () => ({
     getAuthDatabase: () => ({ transaction: transactionMock }),
 }))
-mock.module('@/server/Auth/Access/authorization.service.ts', () => ({
+await mock.module('@/server/Auth/Access/authorization.service.ts', () => ({
     requirePermissionService: permissionMock,
 }))
-mock.module('@/server/Auth/Access/rbac.service.ts', () => ({
+await mock.module('@/server/Auth/Access/rbac.service.ts', () => ({
     requirePermissionInTransaction: transactionPermissionMock,
 }))
-mock.module('@/server/ProxyRuntime/proxy-runtime-settings.ts', () => ({
+await mock.module('@/server/ProxyRuntime/proxy-runtime-settings.ts', () => ({
     lockProxyRuntimeSettings: async () => undefined,
 }))
-mock.module('@/server/ProxyRuntime/proxy-runtime.service.ts', () => ({
+await mock.module('@/server/ProxyRuntime/proxy-runtime.service.ts', () => ({
     reconcileProxyConfigurationWithAudit: reconcileMock,
 }))
-mock.module('@/server/ProxyRuntime/audit-mutation.ts', () => ({
+await mock.module('@/server/ProxyRuntime/audit-mutation.ts', () => ({
     recordMutationFailureBestEffort: async () => undefined,
 }))
-mock.module('@/server/Audit/audit.service.ts', () => ({
+await mock.module('@/server/Audit/audit.service.ts', () => ({
     appendAuditEventInTransactionService: async (
         _transaction: AuthTransaction,
         event: { resource: string },

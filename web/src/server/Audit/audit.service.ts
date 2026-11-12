@@ -34,7 +34,7 @@ function parseEventInput(input: AuditEventInput): AuditEventInput {
         ...parsed,
         metadata: Object.fromEntries(
             Object.entries(metadata).filter(([, value]) => value !== undefined),
-        ) as AuditMetadata,
+        ),
     }
 }
 

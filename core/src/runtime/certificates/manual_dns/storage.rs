@@ -47,6 +47,27 @@ fn order(entry: &StoredCertificate) -> Result<&ManualDnsOrder, CertificateError>
         .ok_or(CertificateError::ManualDnsOrderInvalid)
 }
 
+fn order_mut(entry: &mut StoredCertificate) -> Result<&mut ManualDnsOrder, CertificateError> {
+    entry
+        .acme
+        .as_mut()
+        .and_then(|acme| acme.manual_order.as_mut())
+        .ok_or(CertificateError::ManualDnsOrderInvalid)
+}
+
+fn set_operation_stage(
+    entry: &mut StoredCertificate,
+    stage: CertificateOperationStage,
+) -> Result<(), CertificateError> {
+    let operation = entry
+        .metadata
+        .current_operation
+        .as_mut()
+        .ok_or(CertificateError::OperationInProgress)?;
+    operation.stage = stage;
+    Ok(())
+}
+
 fn action_matches(entry: &StoredCertificate, action: &ManualDnsActionRequest) -> bool {
     entry
         .metadata
@@ -148,8 +169,8 @@ impl CertificateStore {
         entry
             .acme
             .as_ref()
-            .and_then(|acme| acme.manual_order.clone())
-            .map(|order| request(entry).map(|request| (request, order)))
+            .and_then(|acme| acme.manual_order.as_ref())
+            .map(|order| request(entry).map(|request| (request, order.clone())))
             .transpose()
     }
 
@@ -183,9 +204,13 @@ impl CertificateStore {
                 ManualDnsPhase::Finalizing => CertificateOperationStage::Finalizing,
                 _ => return Err(CertificateError::OperationInProgress),
             };
-            entry.metadata.current_operation.as_mut().unwrap().stage = stage;
+            set_operation_stage(entry, stage)?;
             entry.metadata.last_error_code = new.last_error_code.clone();
-            entry.acme.as_mut().unwrap().manual_order = Some(new);
+            let acme = entry
+                .acme
+                .as_mut()
+                .ok_or(CertificateError::ManualDnsOrderInvalid)?;
+            acme.manual_order = Some(new);
             Ok((stage == CertificateOperationStage::AwaitingDns)
                 .then_some(CertificateEventKind::OperatorActionRequired))
         })
@@ -250,13 +275,12 @@ impl CertificateStore {
                     return Err(CertificateError::ManualDnsExpired);
                 }
                 let now = utc_now()?;
-                let order = entry.acme.as_mut().unwrap().manual_order.as_mut().unwrap();
+                let order = order_mut(entry)?;
                 order.phase = ManualDnsPhase::CheckingDns;
                 order.last_checked_at = Some(now);
                 order.last_error_code = None;
                 entry.metadata.last_error_code = None;
-                entry.metadata.current_operation.as_mut().unwrap().stage =
-                    CertificateOperationStage::CheckingDns;
+                set_operation_stage(entry, CertificateOperationStage::CheckingDns)?;
                 Ok(None)
             })
             .await;
@@ -341,24 +365,15 @@ impl CertificateStore {
                     .checked_add(time::Duration::seconds(60))
                     .and_then(|value| value.format(&Rfc3339).ok())
                     .ok_or(CertificateError::StoreUnavailable)?;
-                entry.next_attempt_at = super::super::scheduling::max_retry_deadline_string(
+                entry.next_attempt_at = Some(super::super::scheduling::max_retry_deadline_string(
                     entry.next_attempt_at.as_deref(),
                     &deadline,
-                )
-                .or(Some(deadline));
-                entry
-                    .acme
-                    .as_mut()
-                    .unwrap()
-                    .manual_order
-                    .as_mut()
-                    .unwrap()
-                    .last_error_code = Some(error.code().to_owned());
-                let order = entry.acme.as_mut().unwrap().manual_order.as_mut().unwrap();
+                ));
+                let order = order_mut(entry)?;
+                order.last_error_code = Some(error.code().to_owned());
                 if order.phase == ManualDnsPhase::CheckingDns && !order.records.is_empty() {
                     order.phase = ManualDnsPhase::AwaitingInput;
-                    entry.metadata.current_operation.as_mut().unwrap().stage =
-                        CertificateOperationStage::AwaitingDns;
+                    set_operation_stage(entry, CertificateOperationStage::AwaitingDns)?;
                     Ok(Some(CertificateEventKind::OperatorActionRequired))
                 } else {
                     Ok(None)
@@ -412,7 +427,7 @@ impl CertificateStore {
                     ManualDnsPhase::Cancelled => CertificateOperationStage::Cancelled,
                     _ => CertificateOperationStage::NeedsAttention,
                 };
-                entry.metadata.current_operation.as_mut().unwrap().stage = stage;
+                set_operation_stage(entry, stage)?;
                 Ok(Some(match phase {
                     ManualDnsPhase::Expired => CertificateEventKind::Expired,
                     ManualDnsPhase::Cancelled => CertificateEventKind::Cancelled,

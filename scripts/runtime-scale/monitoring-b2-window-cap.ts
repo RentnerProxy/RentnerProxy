@@ -46,7 +46,9 @@ export async function observeMonitoringB2WindowBackendQuery(
     signal: AbortSignal,
 ) {
     const cancel = () => {
-        query.cancel()
+        void query.cancel().catch(() => {
+            console.warn('[monitoring] Window query cancellation failed')
+        })
     }
     signal.addEventListener('abort', cancel, { once: true })
     try {

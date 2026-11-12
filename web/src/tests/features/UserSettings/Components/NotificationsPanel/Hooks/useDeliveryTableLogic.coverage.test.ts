@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'bun:test'
 import { mountHook } from '@/tests/features/UserSettings/hookCoverageSupport.ts'
 import type { NotificationStatus } from '@/lib/Notifications/Types/notifications.types.ts'
-mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
+await mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
     default: () => ({ locale: 'en', t: (key: string) => key }),
 }))
 const { default: useDeliveryTableLogic } =

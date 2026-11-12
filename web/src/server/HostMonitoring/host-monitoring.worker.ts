@@ -1,3 +1,4 @@
+import { runDetachedTask } from '@/lib/Async/runDetachedTask.ts'
 import { drainWorker, settleWorkerTasks } from '@/server/Foundation/worker-lifecycle.server.ts'
 import { WorkerDrainTimeoutError } from '@/server/Foundation/Types/worker-lifecycle.types.ts'
 import { HOST_MONITORING_LIMITS } from '@/config/host-monitoring.config.ts'
@@ -114,7 +115,10 @@ export function createHostMonitoringWorker<Claim>(
         cancelTimer = setTimer(() => {
             cancelTimer = null
             schedule()
-            void runOnce()
+            runDetachedTask(
+                () => runOnce(),
+                () => console.error('[host-monitoring] Background operation failed'),
+            )
         }, pollDelayMs)
     }
 
@@ -232,7 +236,10 @@ export function createHostMonitoringWorker<Claim>(
                 schedule()
             })
             schedule()
-            void runOnce()
+            runDetachedTask(
+                () => runOnce(),
+                () => console.error('[host-monitoring] Background operation failed'),
+            )
         },
         /** Stops new work and waits for admission, retention, probes and late-lease cleanup. */
         stop(): Promise<void> {

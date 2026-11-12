@@ -39,10 +39,7 @@ export default function ProviderEditor({ state, handler, form }: OidcProvidersLo
                 id="oidc-provider-form"
                 className="grid gap-4"
                 noValidate
-                onSubmit={(event) => {
-                    event.preventDefault()
-                    void form.handleSubmit()
-                }}
+                onSubmit={handler.handleSubmit}
             >
                 {state.conflict ? (
                     <div className="grid gap-3">

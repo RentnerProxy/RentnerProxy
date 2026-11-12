@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'bun:test'
 import { OIDC_LIMITS } from '@/config/oidc.config.ts'
 
-mock.module('@/server/Auth/Oidc/oidc-providers.service.ts', () => ({
+await mock.module('@/server/Auth/Oidc/oidc-providers.service.ts', () => ({
     getPublicOidcProvidersService: async () => [],
 }))
 const { createOidcPublicCatalogCache } =

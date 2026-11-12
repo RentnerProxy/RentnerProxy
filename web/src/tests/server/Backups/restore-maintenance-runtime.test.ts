@@ -35,15 +35,15 @@ const open = mock(async (_path: string, _flags: string, _mode: number) => ({
     close,
 }))
 const rename = mock(async (_from: string, _to: string) => undefined)
-mock.module('node:fs/promises', () => ({ open, rename, unlink: async () => undefined }))
-mock.module('@/server/Backups/restore-maintenance-status.server.ts', () => ({
+await mock.module('node:fs/promises', () => ({ open, rename, unlink: async () => undefined }))
+await mock.module('@/server/Backups/restore-maintenance-status.server.ts', () => ({
     readRestoreMaintenanceStatus: async () => status,
     readRestoreMaintenanceObservation: async () => ({ maintenance: status, restoreResults: [] }),
 }))
-mock.module('@/server/Foundation/worker-lifecycle.server.ts', () => ({
+await mock.module('@/server/Foundation/worker-lifecycle.server.ts', () => ({
     stopWorkersForRestoreMaintenance: stopWorkers,
 }))
-mock.module('@/db/index.ts', () => ({
+await mock.module('@/db/index.ts', () => ({
     db: { execute },
     closeDatabaseForRestoreMaintenance: closeDatabase,
 }))

@@ -12,13 +12,13 @@ const authLimit = mock(async (_request: unknown, overrides: { resolveClientIp: (
 const mfaLimit = mock(async (_request: unknown, overrides: { resolveClientIp: () => string }) =>
     overrides.resolveClientIp(),
 )
-mock.module('@tanstack/react-start/server', () => ({
+await mock.module('@tanstack/react-start/server', () => ({
     getRequest: () => request,
     getRequestIP: () => clientIp,
     setResponseStatus: status,
     setResponseHeader: header,
 }))
-mock.module('@/server/Valkey/rate-limiter.service.ts', () => ({
+await mock.module('@/server/Valkey/rate-limiter.service.ts', () => ({
     RateLimitError,
     RateLimitUnavailableError,
     enforceAuthRateLimit: authLimit,

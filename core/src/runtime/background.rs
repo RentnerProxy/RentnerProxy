@@ -233,6 +233,7 @@ impl Drop for Resident {
     }
 }
 
+#[derive(Clone, Copy)]
 pub(super) enum Outcome {
     Idle,
     Success,

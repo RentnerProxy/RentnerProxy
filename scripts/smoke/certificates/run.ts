@@ -36,8 +36,8 @@ async function runSmoke(): Promise<void> {
         await verifyCertificateIpPolicies(policies)
         await verifyCertificateLogsAndJobs(policies)
     } finally {
-        context.backend?.stop(true)
-        context.dnsFixture?.stop()
+        await context.backend?.stop(true)
+        await context.dnsFixture?.stop()
         await context
             .command(['docker', 'rm', '--force', manualDnsForwarderName(context.project)])
             .catch(() => undefined)

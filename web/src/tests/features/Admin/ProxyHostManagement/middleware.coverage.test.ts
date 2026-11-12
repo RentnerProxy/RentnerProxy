@@ -9,8 +9,8 @@ class EditorError extends Error {
         super(code)
     }
 }
-const boundary = createMiddlewareHarness()
-boundary.mockServices('@/server/Admin/ProxyHostManagement/proxy-hosts.service.ts', [
+const boundary = await createMiddlewareHarness()
+await boundary.mockServices('@/server/Admin/ProxyHostManagement/proxy-hosts.service.ts', [
     'searchProxyHostsService',
     'createProxyHostService',
     'deleteProxyHostService',
@@ -18,20 +18,22 @@ boundary.mockServices('@/server/Admin/ProxyHostManagement/proxy-hosts.service.ts
     'enableProxyHostService',
     'updateProxyHostService',
 ])
-boundary.mockServices('@/server/Admin/ProxyHostManagement/upstream-health.service.ts', [
+await boundary.mockServices('@/server/Admin/ProxyHostManagement/upstream-health.service.ts', [
     'getProxyHostUpstreamHealthService',
 ])
-boundary.mockServices('@/server/Admin/HostTags/host-list.service.ts', ['getProxyHostPageService'])
-boundary.mockServices('@/server/ProxyRuntime/proxy-runtime.service.ts', [
+await boundary.mockServices('@/server/Admin/HostTags/host-list.service.ts', [
+    'getProxyHostPageService',
+])
+await boundary.mockServices('@/server/ProxyRuntime/proxy-runtime.service.ts', [
     'applyProxyConfigurationService',
     'getProxyRuntimeStatusService',
 ])
-boundary.mockServices('@/server/ProxyRuntime/proxy-host-config-editor.service.ts', [
+await boundary.mockServices('@/server/ProxyRuntime/proxy-host-config-editor.service.ts', [
     'getProxyHostConfigEditorService',
     'saveProxyHostConfigEditorService',
     'resetProxyHostConfigEditorService',
 ])
-boundary.mockServices(
+await boundary.mockServices(
     '@/server/ProxyRuntime/proxy-config-editor.service.ts',
     [
         'getProxyConfigEditorService',

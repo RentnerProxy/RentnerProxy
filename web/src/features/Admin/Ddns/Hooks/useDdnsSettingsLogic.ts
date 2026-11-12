@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import { toast } from '@rentnerkev/toasts'
 import { useForm } from '@tanstack/react-form'
 import { useId, useState, type FormEvent } from 'react'
@@ -5,6 +6,7 @@ import { ddnsDraftSchema } from '@/lib/Ddns/validation.ts'
 import useTranslationStore from '@/shared/Language/Hooks/useTranslationStore.ts'
 import type { DdnsSettingsProps } from '../Types/ddns-editor.types.ts'
 export default function useDdnsSettingsLogic(props: DdnsSettingsProps) {
+    const runAction = useAsyncAction()
     const formId = useId()
     const { t, locale } = useTranslationStore()
     const [defaults] = useState(props.draft)
@@ -32,7 +34,7 @@ export default function useDdnsSettingsLogic(props: DdnsSettingsProps) {
             },
             submit: (event: FormEvent<HTMLFormElement>) => {
                 event.preventDefault()
-                void form.handleSubmit()
+                runAction(() => form.handleSubmit())
             },
         },
     }
