@@ -79,7 +79,9 @@ test.each(['subscription replacement', 'connection closure'] as const)(
                 }
                 return { kind: 'success', data: { revision: 'current' } }
             },
-            closeUnavailable: (_connection, status) => { closed.push(status) },
+            closeUnavailable: (_connection, status) => {
+                closed.push(status)
+            },
             closeUnauthorized: () => {},
             closeBackpressured: () => {},
         })
