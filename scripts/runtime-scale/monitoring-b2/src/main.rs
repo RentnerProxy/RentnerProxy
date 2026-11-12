@@ -9,6 +9,57 @@ use std::{
 use tokio::{sync::Semaphore, task::JoinSet};
 use tokio_postgres::{Client, NoTls, Statement, config::Host};
 
+// One deadline starts before claim SQL and is shared by every returned claim.
+// 11s work + 3s actual PG join leaves 1s below the owner's unchanged 15s drain.
+const BATCH_WORK_BUDGET: Duration = Duration::from_secs(11);
+const PG_JOIN_BUDGET: Duration = Duration::from_secs(3);
+
+#[derive(Clone, Copy)]
+struct WorkBudget {
+    deadline: tokio::time::Instant,
+}
+
+impl WorkBudget {
+    fn new() -> Self {
+        Self {
+            deadline: tokio::time::Instant::now() + BATCH_WORK_BUDGET,
+        }
+    }
+
+    fn check(&self) -> Result<(), Error> {
+        if tokio::time::Instant::now() >= self.deadline {
+            return Err("B2 owned batch work budget expired".into());
+        }
+        Ok(())
+    }
+
+    async fn run<T>(
+        &self,
+        operation: impl std::future::Future<Output = Result<T, Error>>,
+    ) -> Result<T, Error> {
+        // The timeout alone may poll a ready operation even after expiry. Check
+        // before polling: no new SQL, blocking closure or HTTP starts after expiry.
+        self.check()?;
+        let value = tokio::time::timeout_at(self.deadline, operation).await??;
+        self.check()?;
+        Ok(value)
+    }
+}
+
+/// A claim query admitted before stop retains ownership of every returned row.
+async fn claim_batch<T>(
+    interrupt: std::pin::Pin<&mut impl std::future::Future<Output = std::io::Result<()>>>,
+    query: impl std::future::Future<Output = Result<T, Error>>,
+) -> Result<Option<(T, WorkBudget)>, Error> {
+    // The caller has just awaited SQLite availability. Recheck at the actual
+    // claim admission boundary, then own the full query and all returned leases.
+    if stop_requested(interrupt).await? {
+        return Ok(None);
+    }
+    let budget = WorkBudget::new();
+    Ok(Some((budget.run(query).await?, budget)))
+}
+
 /// Bounds a single PostgreSQL future, including connection establishment, to three seconds.
 async fn database<T>(
     request: impl std::future::Future<Output = Result<T, tokio_postgres::Error>>,
@@ -264,6 +315,13 @@ fn appliance_seal() -> Result<(), Error> {
     Err("B2 appliance requires Linux fixture".into())
 }
 
+/// Carries the already-admitted batch's authority, capacity and unchanged deadline.
+struct ProbeOwner {
+    admission: Admission,
+    slots: Arc<Semaphore>,
+    budget: WorkBudget,
+}
+
 /// Persists a start, refreshes authority and rechecks expiry before one bounded broker request.
 /// Commits raw outcome evidence before offering slot release; Bun owns terminal result replay.
 async fn probe(
@@ -272,32 +330,47 @@ async fn probe(
     token: String,
     claim: Claim,
     store: Arc<Mutex<Outbox>>,
-    slots: Arc<Semaphore>,
-    admission: Admission,
+    owner: ProbeOwner,
 ) -> Result<bool, Error> {
-    let _permit = slots.acquire_owned().await?;
+    let ProbeOwner {
+        admission,
+        slots,
+        budget,
+    } = owner;
+    let _permit = budget
+        .run(async { Ok(slots.acquire_owned().await?) })
+        .await?;
     let started = now_ms()?;
     claim.validate(started)?;
     let owned = claim.clone();
     let durable = store.clone();
-    persistence(durable, move |owner| owner.start(&owned, started)).await?;
+    budget
+        .run(persistence(durable, move |owner| {
+            owner.start(&owned, started)
+        }))
+        .await?;
     // Claiming reserved a lease. Only this fresh check after durable preparation admits HTTP,
     // matching A's context read directly before inspect; a later edit affects already-admitted work.
-    let admitted = admission.check(&claim).await?;
+    let admitted = budget.run(admission.check(&claim)).await?;
     if let Some(admitted) = admitted {
         let owned = claim.clone();
         let durable = store.clone();
-        persistence(durable, move |owner| owner.admitted(&owned, admitted)).await?;
+        budget
+            .run(persistence(durable, move |owner| {
+                owner.admitted(&owned, admitted)
+            }))
+            .await?;
     } else {
-        persistence(store, move |owner| {
-            owner.finish(&claim, &json!({"error":"authority_withdrawn"}), now_ms()?)
-        })
-        .await?;
+        budget
+            .run(persistence(store, move |owner| {
+                owner.finish(&claim, &json!({"error":"authority_withdrawn"}), now_ms()?)
+            }))
+            .await?;
         return Ok(false);
     }
     // A delayed fsync must never turn an expired reservation into a new network request.
     claim.validate(now_ms()?)?;
-    let outcome = async {
+    let outcome = budget.run(async { Ok(async {
         let mut response = client.post(endpoint).bearer_auth(token).header("x-b2-attempt",claim.lease_token.clone()).json(&json!({
             "hostType": "proxy", "hostId": claim.host_id, "domain": claim.domain,
             "expectedRevision": claim.before["revision"], "upstreamOnly": true, "timeoutMs": claim.timeout_ms,
@@ -313,13 +386,16 @@ async fn probe(
             return Ok(json!({"error":"invalid_native_result"}));
         }
         Ok(payload)
-    }.await.unwrap_or_else(|_| json!({"error":"runtime_unavailable"}));
+    }.await.unwrap_or_else(|_| json!({"error":"runtime_unavailable"}))) }).await?;
     let completed_claim = claim.clone();
-    persistence(store, move |owner| {
-        owner.finish(&claim, &outcome, now_ms()?)
-    })
-    .await?;
-    admission.raw_completed(&completed_claim).await?;
+    budget
+        .run(persistence(store, move |owner| {
+            owner.finish(&claim, &outcome, now_ms()?)
+        }))
+        .await?;
+    budget
+        .run(admission.raw_completed(&completed_claim))
+        .await?;
     Ok(true)
 }
 
@@ -338,9 +414,12 @@ async fn run(config: Config) -> Result<(), Error> {
     let (client, connection) = database(config.database.connect(NoTls)).await?;
     let pg = tokio::spawn(connection);
     let result = run_session(config, client, interrupt.as_mut()).await;
+    // A timed-out SQL/blocking future is not a clean drain: its Err survives
+    // this connection join and main exits nonzero, ending any remaining owners.
+    // Only Ok means every probe and its blocking/SQL operations actually joined.
     // run_session owns all client/statement/task handles. Even a startup stop must
     // close the session and join the actual connection before reporting success.
-    tokio::time::timeout(Duration::from_secs(3), pg).await???;
+    tokio::time::timeout(PG_JOIN_BUDGET, pg).await???;
     if let Some(summary) = result? {
         println!("{summary}");
     }
@@ -437,8 +516,16 @@ async fn run_session(
         if batch > 0 {
             // The single PG session reserves bounded fresh leases, never a cached policy list.
             // Connection failure aborts admission. No application credentials or raw tables are available.
-            let claims =
-                database(client.query(&statement, &[&batch, &config.store, &config.epoch])).await?;
+            let Some((claims, budget)) = claim_batch(
+                interrupt.as_mut(),
+                database(client.query(&statement, &[&batch, &config.store, &config.epoch])),
+            )
+            .await?
+            else {
+                break;
+            };
+            // Stop after query admission does not abandon freshly returned leases.
+            // Every row receives the same pre-query deadline, including claim time.
             for row in claims {
                 let payload: String = row.get(0);
                 if payload.len() > 2048 {
@@ -455,8 +542,11 @@ async fn run_session(
                     config.token.clone(),
                     claim,
                     store.clone(),
-                    slots.clone(),
-                    admission.clone(),
+                    ProbeOwner {
+                        slots: slots.clone(),
+                        admission: admission.clone(),
+                        budget,
+                    },
                 ));
                 started += 1;
             }
@@ -527,6 +617,59 @@ mod tests {
                 "override accepted: {query}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn stop_during_availability_denies_the_next_claim_query() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let (stop, interrupted) = tokio::sync::oneshot::channel::<()>();
+        let (release, available) = tokio::sync::oneshot::channel::<()>();
+        let owner = tokio::spawn(async move {
+            let interrupt = async { interrupted.await.map_err(std::io::Error::other) };
+            tokio::pin!(interrupt);
+            // This held availability completes only after stop is already pending.
+            available.await.unwrap();
+            claim_batch(interrupt.as_mut(), async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+            .await
+        });
+        stop.send(()).unwrap();
+        release.send(()).unwrap();
+        assert!(owner.await.unwrap().unwrap().is_none());
+        assert_eq!(observed.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn claim_time_and_probe_phases_share_one_budget_without_false_completion() {
+        let budget = WorkBudget {
+            deadline: tokio::time::Instant::now() + Duration::from_millis(100),
+        };
+        let completed = AtomicUsize::new(0);
+        let phase = || async {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            completed.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        };
+        // Each phase is individually far below the unchanged three-second cap.
+        // Claim SQL already spent time before the probe inherits the same deadline.
+        budget.run(phase()).await.unwrap();
+        budget.run(phase()).await.unwrap();
+        assert!(budget.run(phase()).await.is_err());
+        assert_eq!(completed.load(Ordering::SeqCst), 2);
+        let fresh_calls = AtomicUsize::new(0);
+        assert!(
+            budget
+                .run(async {
+                    fresh_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+                .await
+                .is_err()
+        );
+        assert_eq!(fresh_calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
