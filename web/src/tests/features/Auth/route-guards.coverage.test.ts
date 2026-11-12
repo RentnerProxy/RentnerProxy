@@ -17,11 +17,11 @@ const user: NonNullable<AuthState['user']> = {
 }
 let state: AuthState = { setupRequired: false, user: null, sessionId: 'session' }
 const logout = mock(async () => ({ success: true }))
-mock.module('@/features/Auth/middleware.ts', () => ({
+await mock.module('@/features/Auth/middleware.ts', () => ({
     getAuthStateHandler: mock(async () => state),
     logoutHandler: logout,
 }))
-mock.module('@tanstack/react-router', () => ({
+await mock.module('@tanstack/react-router', () => ({
     redirect: (options: { to: string }) => new Error(`redirect:${options.to}`),
 }))
 const guards = await import('@/features/Auth/route-guards.ts')

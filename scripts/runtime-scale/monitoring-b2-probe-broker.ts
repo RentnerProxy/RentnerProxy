@@ -178,7 +178,7 @@ export function startMonitoringB2ProbeBroker(options: BrokerOptions) {
         stop: (close: boolean) => server.stop(close),
         async quiesce() {
             handler.closeAdmission()
-            server.stop(true)
+            await server.stop(true)
             await handler.drain()
         },
     }

@@ -9,7 +9,7 @@ const handle = mock(async (..._arguments: unknown[]) => ({
     handled: true,
     response: new Response('upgraded'),
 }))
-mock.module('../../../../../web/src/server/WebSockets/realtimeWebSocket.ts', () => ({
+await mock.module('../../../../../web/src/server/WebSockets/realtimeWebSocket.ts', () => ({
     createLiveWebSocketRuntime(options: Parameters<typeof createLiveWebSocketRuntime>[0]) {
         runtimes.push(options)
         return { websocket: {}, shutdown, handle }
@@ -93,7 +93,7 @@ test('development proxy forwards only the live socket and carries current origin
     const events = new EventEmitter()
     if (typeof plugin.configureServer !== 'function') throw new Error('Expected server hook.')
     const server = { httpServer: events, resolvedUrls: null } as unknown as ViteDevServer
-    plugin.configureServer.call({} as never, server)
+    await plugin.configureServer.call({} as never, server)
     server.resolvedUrls = { local: ['http://127.0.0.1:6789/path'], network: [] }
     events.emit('listening')
     expect(await origin()).toBe('http://127.0.0.1:6789')
@@ -115,7 +115,7 @@ test('development proxy forwards only the live socket and carries current origin
     const previousStops = stop.mock.calls.length
     events.emit('close')
     if (typeof plugin.closeBundle !== 'function') throw new Error('Expected cleanup hook.')
-    plugin.closeBundle.call({} as never)
+    await plugin.closeBundle.call({} as never)
     expect(stop.mock.calls.length).toBe(previousStops + 1)
     expect(shutdown).toHaveBeenCalled()
     expect((await sidecar('/api/live')).status).toBe(404)
@@ -134,7 +134,7 @@ test('build mode opens no sidecar and configured public origin remains authorita
     expect(await origin()).toBe('https://proxy.example.test')
     if (typeof plugin.configureServer !== 'function') throw new Error('Expected server hook.')
     const events = new EventEmitter()
-    plugin.configureServer.call(
+    await plugin.configureServer.call(
         {} as never,
         {
             httpServer: events,

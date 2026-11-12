@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import useHostDomainList from '@/shared/HostDomains/Hooks/useHostDomainList.ts'
 import type {
     ProxyHostFormModalRefs,
@@ -58,6 +59,7 @@ export default function useProxyHostFormModalLogic({
     onSuccess,
     proxyHost,
 }: UseProxyHostFormLogicParams) {
+    const runAction = useAsyncAction()
     const { t } = useTranslationStore()
     const formId = useId()
     const [selectedTab, setSelectedTab] = useState<ProxyHostFormTab>('general')
@@ -358,9 +360,9 @@ export default function useProxyHostFormModalLogic({
             event.preventDefault()
             event.stopPropagation()
             if (requestNewCertificate) certificateRequest.form.setFieldValue('acceptTerms', true)
-            void form.handleSubmit()
+            runAction(() => form.handleSubmit())
         },
-        [form, certificateRequest.form, requestNewCertificate],
+        [form, certificateRequest.form, requestNewCertificate, runAction],
     )
     const handleBrowserCacheChange = useCallback<
         ProxyHostFormModalHandler['handleBrowserCacheChange']
@@ -368,9 +370,9 @@ export default function useProxyHostFormModalLogic({
         (settings) => {
             if (!canConfigureBrowserCache || mutation.isPending) return
             form.setFieldValue('browserCache', settings)
-            if (form.state.submissionAttempts > 0) void form.validate('submit')
+            if (form.state.submissionAttempts > 0) runAction(() => form.validate('submit'))
         },
-        [canConfigureBrowserCache, form, mutation.isPending],
+        [canConfigureBrowserCache, form, mutation.isPending, runAction],
     )
 
     return {

@@ -5,12 +5,12 @@ import {
     DefaultSiteError,
     DefaultSiteHtmlFormatError,
 } from '@/server/DefaultSite/default-site.errors.ts'
-const boundary = createMiddlewareHarness()
-boundary.mockServices('@/server/DefaultSite/default-site.service.ts', [
+const boundary = await createMiddlewareHarness()
+await boundary.mockServices('@/server/DefaultSite/default-site.service.ts', [
     'getDefaultSiteService',
     'saveDefaultSiteService',
 ])
-boundary.mockServices('@/server/DefaultSite/format-default-site-html.service.ts', [
+await boundary.mockServices('@/server/DefaultSite/format-default-site-html.service.ts', [
     'formatDefaultSiteHtmlService',
 ])
 const handlers = await import('@/features/DefaultSite/middleware.ts')

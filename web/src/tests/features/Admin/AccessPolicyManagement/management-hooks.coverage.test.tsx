@@ -40,7 +40,7 @@ const updateAccount = mock(async (_input: unknown): Promise<ActionResult> => suc
 const apply = mock(async (): Promise<ActionResult> => success)
 const remove = mock(async (_input: unknown): Promise<ActionResult> => success)
 const removeAccount = mock(async (_input: unknown): Promise<ActionResult> => success)
-mock.module('@/features/Admin/AccessPolicyManagement/middleware.ts', () => ({
+await mock.module('@/features/Admin/AccessPolicyManagement/middleware.ts', () => ({
     createAccessPolicyHandler: createPolicy,
     updateAccessPolicyHandler: updatePolicy,
     createBasicAuthAccountHandler: createAccount,
@@ -52,7 +52,7 @@ mock.module('@/features/Admin/AccessPolicyManagement/middleware.ts', () => ({
     getBasicAuthAccountsHandler: accountsRead,
     deleteBasicAuthAccountHandler: removeAccount,
 }))
-mock.module('@/shared/Live/Hooks/useLiveInvalidation.ts', () => ({ default: () => undefined }))
+await mock.module('@/shared/Live/Hooks/useLiveInvalidation.ts', () => ({ default: () => undefined }))
 const { default: useManagement } =
     await import('@/features/Admin/AccessPolicyManagement/Hooks/useAccessPolicyManagementLogic.ts')
 const { default: useAccounts } =

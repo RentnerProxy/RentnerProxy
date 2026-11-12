@@ -50,7 +50,7 @@ let formatOutcome: DefaultSiteFormatResult = { success: true, html: '<p>formatte
 const formatSettings = mock(
     async (_input: { data: string }): Promise<DefaultSiteFormatResult> => formatOutcome,
 )
-mock.module('@/features/DefaultSite/middleware.ts', () => ({
+await mock.module('@/features/DefaultSite/middleware.ts', () => ({
     getDefaultSiteHandler: getSettings,
     saveDefaultSiteHandler: saveSettings,
     formatDefaultSiteHtmlHandler: formatSettings,

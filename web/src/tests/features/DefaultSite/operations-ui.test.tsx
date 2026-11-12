@@ -21,7 +21,7 @@ const getSettings = mock(async () => ({
     baseRevision: 'revision-1',
     settings: { mode: 'not-found' as const },
 }))
-mock.module('@/features/DefaultSite/middleware.ts', () => ({
+await mock.module('@/features/DefaultSite/middleware.ts', () => ({
     getDefaultSiteHandler: getSettings,
     formatDefaultSiteHtmlHandler: async () => ({
         success: false,
@@ -33,7 +33,7 @@ mock.module('@/features/DefaultSite/middleware.ts', () => ({
         runtimeStatus: 'applied',
     }),
 }))
-mock.module('@/features/Auth/middleware.ts', () => ({
+await mock.module('@/features/Auth/middleware.ts', () => ({
     getAuthStateHandler: async () => ({ setupRequired: false, user: null }),
     logoutHandler: async () => undefined,
 }))

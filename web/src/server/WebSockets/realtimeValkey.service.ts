@@ -1,3 +1,4 @@
+import { runDetachedTask } from '@/lib/Async/runDetachedTask.ts'
 import '@tanstack/react-start/server-only'
 // oxlint-disable unicorn/prefer-add-event-listener -- Bun RedisClient exposes lifecycle callback properties, not EventTarget.
 
@@ -37,7 +38,7 @@ export function startRealtimeValkey(): void {
         if (stopped || retry !== undefined) return
         retry = setTimeout(() => {
             retry = undefined
-            void connect()
+            runDetachedTask(() => connect(), () => console.error('[realtime] Background operation failed'))
         }, 5000)
         retry.unref()
     }
@@ -109,5 +110,5 @@ export function startRealtimeValkey(): void {
             scheduleReconnect()
         }
     }
-    void connect()
+    runDetachedTask(() => connect(), () => console.error('[realtime] Background operation failed'))
 }

@@ -13,7 +13,7 @@ let contents = JSON.stringify({ maintenance: null })
 const read = mock(async (buffer: Buffer) => ({ bytesRead: buffer.write(contents) }))
 const close = mock(async () => undefined)
 const file = { stat, read, close }
-mock.module('node:fs/promises', () => ({ open }))
+await mock.module('node:fs/promises', () => ({ open }))
 
 const { readRestoreMaintenanceStatus, readRestoreMaintenanceObservation } =
     await import('@/server/Backups/restore-maintenance-status.server.ts')

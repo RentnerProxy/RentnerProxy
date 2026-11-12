@@ -50,7 +50,7 @@ const certificate: CertificateSummary = {
     createdAt: new Date('2026-01-01'),
     updatedAt: new Date('2026-01-01'),
 }
-mock.module('@/features/Admin/RedirectHostManagement/middleware.ts', () => ({
+await mock.module('@/features/Admin/RedirectHostManagement/middleware.ts', () => ({
     createRedirectHostHandler: createHost,
     updateRedirectHostHandler: updateHost,
     getAssignableRedirectCertificatesHandler: async () => [certificate],
@@ -71,11 +71,11 @@ mock.module('@/features/Admin/RedirectHostManagement/middleware.ts', () => ({
         message: 'admin.redirectHosts.messages.enabled',
     }),
 }))
-mock.module('@/features/Admin/HostTags/middleware.ts', () => ({
+await mock.module('@/features/Admin/HostTags/middleware.ts', () => ({
     getHostTagCatalogHandler: async () => ({ revision: 0, tags: [] }),
     mutateHostTagHandler: async () => ({ success: true, value: { revision: 1, tags: [] } }),
 }))
-mock.module('@/shared/Live/Hooks/useLiveInvalidation.ts', () => ({ default: () => undefined }))
+await mock.module('@/shared/Live/Hooks/useLiveInvalidation.ts', () => ({ default: () => undefined }))
 const { default: useManagement } =
     await import('@/features/Admin/RedirectHostManagement/Hooks/useRedirectHostManagementLogic.ts')
 const { default: RedirectHostFormModal } =

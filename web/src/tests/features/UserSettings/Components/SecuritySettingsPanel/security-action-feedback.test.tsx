@@ -55,11 +55,11 @@ function useSecurityLogicMock() {
     }
 }
 
-mock.module('@simplewebauthn/browser', () => ({
+await mock.module('@simplewebauthn/browser', () => ({
     startAuthentication: mock(async () => ({})),
     startRegistration: startRegistrationMock,
 }))
-mock.module(
+await mock.module(
     '@/features/UserSettings/Components/SecuritySettingsPanel/Hooks/useSecurityOperations.ts',
     () => ({
         default: useSecurityLogicMock,

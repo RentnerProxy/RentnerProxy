@@ -37,6 +37,28 @@ function subscription(index: number): LiveTopicSubscription {
     return result
 }
 
+test('a detached snapshot failure closes its connection and releases admission', async () => {
+    const closed = Promise.withResolvers<number>()
+    const manager = createSubscriptionManager({
+        snapshotTimeoutMs: 1_000,
+        maxPayloadBytes: 65_536,
+        readSnapshot: async () => { throw new Error('private transport details') },
+        closeUnavailable: (_connection, status) => closed.resolve(status),
+        closeUnauthorized: () => {},
+        closeBackpressured: () => {},
+    })
+    const connection = subscription(0).connection
+    try {
+        expect(manager.subscribe(connection, 'app-events', {}, '{}')).toBe(true)
+        expect(await closed.promise).toBe(503)
+        await manager.drainResources()
+        expect(manager.resourceUsage().running).toBe(0)
+        expect(manager.resourceUsage().pending).toBe(0)
+    } finally {
+        manager.dispose(connection)
+    }
+})
+
 test('handshake storms share the sampling budget and shutdown aborts queued admission before authorization reads', async () => {
     let reads = 0
     const finish = Promise.withResolvers<void>()

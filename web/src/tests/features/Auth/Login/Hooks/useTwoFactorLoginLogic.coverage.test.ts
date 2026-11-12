@@ -14,15 +14,15 @@ const complete = mock(async (_input: unknown) => ({
     message: 'signed-in',
     restartLogin: false,
 }))
-mock.module('@tanstack/react-router', () => ({
+await mock.module('@tanstack/react-router', () => ({
     useNavigate: () => navigate,
     useRouter: () => ({ invalidate }),
 }))
-mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
+await mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
     default: () => ({ t: (key: string) => key }),
 }))
-mock.module('@rentnerkev/toasts', () => ({ toast: { success, error, warning } }))
-mock.module('@/features/Auth/Login/middleware.ts', () => ({
+await mock.module('@rentnerkev/toasts', () => ({ toast: { success, error, warning } }))
+await mock.module('@/features/Auth/Login/middleware.ts', () => ({
     getTwoFactorChallengeStatusHandler: status,
     completeTwoFactorLoginHandler: complete,
 }))

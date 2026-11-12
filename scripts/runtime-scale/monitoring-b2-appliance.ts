@@ -1407,9 +1407,13 @@ export async function runMonitoringB2Appliance(runId: string) {
                         if (path === '/quiesce') return quiesce()
                         if (path === '/shutdown' && quiesced) {
                             setTimeout(() => {
-                                control.stop(true)
-                                nativeUpstream.stop(true)
-                                probeBroker.stop(true)
+                                runDetachedTask(
+                                    () => Promise.all([control.stop(true), nativeUpstream.stop(true), probeBroker.stop(true)]),
+                                    () => {
+                                        console.error('[monitoring] Quiesced listener shutdown failed')
+                                        process.exitCode = 1
+                                    },
+                                )
                             }, 20)
                             return { stopped: true, alreadyQuiesced: true }
                         }
@@ -1510,11 +1514,19 @@ export async function runMonitoringB2Appliance(runId: string) {
                         if (path === '/shutdown') {
                             await clear()
                             setTimeout(() => {
-                                control.stop(true)
-                                nativeUpstream.stop(true)
-                                probeBroker.stop(true)
-                                void database.$client.close()
-                                void sqlClient.close()
+                                runDetachedTask(
+                                    () => Promise.all([
+                                        control.stop(true),
+                                        nativeUpstream.stop(true),
+                                        probeBroker.stop(true),
+                                        database.$client.close(),
+                                        sqlClient.close(),
+                                    ]),
+                                    () => {
+                                        console.error('[monitoring] Fixture shutdown failed')
+                                        process.exitCode = 1
+                                    },
+                                )
                             }, 20)
                             return { stopped: true }
                         }
@@ -1544,3 +1556,4 @@ export async function runMonitoringB2Appliance(runId: string) {
 }
 
 if (import.meta.main) await runMonitoringB2Appliance(process.argv[2] ?? '')
+import { runDetachedTask } from '../../web/src/lib/Async/runDetachedTask.ts'

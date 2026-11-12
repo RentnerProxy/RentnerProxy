@@ -350,7 +350,7 @@ export default function ProxyConfigEditorModal(props: ProxyConfigEditorModalProp
                                         id="proxy-host-setting-responseCompression"
                                         value={state.settings.responseCompression}
                                         inherited={
-                                            state.data!.inheritedSettings.responseCompression
+                                            state.data.inheritedSettings.responseCompression
                                         }
                                         disabled={!props.canEdit || busy || state.hasConflict}
                                         onChange={(value) =>

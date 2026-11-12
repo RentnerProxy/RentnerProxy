@@ -56,7 +56,7 @@ export default function getFieldErrorMessage(
     for (const error of errors) {
         if (typeof error === 'string') return t ? t(error, { defaultValue: error }) : error
         if (error && typeof error === 'object') {
-            if (t) return localizeValidationIssue(t, error as ValidationIssue)
+            if (t) return localizeValidationIssue(t, error)
             if ('message' in error && typeof error.message === 'string') return error.message
         }
     }

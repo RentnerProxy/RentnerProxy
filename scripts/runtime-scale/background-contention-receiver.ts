@@ -1,5 +1,6 @@
 import { startBackgroundNotificationReceivers } from './background-receivers.ts'
 import { startBackgroundDockerEngine } from './background-discovery.ts'
+import { runDetachedTask } from '../../web/src/lib/Async/runDetachedTask.ts'
 
 /** Bound the abandoned-process fallback; the runner supplies its measured window plus setup/recovery/drain allowance. */
 export function parseContentionReceiverLifetime(value: string | undefined): number {
@@ -33,9 +34,11 @@ export async function startContentionReceivers(
     const stop = () => {
         if (stopping) return stopping
         clearTimeout(timer)
-        discovery.stop()
-        control.stop(true)
-        stopping = notifications.close()
+        stopping = Promise.all([
+            discovery.stop(),
+            control.stop(true),
+            notifications.close(),
+        ]).then(() => undefined)
         return stopping
     }
     const control = Bun.serve({
@@ -55,7 +58,7 @@ export async function startContentionReceivers(
             }
             if (request.method === 'POST' && path === '/stop') {
                 setTimeout(() => {
-                    void stop()
+                    runDetachedTask(stop, () => console.error('[contention] Receiver shutdown failed'))
                 }, 50)
                 return new Response(null, { status: 204 })
             }
@@ -63,7 +66,7 @@ export async function startContentionReceivers(
         },
     })
     timer = setTimeout(() => {
-        void stop()
+        runDetachedTask(stop, () => console.error('[contention] Receiver shutdown failed'))
     }, lifetimeMs)
     timer.unref()
     return { notifications, discovery, control, stop }

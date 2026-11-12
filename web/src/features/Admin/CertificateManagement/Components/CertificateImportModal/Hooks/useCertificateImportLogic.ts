@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import type { FormEvent } from 'react'
 import { useForm } from '@tanstack/react-form'
 import { useId, useState } from 'react'
@@ -13,6 +14,7 @@ export default function useCertificateImportLogic({
     onSuccess,
     onOpenChange,
 }: CertificateImportModalProps) {
+    const runAction = useAsyncAction()
     const { t } = useTranslationStore()
     const formId = useId()
     const [isPending, setIsPending] = useState(false)
@@ -56,7 +58,7 @@ export default function useCertificateImportLogic({
             handleSubmit: (event: FormEvent<HTMLFormElement>) => {
                 event.preventDefault()
                 event.stopPropagation()
-                void form.handleSubmit()
+                runAction(() => form.handleSubmit())
             },
         },
         form,

@@ -10,23 +10,23 @@ if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register()
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 const submit = mock(async (_input: unknown) => ({ success: false, message: 'Invalid request.' }))
-mock.module('@/features/Auth/Login/middleware.ts', () => ({
+await mock.module('@/features/Auth/Login/middleware.ts', () => ({
     loginHandler: submit,
     beginPasskeyLoginHandler: submit,
     finishPasskeyLoginHandler: submit,
     completeTwoFactorLoginHandler: submit,
     getTwoFactorChallengeStatusHandler: async () => ({ valid: true, methods: ['totp'] }),
 }))
-mock.module('@/features/Auth/Oidc/middleware.ts', () => ({
+await mock.module('@/features/Auth/Oidc/middleware.ts', () => ({
     getPublicOidcProvidersHandler: async () => [],
 }))
-mock.module('@/features/Auth/Setup/middleware.ts', () => ({ setupOwnerHandler: submit }))
-mock.module('@/features/Auth/ForgotPassword/middleware.ts', () => ({
+await mock.module('@/features/Auth/Setup/middleware.ts', () => ({ setupOwnerHandler: submit }))
+await mock.module('@/features/Auth/ForgotPassword/middleware.ts', () => ({
     requestPasswordResetHandler: submit,
 }))
-mock.module('@/features/Auth/PasswordReset/middleware.ts', () => ({ resetPasswordHandler: submit }))
-mock.module('@/features/Auth/AcceptInvite/middleware.ts', () => ({ acceptInviteHandler: submit }))
-mock.module('@tanstack/react-router', () => ({
+await mock.module('@/features/Auth/PasswordReset/middleware.ts', () => ({ resetPasswordHandler: submit }))
+await mock.module('@/features/Auth/AcceptInvite/middleware.ts', () => ({ acceptInviteHandler: submit }))
+await mock.module('@tanstack/react-router', () => ({
     useSearch: () => ({}),
     useNavigate: () => async () => {},
     useRouter: () => ({ invalidate: async () => {} }),
@@ -34,7 +34,7 @@ mock.module('@tanstack/react-router', () => ({
     Link: ({ to, children }: { to: string; children: ReactNode }) => <a href={to}>{children}</a>,
 }))
 const toastPackage = await import('@rentnerkev/toasts')
-mock.module('@rentnerkev/toasts', () => ({
+await mock.module('@rentnerkev/toasts', () => ({
     ...toastPackage,
     toast: { ...toastPackage.toast, error: () => {}, info: () => {}, success: () => {} },
 }))

@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import { useStore } from '@tanstack/react-form'
 import { useState } from 'react'
 import { MAX_PROXY_UPSTREAM_MEMBERS } from '@/config/upstream-pools.config.ts'
@@ -14,13 +15,14 @@ import type {
 export default function useUpstreamPoolFieldsLogic({
     form,
 }: Pick<UpstreamPoolFieldsProps, 'form'>): UpstreamPoolFieldsLogicResult {
+    const runAction = useAsyncAction()
     const pool = useStore(form.store, (state) => state.values.upstreamPool)
     const [memberKeys, setMemberKeys] = useState(() =>
         (form.getFieldValue('upstreamPool')?.members ?? []).map(() => crypto.randomUUID()),
     )
     /** Refreshes cross-member submission errors after editing, without showing them before the first submit. */
     const revalidate = () => {
-        if (form.state.submissionAttempts > 0) void form.validate('submit')
+        if (form.state.submissionAttempts > 0) runAction(() => form.validate('submit'))
     }
     /** Replaces ordered members while preserving pool options, then synchronizes scalar host/port and errors. */
     const updateMembers = (members: UpstreamPoolFormMember[]) => {

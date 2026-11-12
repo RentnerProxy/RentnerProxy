@@ -12,7 +12,7 @@ import { renderToString } from 'react-dom/server'
 import { AccentContext } from '@/shared/Theme/accentContext.ts'
 import withTestLanguage from '@/tests/Helpers/withTestLanguage.tsx'
 
-mock.module('@/features/UserSettings/middleware.ts', () => ({
+await mock.module('@/features/UserSettings/middleware.ts', () => ({
     updateCurrentUserAccentColorHandler: async () => ({
         success: true,
         userId: '6f355778-511f-467b-ad8f-8c4a29b84510',

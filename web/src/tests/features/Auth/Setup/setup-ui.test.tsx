@@ -19,16 +19,16 @@ const navigateMock = mock(async () => {})
 const invalidateMock = mock(async () => {})
 const toastErrorMock = mock((_message: string) => {})
 
-mock.module('@/features/Auth/Setup/middleware.ts', () => ({
+await mock.module('@/features/Auth/Setup/middleware.ts', () => ({
     setupOwnerHandler: setupOwnerHandlerMock,
 }))
-mock.module('@tanstack/react-router', () => ({
+await mock.module('@tanstack/react-router', () => ({
     useNavigate: () => navigateMock,
     useRouter: () => ({ invalidate: invalidateMock }),
     useRouterState: () => undefined,
 }))
 const toastPackage = await import('@rentnerkev/toasts')
-mock.module('@rentnerkev/toasts', () => ({
+await mock.module('@rentnerkev/toasts', () => ({
     ...toastPackage,
     toast: { ...toastPackage.toast, error: toastErrorMock },
 }))

@@ -89,7 +89,7 @@ const deleteConnection = mock(async (_input: unknown) => ({
     success: true as const,
     message: 'admin.dnsConnections.messages.deleted',
 }))
-mock.module('@/features/Admin/DnsConnections/middleware.ts', () => ({
+await mock.module('@/features/Admin/DnsConnections/middleware.ts', () => ({
     getDnsConnectionsHandler: getConnections,
     getDnsConnectionProvidersHandler: getProviders,
     testDnsConnectionHandler: testConnection,

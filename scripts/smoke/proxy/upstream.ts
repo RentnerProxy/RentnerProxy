@@ -49,7 +49,10 @@ if (import.meta.main) {
     })
     console.log('Test upstream listening at ' + upstream.url)
     const stop = () => {
-        void upstream.stop(true)
+        void upstream.stop(true).catch(() => {
+            console.error('[upstream] Shutdown failed')
+            process.exitCode = 1
+        })
     }
     process.on('SIGINT', stop)
     process.on('SIGTERM', stop)

@@ -48,7 +48,7 @@ export default function useUpstreamAvailabilityLogic({
         Number.isFinite(observedAt) &&
         sameMembers &&
         data?.hostId === host.id
-    const availability = fresh ? data!.state : 'unknown'
+    const availability = fresh ? data.state : 'unknown'
     return {
         state: {
             visible: Boolean(host.upstreamPool),
@@ -66,7 +66,7 @@ export default function useUpstreamAvailabilityLogic({
                 index,
                 target: formatProxyHostForward(host.forwardScheme, member.host, member.port),
                 state:
-                    fresh && availability !== 'unknown' ? data!.members[index]!.state : 'unknown',
+                    fresh && availability !== 'unknown' ? data.members[index]!.state : 'unknown',
             })),
         },
     }

@@ -309,8 +309,8 @@ test('Docker bursts use deterministic events and bounded inventory while requiri
         await reader.cancel()
         expect(engine.stats()).toMatchObject({ streams: 4, emitted: 256, inventoryCount: 8 })
     } finally {
-        engine.stop()
-        other.stop()
+        await engine.stop()
+        await other.stop()
     }
 })
 
@@ -391,7 +391,7 @@ test('controlled native HEAD mixes record start/finish receipts while unrelated 
             ),
         ).toBe(true)
     } finally {
-        servers.stop()
+        await servers.stop()
     }
 })
 

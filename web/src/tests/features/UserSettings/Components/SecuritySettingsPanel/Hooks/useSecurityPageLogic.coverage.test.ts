@@ -25,14 +25,14 @@ const operations = Object.fromEntries(
         'remove',
     ].map((name) => [name, operation(name)]),
 )
-mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
+await mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
     default: () => ({ t: (key: string) => key }),
 }))
-mock.module('@rentnerkev/toasts', () => ({ toast: { success: successToast, error: errorToast } }))
-mock.module('@simplewebauthn/browser', () => ({
+await mock.module('@rentnerkev/toasts', () => ({ toast: { success: successToast, error: errorToast } }))
+await mock.module('@simplewebauthn/browser', () => ({
     startRegistration: operation('registration'),
 }))
-mock.module(
+await mock.module(
     '@/features/UserSettings/Components/SecuritySettingsPanel/Hooks/useSecurityOperations.ts',
     () => ({
         default: () => ({

@@ -13,8 +13,8 @@ const invalidate = mock(async () => {})
 const errorToast = mock((_message: string, _options?: unknown) => {})
 const warningToast = mock((_message: string, _options?: unknown) => {})
 
-mock.module('@/features/Auth/middleware.ts', () => ({ logoutHandler: logout }))
-mock.module('@tanstack/react-router', () => ({
+await mock.module('@/features/Auth/middleware.ts', () => ({ logoutHandler: logout }))
+await mock.module('@tanstack/react-router', () => ({
     useNavigate: () => navigate,
     useRouter: () => ({ invalidate }),
     useRouterState: () => undefined,
@@ -25,7 +25,7 @@ mock.module('@tanstack/react-router', () => ({
     ),
 }))
 const toastPackage = await import('@rentnerkev/toasts')
-mock.module('@rentnerkev/toasts', () => ({
+await mock.module('@rentnerkev/toasts', () => ({
     ...toastPackage,
     toast: { ...toastPackage.toast, error: errorToast, warning: warningToast },
 }))

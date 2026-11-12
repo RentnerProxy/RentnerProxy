@@ -5,15 +5,15 @@ const reset = mock(async (_input: unknown) => ({ success: true, message: 'reset'
 const navigate = mock(async (_options: unknown) => {})
 const success = mock(() => {})
 const error = mock(() => {})
-mock.module('@/features/Auth/PasswordReset/middleware.ts', () => ({ resetPasswordHandler: reset }))
-mock.module('@/shared/Auth/Hooks/useFragmentToken.ts', () => ({
+await mock.module('@/features/Auth/PasswordReset/middleware.ts', () => ({ resetPasswordHandler: reset }))
+await mock.module('@/shared/Auth/Hooks/useFragmentToken.ts', () => ({
     default: () => 'fragment-fixture-token',
 }))
-mock.module('@tanstack/react-router', () => ({ useNavigate: () => navigate }))
-mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
+await mock.module('@tanstack/react-router', () => ({ useNavigate: () => navigate }))
+await mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
     default: () => ({ t: (key: string) => key }),
 }))
-mock.module('@rentnerkev/toasts', () => ({ toast: { success, error } }))
+await mock.module('@rentnerkev/toasts', () => ({ toast: { success, error } }))
 const { default: usePasswordResetLogic } =
     await import('@/features/Auth/PasswordReset/Hooks/usePasswordResetLogic.ts')
 

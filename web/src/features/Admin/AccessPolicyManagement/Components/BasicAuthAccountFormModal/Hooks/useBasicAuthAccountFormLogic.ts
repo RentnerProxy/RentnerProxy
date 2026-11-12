@@ -1,6 +1,8 @@
 import type { BasicAuthAccountFormLogicResult } from '../Types/logic.types.ts'
 import { useMutation } from '@tanstack/react-query'
 import { useCallback, useId, useState } from 'react'
+import type { FormEvent } from 'react'
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 
 import { toast } from '@rentnerkev/toasts'
 import useTranslationStore from '@/shared/Language/Hooks/useTranslationStore.ts'
@@ -22,6 +24,7 @@ export default function useBasicAuthAccountFormLogic({
     onOpenChange,
     onSuccess,
 }: BasicAuthAccountFormModalProps): BasicAuthAccountFormLogicResult {
+    const runAction = useAsyncAction()
     const { t } = useTranslationStore()
     const formId = useId()
     const [values, setValues] = useState<BasicAuthAccountFormValues>(() => ({
@@ -120,6 +123,11 @@ export default function useBasicAuthAccountFormLogic({
             values,
         },
         handler: {
+            handleSubmit: (event: FormEvent<HTMLFormElement>) => {
+                event.preventDefault()
+                event.stopPropagation()
+                runAction(submit)
+            },
             handleOpenChange,
             setPassword,
             setUsername,

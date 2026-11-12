@@ -4,13 +4,13 @@ import { mountHook } from '@/tests/features/UserSettings/hookCoverageSupport.ts'
 const request = mock(async (_input: unknown) => ({ success: true, message: 'sent' }))
 const success = mock(() => {})
 const error = mock(() => {})
-mock.module('@/features/Auth/ForgotPassword/middleware.ts', () => ({
+await mock.module('@/features/Auth/ForgotPassword/middleware.ts', () => ({
     requestPasswordResetHandler: request,
 }))
-mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
+await mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
     default: () => ({ t: (key: string) => key }),
 }))
-mock.module('@rentnerkev/toasts', () => ({ toast: { success, error } }))
+await mock.module('@rentnerkev/toasts', () => ({ toast: { success, error } }))
 const { default: useForgotPasswordLogic } =
     await import('@/features/Auth/ForgotPassword/Hooks/useForgotPasswordLogic.ts')
 

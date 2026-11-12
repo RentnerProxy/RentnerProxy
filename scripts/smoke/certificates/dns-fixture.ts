@@ -275,11 +275,14 @@ export async function startCertificateDnsFixture(apiToken: string) {
         set failCleanup(value: boolean) {
             failCleanup = value
         },
-        stop() {
-            api.stop(true)
+        async stop() {
+            const apiStopped = api.stop(true)
             for (const connection of connections) connection.destroy()
-            tcp.close()
-            dns.close()
+            await Promise.all([
+                apiStopped,
+                new Promise<void>((resolve, reject) => tcp.close((error) => error ? reject(error) : resolve())),
+                new Promise<void>((resolve) => dns.close(resolve)),
+            ])
         },
     }
 }

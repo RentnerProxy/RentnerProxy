@@ -221,7 +221,7 @@ export function createBeta2AutomationFixture(runId: string) {
         domain,
         originalDeliveryId: () => originalDeliveryId,
         counters: () => ({ dockerRequests, deliveries: deliveries.map(({ id }) => id) }),
-        stop() {
+        async stop() {
             for (const stream of streams) {
                 try {
                     stream.close()
@@ -230,7 +230,7 @@ export function createBeta2AutomationFixture(runId: string) {
                 }
             }
             streams.clear()
-            server.stop(true)
+            await server.stop(true)
         },
         async seedDatabase(command: ApplianceCommand, id: string, ownerId: string, key: string) {
             actorId = ownerId

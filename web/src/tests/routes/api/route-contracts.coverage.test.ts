@@ -31,48 +31,48 @@ const npmPost = endpoint('npm:post')
 const avatar = endpoint('avatar')
 const logo = endpoint('logo')
 let ready = false
-mock.module('@tanstack/react-start', () => ({
+await mock.module('@tanstack/react-start', () => ({
     createServerOnlyFn: (callback: unknown) => callback,
 }))
-mock.module('@/server/Admin/Backups/backups-response.server.ts', () => ({
+await mock.module('@/server/Admin/Backups/backups-response.server.ts', () => ({
     backupsHttpHandlers: backups,
 }))
-mock.module('@/server/Admin/Backups/backups-download-response.server.ts', () => ({
+await mock.module('@/server/Admin/Backups/backups-download-response.server.ts', () => ({
     backupDownloadHttpHandler: download,
 }))
-mock.module('@/server/RuntimeDiagnostics/domain-diagnostics-response.server.ts', () => ({
+await mock.module('@/server/RuntimeDiagnostics/domain-diagnostics-response.server.ts', () => ({
     handleDomainDiagnosticsPost: diagnose,
 }))
-mock.module('@/server/HostMonitoring/host-monitoring-response.server.ts', () => ({
+await mock.module('@/server/HostMonitoring/host-monitoring-response.server.ts', () => ({
     hostMonitoringHttpHandlers: monitoring,
 }))
-mock.module('@/server/Auth/Oidc/oidc-provider-response.server.ts', () => ({
+await mock.module('@/server/Auth/Oidc/oidc-provider-response.server.ts', () => ({
     handleOidcProviderRequest: providers,
 }))
-mock.module('@/server/Auth/Oidc/oidc-provider-test-response.server.ts', () => ({
+await mock.module('@/server/Auth/Oidc/oidc-provider-test-response.server.ts', () => ({
     handleOidcProviderTestRequest: providerTest,
 }))
-mock.module('@/server/Auth/Oidc/oidc-response.server.ts', () => ({ oidcHttpHandlers: oidc }))
-mock.module('@/server/Auth/Oidc/oidc-connections-response.server.ts', () => ({
+await mock.module('@/server/Auth/Oidc/oidc-response.server.ts', () => ({ oidcHttpHandlers: oidc }))
+await mock.module('@/server/Auth/Oidc/oidc-connections-response.server.ts', () => ({
     handleOidcConnectionsRequest: connections,
 }))
-mock.module('@/server/WebSockets/realtimeSnapshots.service.ts', () => ({
+await mock.module('@/server/WebSockets/realtimeSnapshots.service.ts', () => ({
     getLiveSnapshotResponse: snapshot,
 }))
-mock.module('@/features/Admin/Migration/middleware.ts', () => ({
+await mock.module('@/features/Admin/Migration/middleware.ts', () => ({
     handleMigrationGetHandler: migrationGet,
     handleMigrationPostHandler: migrationPost,
     handleMigrationExportHandler: migrationExport,
 }))
-mock.module('@/features/Admin/NpmImport/middleware.ts', () => ({
+await mock.module('@/features/Admin/NpmImport/middleware.ts', () => ({
     handleNpmImportGetHandler: npmGet,
     handleNpmImportPostHandler: npmPost,
 }))
-mock.module('@/features/UserSettings/middleware.ts', () => ({
+await mock.module('@/features/UserSettings/middleware.ts', () => ({
     getProfileImageResponseHandler: avatar,
 }))
-mock.module('@/features/Branding/middleware.ts', () => ({ getMailLogoResponseHandler: logo }))
-mock.module('@/features/Health/middleware.ts', () => ({
+await mock.module('@/features/Branding/middleware.ts', () => ({ getMailLogoResponseHandler: logo }))
+await mock.module('@/features/Health/middleware.ts', () => ({
     getFoundationReadinessHandler: mock(async () => ready),
 }))
 
@@ -88,7 +88,7 @@ type RouteOptions = {
     }
 }
 const routes = new Map<string, RouteOptions>()
-mock.module('@tanstack/react-router', () => ({
+await mock.module('@tanstack/react-router', () => ({
     createFileRoute: (path: string) => (options: RouteOptions) => {
         routes.set(path, options)
         return { options }

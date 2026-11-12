@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import {
     displayNameSchema,
     emailSchema,
@@ -18,6 +19,7 @@ import { setupInputSchema } from '../validation.ts'
 import type { SetupFormValues } from '../Types/setup-form.types.ts'
 
 export default function useSetupLogic() {
+    const runAction = useAsyncAction()
     const navigate = useNavigate()
     const router = useRouter()
     const { t } = useTranslationStore()
@@ -67,7 +69,7 @@ export default function useSetupLogic() {
             handleSubmit: (event) => {
                 event.preventDefault()
                 event.stopPropagation()
-                void form.handleSubmit()
+                runAction(() => form.handleSubmit())
             },
             validateDisplayName: ({ value }) => getValidationMessage(displayNameSchema, value),
             validateEmail: ({ value }) => getValidationMessage(emailSchema, value),

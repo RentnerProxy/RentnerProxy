@@ -179,15 +179,15 @@ const database: AuthenticationTestDatabase = {
     }),
 }
 
-mock.module('@tanstack/react-start/server-only', () => ({}))
-mock.module('@/server/Auth/Core/database.server.ts', () => ({ getAuthDatabase: () => database }))
-mock.module('@/server/Auth/Oidc/oidc-providers.service.ts', () => ({
+await mock.module('@tanstack/react-start/server-only', () => ({}))
+await mock.module('@/server/Auth/Core/database.server.ts', () => ({ getAuthDatabase: () => database }))
+await mock.module('@/server/Auth/Oidc/oidc-providers.service.ts', () => ({
     lockOidcProviderInTransaction: async (_transaction: unknown, providerId: string) => {
         events.push('provider-lock')
         return providerId === oidcProof.providerId ? oidcProvider : null
     },
 }))
-mock.module('@/server/Auth/Oidc/oidc-accounts.service.ts', () => ({
+await mock.module('@/server/Auth/Oidc/oidc-accounts.service.ts', () => ({
     lockOidcAccountPolicyInTransaction: async () => undefined,
     synchronizeOidcAccountInTransaction: async () => {
         if (removeAccessOnSync) {
@@ -197,40 +197,40 @@ mock.module('@/server/Auth/Oidc/oidc-accounts.service.ts', () => ({
         }
     },
 }))
-mock.module('@/server/Auth/Oidc/oidc-settings.server.ts', () => ({
+await mock.module('@/server/Auth/Oidc/oidc-settings.server.ts', () => ({
     readStoredOidcSettings: async () => ({
         version: 1,
         revision: oidcProvider?.revision ?? 0,
         providers: oidcProvider ? [{ ...oidcProvider, id: oidcProof.providerId }] : [],
     }),
 }))
-mock.module('@/server/Auth/Access/cookies.server.ts', () => ({
+await mock.module('@/server/Auth/Access/cookies.server.ts', () => ({
     getSessionCookie: () => sessionCookie,
 }))
-mock.module('@/server/Auth/Access/rbac.service.ts', () => ({
+await mock.module('@/server/Auth/Access/rbac.service.ts', () => ({
     resolveActiveUserAccessInTransaction: async () =>
         hasAppAccess ? access : { ...access, permissions: [] },
     requirePermissionInTransaction: async () => undefined,
 }))
-mock.module('@/server/Auth/Access/authorization.service.ts', () => ({
+await mock.module('@/server/Auth/Access/authorization.service.ts', () => ({
     requireActiveSessionForSession: async () => undefined,
     requireSessionPermission: async () => undefined,
 }))
-mock.module('@/server/Audit/audit.service.ts', () => ({
+await mock.module('@/server/Audit/audit.service.ts', () => ({
     appendAuditEventInTransactionService: async (_transaction: unknown, event: AuditEventInput) => {
         loginAudits.push(event)
     },
     recordAuditEventBestEffortService: async () => undefined,
 }))
-mock.module('@/server/Mail/mail.service.ts', () => ({
+await mock.module('@/server/Mail/mail.service.ts', () => ({
     sendPasswordResetEmailService: () => {
         throw new Error('Mail must not run in unit tests.')
     },
 }))
-mock.module('@/server/Valkey/rate-limiter.service.ts', () => ({
+await mock.module('@/server/Valkey/rate-limiter.service.ts', () => ({
     enforcePasswordChangeRateLimit: async () => undefined,
 }))
-mock.module('@/server/Auth/Core/encryption.server.ts', () => ({
+await mock.module('@/server/Auth/Core/encryption.server.ts', () => ({
     decodeBase64Url: () => new Uint8Array(1),
     decryptSecret: async () => {
         const pause = decryptionPause
@@ -243,7 +243,7 @@ mock.module('@/server/Auth/Core/encryption.server.ts', () => ({
     },
     encryptSecret: async () => ({ ciphertext: new Uint8Array(1), iv: new Uint8Array(1) }),
 }))
-mock.module('@/server/Auth/TwoFactor/two-factor-credentials.server.ts', () => ({
+await mock.module('@/server/Auth/TwoFactor/two-factor-credentials.server.ts', () => ({
     getMatchedTotpCounter: () => 1,
     createRecoveryCodeBatch: async () => [],
     createTotpSecret: () => '',
@@ -251,7 +251,7 @@ mock.module('@/server/Auth/TwoFactor/two-factor-credentials.server.ts', () => ({
     hashRecoveryCode: async () => 'test-recovery-hash',
     normalizeRecoveryCode: (code: string) => (code === 'valid-recovery' ? code : null),
 }))
-mock.module('@/server/Valkey/auth-challenges.service.ts', () => ({
+await mock.module('@/server/Valkey/auth-challenges.service.ts', () => ({
     createAuthChallenge: async (challenge: AuthChallenge) => {
         if (challenge.kind !== 'login-mfa') throw new Error('Unexpected challenge kind.')
         const id = `challenge-${challenges.size + 1}`

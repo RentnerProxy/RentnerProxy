@@ -14,7 +14,7 @@ const user = {
 }
 const context = mock((_options: unknown) => ({ user }))
 const search = mock((_options: unknown) => ({ section: 'passkeys' }))
-mock.module('@tanstack/react-router', () => ({ useRouteContext: context, useSearch: search }))
+await mock.module('@tanstack/react-router', () => ({ useRouteContext: context, useSearch: search }))
 const { default: useUserSettingsRoute } =
     await import('@/features/UserSettings/Hooks/useUserSettingsRoute.ts')
 

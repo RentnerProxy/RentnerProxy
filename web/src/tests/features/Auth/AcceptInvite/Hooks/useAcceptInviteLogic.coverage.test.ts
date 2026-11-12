@@ -5,18 +5,18 @@ const accept = mock(async (_input: unknown) => ({ success: true, message: 'accep
 const navigate = mock(async (_options: unknown) => {})
 const invalidate = mock(async () => {})
 const error = mock(() => {})
-mock.module('@/features/Auth/AcceptInvite/middleware.ts', () => ({ acceptInviteHandler: accept }))
-mock.module('@/shared/Auth/Hooks/useFragmentToken.ts', () => ({
+await mock.module('@/features/Auth/AcceptInvite/middleware.ts', () => ({ acceptInviteHandler: accept }))
+await mock.module('@/shared/Auth/Hooks/useFragmentToken.ts', () => ({
     default: () => 'invite-fixture-token',
 }))
-mock.module('@tanstack/react-router', () => ({
+await mock.module('@tanstack/react-router', () => ({
     useNavigate: () => navigate,
     useRouter: () => ({ invalidate }),
 }))
-mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
+await mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
     default: () => ({ t: (key: string) => key }),
 }))
-mock.module('@rentnerkev/toasts', () => ({ toast: { error } }))
+await mock.module('@rentnerkev/toasts', () => ({ toast: { error } }))
 const { default: useAcceptInviteLogic } =
     await import('@/features/Auth/AcceptInvite/Hooks/useAcceptInviteLogic.ts')
 

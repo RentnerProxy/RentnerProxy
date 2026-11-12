@@ -4,8 +4,8 @@ import { createMiddlewareHarness } from '@/tests/Helpers/middlewareCoverage.ts'
 import { AccessPolicyDomainError } from '@/server/Admin/AccessPolicyManagement/access-policies.errors.ts'
 import { BasicAuthDomainError } from '@/server/Admin/AccessPolicyManagement/basic-auth.errors.ts'
 
-const boundary = createMiddlewareHarness()
-boundary.mockServices('@/server/Admin/AccessPolicyManagement/access-policies.service.ts', [
+const boundary = await createMiddlewareHarness()
+await boundary.mockServices('@/server/Admin/AccessPolicyManagement/access-policies.service.ts', [
     'createAccessPolicyService',
     'deleteAccessPolicyService',
     'getAccessPoliciesService',
@@ -13,13 +13,13 @@ boundary.mockServices('@/server/Admin/AccessPolicyManagement/access-policies.ser
     'updateAccessPolicyService',
     'searchAccessPoliciesService',
 ])
-boundary.mockServices('@/server/Admin/AccessPolicyManagement/basic-auth.service.ts', [
+await boundary.mockServices('@/server/Admin/AccessPolicyManagement/basic-auth.service.ts', [
     'createBasicAuthAccountService',
     'deleteBasicAuthAccountService',
     'getBasicAuthAccountsService',
     'updateBasicAuthAccountService',
 ])
-boundary.mockServices('@/server/ProxyRuntime/proxy-runtime.service.ts', [
+await boundary.mockServices('@/server/ProxyRuntime/proxy-runtime.service.ts', [
     'applyProxyConfigurationService',
     'getProxyRuntimeStatusService',
 ])

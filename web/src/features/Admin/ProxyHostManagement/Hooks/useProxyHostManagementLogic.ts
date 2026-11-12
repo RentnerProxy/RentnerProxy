@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import useQuickAction from '@/shared/QuickActions/Hooks/useQuickActions.ts'
 import { invalidateAccessPoliciesCache } from '@/lib/Admin/AccessPolicyManagement/accessPolicyManagementCache.ts'
 import type { ProxyHostManagementLogicResult } from '../Types/management-logic.types.ts'
@@ -29,6 +30,7 @@ const EMPTY_PROXY_HOSTS: ProxyHostSummary[] = []
 export default function useProxyHostManagementLogic({
     permissions,
 }: ProxyHostManagementPageProps): ProxyHostManagementLogicResult {
+    const runAction = useAsyncAction()
     const { t } = useTranslationStore()
     const permissionSet = useMemo(() => new Set(permissions), [permissions])
     const canView = permissionSet.has(PERMISSIONS.PROXY_HOSTS_VIEW)
@@ -303,8 +305,8 @@ export default function useProxyHostManagementLogic({
     }, [applyMutation])
     const handleCertificateRequestSuccess = useCallback(() => {
         setCertificateRequestTarget(null)
-        void invalidateProxyHostManagementCache(queryClient)
-    }, [queryClient])
+        runAction(() => invalidateProxyHostManagementCache(queryClient))
+    }, [queryClient, runAction])
     const handleFormSuccess = useCallback(() => {
         setDuplicateSource(null)
         setShowCreate(false)

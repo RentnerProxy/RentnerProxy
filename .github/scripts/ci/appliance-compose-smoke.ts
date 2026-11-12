@@ -29,8 +29,8 @@ async function runSmoke(): Promise<void> {
         const restored = extendSmokeContext(backup, await verifyApplianceRestore(backup))
         await verifyApplianceRestoreSafety(restored)
     } finally {
-        context.beta2Automation?.stop()
-        context.backend?.stop(true)
+        await context.beta2Automation?.stop()
+        await context.backend?.stop(true)
         await context.commandFails(
             [...context.compose, 'down', '--volumes', '--remove-orphans'],
             180_000,

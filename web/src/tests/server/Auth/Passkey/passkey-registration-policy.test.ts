@@ -32,36 +32,36 @@ const transaction = {
         throw new Error('External account must not acquire a local passkey.')
     },
 }
-mock.module('@tanstack/react-start/server-only', () => ({}))
-mock.module('@/server/Auth/Core/database.server.ts', () => ({
+await mock.module('@tanstack/react-start/server-only', () => ({}))
+await mock.module('@/server/Auth/Core/database.server.ts', () => ({
     getAuthDatabase: () => ({
         transaction: async (run: (value: typeof transaction) => Promise<unknown>) =>
             run(transaction),
     }),
 }))
-mock.module('@/server/Auth/Access/authorization.service.ts', () => ({
+await mock.module('@/server/Auth/Access/authorization.service.ts', () => ({
     requireActiveSessionForSession: async () => undefined,
     requireSessionPermission: async () => undefined,
 }))
-mock.module('@/server/Auth/Access/sessions.service.ts', () => ({
+await mock.module('@/server/Auth/Access/sessions.service.ts', () => ({
     createSessionInTransaction: async () => undefined,
     requireActiveSessionInTransaction: async () => undefined,
     revokeOtherUserSessionsInTransaction: async () => undefined,
 }))
-mock.module('@/server/Auth/Access/rbac.service.ts', () => ({
+await mock.module('@/server/Auth/Access/rbac.service.ts', () => ({
     requirePermissionInTransaction: async () => undefined,
 }))
-mock.module('@/server/Audit/audit.service.ts', () => ({
+await mock.module('@/server/Audit/audit.service.ts', () => ({
     appendAuditEventInTransactionService: async () => undefined,
     recordAuditEventBestEffortService: async () => undefined,
 }))
-mock.module('@/server/Configuration/management-origin.server.ts', () => ({
+await mock.module('@/server/Configuration/management-origin.server.ts', () => ({
     getRuntimeWebAuthnConfiguration: async () => ({
         origin: 'https://unit.invalid',
         rpId: 'unit.invalid',
     }),
 }))
-mock.module('@/server/Valkey/auth-challenges.service.ts', () => ({
+await mock.module('@/server/Valkey/auth-challenges.service.ts', () => ({
     createAuthChallenge: async () => {
         throw new Error('Must not issue a registration challenge.')
     },
@@ -71,7 +71,7 @@ mock.module('@/server/Valkey/auth-challenges.service.ts', () => ({
         challenge: 'bound-challenge',
     }),
 }))
-mock.module('@simplewebauthn/server', () => ({
+await mock.module('@simplewebauthn/server', () => ({
     generateRegistrationOptions: async () => {
         generated += 1
         throw new Error('Must not generate options.')

@@ -1,5 +1,7 @@
 import { z } from 'zod'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { FormEvent } from 'react'
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from '@rentnerkev/toasts'
 import { PERMISSIONS, SYSTEM_ROLES } from '@/config/permissions.config.ts'
@@ -54,6 +56,7 @@ const key = ['admin', 'oidc-providers'] as const
 
 /** Coordinates live provider snapshots while retaining unsaved drafts. */
 export default function useOidcProvidersLogic(): OidcProvidersLogicResult {
+    const runAction = useAsyncAction()
     const { t } = useTranslationStore()
     const queryClient = useQueryClient()
     const [testing, setTesting] = useState(false)
@@ -354,18 +357,23 @@ export default function useOidcProvidersLogic(): OidcProvidersLogicResult {
             },
             handleClose: close,
             handleSave,
-            handleTest,
-            /** Copies the canonical callback URL, reporting clipboard failures to the user. */
-            handleCopy: async () => {
-                try {
-                    if (query.data?.callbackUrl) {
-                        await navigator.clipboard.writeText(query.data.callbackUrl)
-                        toast.success(t('oidc.copied'), { title: t('toast.titles.success') })
-                    }
-                } catch {
-                    toast.error(t('oidc.errors.copy'), { title: t('toast.titles.error') })
-                }
+            handleSubmit: (event: FormEvent<HTMLFormElement>) => {
+                event.preventDefault()
+                runAction(() => form.handleSubmit())
             },
+            handleTest: (provider) => runAction(() => handleTest(provider)),
+            /** Copies the canonical callback URL, reporting clipboard failures to the user. */
+            handleCopy: () =>
+                runAction(async () => {
+                    try {
+                        if (query.data?.callbackUrl) {
+                            await navigator.clipboard.writeText(query.data.callbackUrl)
+                            toast.success(t('oidc.copied'), { title: t('toast.titles.success') })
+                        }
+                    } catch {
+                        toast.error(t('oidc.errors.copy'), { title: t('toast.titles.error') })
+                    }
+                }),
             /** Captures a delete target and its base revision for the confirmation flow. */
             handleDelete: (provider) => {
                 if (!busy.current) {

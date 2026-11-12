@@ -288,7 +288,7 @@ export async function runBackgroundDiscovery(seed: number) {
                 })
             }
         } finally {
-            engine.stop()
+            await engine.stop()
         }
     }
 }

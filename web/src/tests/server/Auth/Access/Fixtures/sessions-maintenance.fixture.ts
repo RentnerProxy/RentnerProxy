@@ -46,9 +46,9 @@ const actor = (): AuthenticatedUser => ({
 
 // These are explicit test dependencies. Session SQL/transactions/tokens are real;
 // this fixture does not claim coverage of the RBAC resolver or audit persistence.
-mock.module('@/server/Auth/Core/database.server.ts', () => ({ getAuthDatabase: () => database }))
-mock.module('@/server/Auth/Access/cookies.server.ts', () => ({ getSessionCookie: () => null }))
-mock.module('@/server/Auth/Access/rbac.service.ts', () => ({
+await mock.module('@/server/Auth/Core/database.server.ts', () => ({ getAuthDatabase: () => database }))
+await mock.module('@/server/Auth/Access/cookies.server.ts', () => ({ getSessionCookie: () => null }))
+await mock.module('@/server/Auth/Access/rbac.service.ts', () => ({
     resolveActiveUserAccessInTransaction: async () => {
         const hook = onResolve
         onResolve = undefined
@@ -56,7 +56,7 @@ mock.module('@/server/Auth/Access/rbac.service.ts', () => ({
         return actor()
     },
 }))
-mock.module('@/server/Audit/audit.service.ts', () => ({
+await mock.module('@/server/Audit/audit.service.ts', () => ({
     appendAuditEventInTransactionService: async (
         _transaction: unknown,
         event: (typeof audit)[number],
@@ -178,7 +178,7 @@ try {
         assert.equal((await client`select id from rentnerproxy.sessions`)[0]!.id, locked!.id)
     } finally {
         await held`rollback`
-        held.release()
+        await held.release()
     }
     passed('SKIP LOCKED bypasses the contested expired row without blocking other cleanup')
 

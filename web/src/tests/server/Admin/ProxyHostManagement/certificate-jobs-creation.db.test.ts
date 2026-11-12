@@ -84,8 +84,8 @@ function startController(): void {
     process.env.RENTNERPROXY_CONTROLLER_TOKEN = CONTROLLER_TOKEN
 }
 
-function stopController(): void {
-    controllerServer?.stop(true)
+async function stopController(): Promise<void> {
+    await controllerServer?.stop(true)
     controllerServer = undefined
     controllerEntries.clear()
 }
@@ -337,12 +337,12 @@ beforeEach(async () => {
 
 afterEach(async () => {
     if (!verified) return
-    stopController()
+    await stopController()
     await cleanup()
 })
 
-afterAll(() => {
-    stopController()
+afterAll(async () => {
+    await stopController()
     for (const [key, value] of originalEnvironment) {
         if (value === undefined) delete process.env[key]
         else process.env[key] = value

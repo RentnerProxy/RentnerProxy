@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import { toast } from '@rentnerkev/toasts'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useForm, useStore } from '@tanstack/react-form'
@@ -37,6 +38,7 @@ function privateError(error: unknown) {
 }
 
 export default function useHostMonitoringDialogLogic(props: HostMonitoringDialogProps) {
+    const runAction = useAsyncAction()
     const { t, locale } = useTranslationStore()
     const queryClient = useQueryClient()
     const id = useId()
@@ -172,7 +174,7 @@ export default function useHostMonitoringDialogLogic(props: HostMonitoringDialog
             if (attempt.generation !== generation.current.version) return
             if (error instanceof HostMonitoringClientError && error.code === 'conflict') {
                 setConflict(true)
-                void policyQuery.refetch()
+                runAction(() => policyQuery.refetch())
                 if (generation.current.active)
                     toast.warning(t('admin.hostMonitoring.conflict'), {
                         title: t('toast.titles.warning'),
@@ -343,7 +345,7 @@ export default function useHostMonitoringDialogLogic(props: HostMonitoringDialog
         },
         handleMore: () => {
             if (historyQuery.hasNextPage && !historyQuery.isFetchingNextPage)
-                void historyQuery.fetchNextPage()
+                runAction(() => historyQuery.fetchNextPage())
         },
         handleDiscard: () => {
             if (mutation.isPending) return
@@ -358,7 +360,7 @@ export default function useHostMonitoringDialogLogic(props: HostMonitoringDialog
         handleSubmit: (event) => {
             event.preventDefault()
             event.stopPropagation()
-            void form.handleSubmit()
+            runAction(() => form.handleSubmit())
         },
         formatDate: (date) => (date ? formatter.format(date) : '—'),
     }

@@ -28,6 +28,8 @@ const server = Bun.serve({
 
 process.on('SIGTERM', () => {
     for (const timer of pending) clearTimeout(timer)
-    server.stop(true)
-    process.exit(0)
+    void server.stop(true).then(
+        () => process.exit(0),
+        () => process.exit(1),
+    )
 })

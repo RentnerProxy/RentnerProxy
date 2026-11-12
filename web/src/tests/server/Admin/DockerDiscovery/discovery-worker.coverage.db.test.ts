@@ -238,8 +238,8 @@ integrationTest(
         const step = mock(async () => undefined)
         const worker = createDiscoveryWorker(step, 2000)
         try {
-            worker.start()
-            worker.start()
+            void worker.start()
+            void worker.start()
             await Promise.resolve()
             await Promise.resolve()
             await Promise.resolve()
@@ -253,7 +253,7 @@ integrationTest(
             jest.advanceTimersByTime(6000)
             await worker.trigger()
             expect(step).toHaveBeenCalledTimes(2)
-            worker.start()
+            void worker.start()
             expect(step).toHaveBeenCalledTimes(2)
         } finally {
             await worker.stop()

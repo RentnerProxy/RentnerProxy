@@ -38,7 +38,7 @@ const apply = mock(async (): Promise<RedirectHostActionResult> => success)
 const remove = mock(async (_input: unknown): Promise<RedirectHostActionResult> => success)
 const disable = mock(async (_input: unknown): Promise<RedirectHostActionResult> => success)
 const enable = mock(async (_input: unknown): Promise<RedirectHostActionResult> => success)
-mock.module('@/features/Admin/RedirectHostManagement/middleware.ts', () => ({
+await mock.module('@/features/Admin/RedirectHostManagement/middleware.ts', () => ({
     createRedirectHostHandler: createHost,
     updateRedirectHostHandler: updateHost,
     getAssignableRedirectCertificatesHandler: certificates,
@@ -49,11 +49,11 @@ mock.module('@/features/Admin/RedirectHostManagement/middleware.ts', () => ({
     disableRedirectHostHandler: disable,
     enableRedirectHostHandler: enable,
 }))
-mock.module('@/features/Admin/HostTags/middleware.ts', () => ({
+await mock.module('@/features/Admin/HostTags/middleware.ts', () => ({
     getHostTagCatalogHandler: async () => ({ revision: 0, tags: [] }),
     mutateHostTagHandler: async () => ({ success: true, value: { revision: 1, tags: [] } }),
 }))
-mock.module('@/shared/Live/Hooks/useLiveInvalidation.ts', () => ({ default: () => undefined }))
+await mock.module('@/shared/Live/Hooks/useLiveInvalidation.ts', () => ({ default: () => undefined }))
 const { default: useManagement } =
     await import('@/features/Admin/RedirectHostManagement/Hooks/useRedirectHostManagementLogic.ts')
 const { default: useForm } =

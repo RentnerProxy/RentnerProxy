@@ -57,7 +57,10 @@ async function execute() {
     }
     const interrupted = () => {
         abort.abort()
-        void close().finally(() => process.exit(1))
+        void close().then(
+            () => process.exit(1),
+            () => process.exit(1),
+        )
     }
     process.once('SIGTERM', interrupted)
     process.once('SIGINT', interrupted)

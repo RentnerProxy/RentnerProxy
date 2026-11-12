@@ -1,3 +1,4 @@
+import { runDetachedTask } from '@/lib/Async/runDetachedTask.ts'
 import '@tanstack/react-start/server-only'
 import { PERMISSIONS } from '@/config/permissions.config.ts'
 import { DOCKER_DISCOVERY_MUTATION_RATE_LIMIT } from '@/config/docker-discovery.config.ts'
@@ -250,6 +251,6 @@ export async function changeDiscoveryService(input: DiscoveryAction) {
             return { revision: registry.revision }
         }),
     )
-    void dockerDiscoveryWorker.trigger()
+    runDetachedTask(() => dockerDiscoveryWorker.trigger(), () => console.error('[docker-discovery] Background operation failed'))
     return acknowledgment
 }

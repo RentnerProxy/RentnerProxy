@@ -27,7 +27,7 @@ if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register()
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 // Keep the actual layout, restore hooks, identity sync and socket transport; isolate unrelated UI/services.
-mock.module('@/layouts/AuthenticatedLayout/Components/ApplicationShell/index.tsx', () => ({
+await mock.module('@/layouts/AuthenticatedLayout/Components/ApplicationShell/index.tsx', () => ({
     default: ({
         children,
         themeControl,
@@ -43,17 +43,17 @@ mock.module('@/layouts/AuthenticatedLayout/Components/ApplicationShell/index.tsx
         </div>
     ),
 }))
-mock.module(
+await mock.module(
     '@/features/Admin/ProxyHostManagement/CertificateJobs/CertificateJobProgressObserver.tsx',
     () => ({ default: () => null }),
 )
-mock.module('@/shared/QuickActions/Components/QuickActionsProvider.tsx', () => ({
+await mock.module('@/shared/QuickActions/Components/QuickActionsProvider.tsx', () => ({
     default: ({ children }: { children: ReactNode }) => <>{children}</>,
 }))
-mock.module('@/shared/PageAlerts/PageAlertsProvider.tsx', () => ({
+await mock.module('@/shared/PageAlerts/PageAlertsProvider.tsx', () => ({
     default: ({ children }: { children: ReactNode }) => <>{children}</>,
 }))
-mock.module('@/features/UserSettings/middleware.ts', () => ({
+await mock.module('@/features/UserSettings/middleware.ts', () => ({
     updateCurrentUserThemeModeHandler: async ({ data }: { data: { themeMode: UserThemeMode } }) => {
         if (themeUpdatesAllowed) return { success: true, themeMode: data.themeMode }
         throw new Error('Unexpected preference mutation')
@@ -62,7 +62,7 @@ mock.module('@/features/UserSettings/middleware.ts', () => ({
         throw new Error('Unexpected preference mutation')
     },
 }))
-mock.module('@/features/Auth/middleware.ts', () => ({
+await mock.module('@/features/Auth/middleware.ts', () => ({
     logoutHandler: async () => {
         throw new Error('Unexpected logout')
     },

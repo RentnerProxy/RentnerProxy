@@ -29,7 +29,7 @@ test.each(['', 'null'])(
             expect(writes).toBe(1)
             expect(fixture.counters()).toEqual({ dockerRequests: 0, deliveries: [] })
         } finally {
-            fixture.stop()
+            await fixture.stop()
         }
     },
 )
@@ -104,6 +104,6 @@ test('Beta 2 Docker receiver accepts the production versioned inventory/events c
         ).toBe(204)
         expect(fixture.counters().deliveries).toEqual(['wire-notification'])
     } finally {
-        fixture.stop()
+        await fixture.stop()
     }
 })

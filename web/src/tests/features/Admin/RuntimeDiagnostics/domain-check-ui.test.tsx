@@ -25,7 +25,7 @@ const { ToastProvider, toast } = await import('@rentnerkev/toasts')
 const exportReport = mock(async (): Promise<RuntimeSupportReport> => {
     throw new Error('Support report not requested')
 })
-mock.module('@/features/Admin/RuntimeDiagnostics/middleware.ts', () => ({
+await mock.module('@/features/Admin/RuntimeDiagnostics/middleware.ts', () => ({
     exportRuntimeSupportReportHandler: exportReport,
 }))
 const { default: DomainCheckDialog } =

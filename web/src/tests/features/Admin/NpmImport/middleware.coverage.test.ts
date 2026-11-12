@@ -7,7 +7,7 @@ import {
     ImportError,
     NpmSourceError,
 } from '@/tests/features/Admin/Migration/importBoundaryFixture.ts'
-const boundary = importBoundaryFixture()
+const boundary = await importBoundaryFixture()
 const handlers = await import('@/features/Admin/NpmImport/middleware.ts')
 beforeEach(() => boundary.reset())
 

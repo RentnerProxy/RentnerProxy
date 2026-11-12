@@ -123,7 +123,7 @@ describe('local certificate DNS fixture', () => {
             clearTimeout(deadline)
             writes.mockRestore()
             socket.destroy()
-            fixture.stop()
+            await fixture.stop()
         }
     }, 10_000)
 
@@ -180,7 +180,7 @@ describe('local certificate DNS fixture', () => {
             clearTimeout(deadline)
             writes.mockRestore()
             socket.destroy()
-            fixture.stop()
+            await fixture.stop()
         }
     }, 8_000)
 
@@ -215,7 +215,7 @@ describe('local certificate DNS fixture', () => {
         } finally {
             clearTimeout(deadline)
             for (const socket of sockets) socket.destroy()
-            fixture.stop()
+            await fixture.stop()
         }
     })
 
@@ -241,7 +241,7 @@ describe('local certificate DNS fixture', () => {
             await closed
         } finally {
             socket.destroy()
-            fixture.stop()
+            await fixture.stop()
         }
     })
 
@@ -267,7 +267,7 @@ describe('local certificate DNS fixture', () => {
             clearInterval(drip)
             clearTimeout(deadline)
             socket.destroy()
-            fixture.stop()
+            await fixture.stop()
         }
     }, 8_000)
 
@@ -321,7 +321,7 @@ describe('local certificate DNS fixture', () => {
             expect(missing.readUInt16BE(6)).toBe(0)
             expect(missing.readUInt16BE(8)).toBe(1)
         } finally {
-            fixture.stop()
+            await fixture.stop()
         }
     })
 
@@ -367,7 +367,7 @@ describe('local certificate DNS fixture', () => {
             expect(fixture.records).toEqual([])
             expect(fixture.nameservers.get(owner)).toEqual(['ns.fixture.invalid'])
         } finally {
-            fixture.stop()
+            await fixture.stop()
         }
     })
 
@@ -427,7 +427,7 @@ describe('local certificate DNS fixture', () => {
             expect(responses[1]!.includes(Buffer.from('wildcard-proof'))).toBe(true)
             expect(responses[2]!.readUInt16BE(6)).toBe(0)
         } finally {
-            fixture.stop()
+            await fixture.stop()
         }
     })
 

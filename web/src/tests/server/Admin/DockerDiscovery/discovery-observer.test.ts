@@ -114,7 +114,7 @@ test.each([false, true])(
         const f = fixture()
         f.enabled(enabled)
         try {
-            f.worker.start()
+            void f.worker.start()
             await settle()
             for (let second = 0; second < 60; second += 2) await advance(2000)
             expect(f.dependencies.enabled).toHaveBeenCalledTimes(2) // Startup plus one 60-second fallback.
@@ -131,7 +131,7 @@ test('disabled-to-enabled changes wake after commit; external changes recover ev
     const f = fixture()
     f.enabled(false)
     try {
-        f.worker.start()
+        void f.worker.start()
         await settle()
         f.enabled(true)
         f.invalidate()
@@ -167,7 +167,7 @@ test('a flood holds one running pass plus one latest snapshot, and dirty work ge
         },
     })
     try {
-        f.worker.start()
+        void f.worker.start()
         await settle()
         f.reply(0, observed(2))
         await advance(500)
@@ -194,7 +194,7 @@ test.each([false, true])(
     async (reset) => {
         const f = fixture()
         try {
-            f.worker.start()
+            void f.worker.start()
             await settle()
             const late = Promise.withResolvers<DiscoveryObservation>()
             f.dependencies.read.mockImplementationOnce(() => late.promise)
@@ -242,7 +242,7 @@ test('generation admission rejects a snapshot superseded while waiting for the d
         },
     })
     try {
-        f.worker.start()
+        void f.worker.start()
         await settle()
         const forced = f.worker.trigger()
         await entered.promise
@@ -264,7 +264,7 @@ test('watch reconnects are bounded, resync the newest state and stop cancels the
     const warning = spyOn(console, 'warn').mockImplementation(() => {})
     const f = fixture()
     try {
-        f.worker.start()
+        void f.worker.start()
         await settle()
         f.requests[0]!.fail()
         await settle()
@@ -314,7 +314,7 @@ test('legacy controllers use bounded polling and never start an unsupported subs
     const f = fixture()
     f.latest({ cursor: null, snapshot: observed().snapshot })
     try {
-        f.worker.start()
+        void f.worker.start()
         await settle()
         await advance(60_000)
         expect(f.dependencies.read).toHaveBeenCalledTimes(2)
@@ -334,7 +334,7 @@ test('bounded fair batches continue without another Docker event and yield betwe
         },
     })
     try {
-        f.worker.start()
+        void f.worker.start()
         await settle()
         await advance(1999)
         expect(passes).toBe(1)
@@ -352,7 +352,7 @@ test('bounded fair batches continue without another Docker event and yield betwe
 test('stop aborts collection admission and drains an in-flight pass before returning', async () => {
     const reading = Promise.withResolvers<DiscoveryObservation>()
     const f = fixture({ read: () => reading.promise })
-    f.worker.start()
+    void f.worker.start()
     await settle()
     let drained = false
     const stopping = f.worker.stop().then(() => {

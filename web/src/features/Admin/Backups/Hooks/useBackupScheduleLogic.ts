@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import { useEffect, useId, useRef, useState } from 'react'
 import { useForm, useStore } from '@tanstack/react-form'
 import { toast } from '@rentnerkev/toasts'
@@ -16,6 +17,7 @@ const fields = (configuration: ManagedBackupConfiguration) => ({
 export default function useBackupScheduleLogic(
     props: BackupScheduleProps,
 ): BackupScheduleLogicResult {
+    const runAction = useAsyncAction()
     const { t } = useTranslationStore()
     const id = useId()
     const [base, setBase] = useState(props.configuration)
@@ -91,7 +93,7 @@ export default function useBackupScheduleLogic(
         handler: {
             handleSubmit: (event) => {
                 event.preventDefault()
-                if (!locked) void form.handleSubmit()
+                if (!locked) runAction(() => form.handleSubmit())
             },
             handleEnabledChange: (value) => form.setFieldValue('enabled', value),
             handleIntervalChange: (value) => form.setFieldValue('intervalHours', value),

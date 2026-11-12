@@ -35,7 +35,7 @@ const getFoundationHealthHandlerMock = mock(
     () => new Promise<FoundationHealth>((resolve) => (resolveHealth = resolve)),
 )
 
-mock.module('@/features/FoundationStatus/middleware.ts', () => ({
+await mock.module('@/features/FoundationStatus/middleware.ts', () => ({
     getFoundationHealthHandler: getFoundationHealthHandlerMock,
 }))
 
@@ -60,7 +60,7 @@ const disabledCrowdSec: CrowdSecConfiguration = {
 }
 let crowdSecConfiguration = disabledCrowdSec
 const getCrowdSecConfigurationHandlerMock = mock(async () => crowdSecConfiguration)
-mock.module('@/features/Admin/CrowdSec/middleware.ts', () => ({
+await mock.module('@/features/Admin/CrowdSec/middleware.ts', () => ({
     getCrowdSecConfigurationHandler: getCrowdSecConfigurationHandlerMock,
 }))
 

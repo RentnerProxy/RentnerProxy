@@ -173,7 +173,7 @@ async function traffic(verifyPersisted = false, verifyRuntimeFaults = false) {
             await verifyApplianceNativeRuntimeFaults(faultContext)
         }
     } finally {
-        backend.stop(true)
+        await backend.stop(true)
     }
 }
 

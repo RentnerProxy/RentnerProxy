@@ -1,15 +1,15 @@
 import { beforeEach, expect, test } from 'bun:test'
 import { createMiddlewareHarness } from '@/tests/Helpers/middlewareCoverage.ts'
 import { CrowdSecDomainError } from '@/server/Admin/CrowdSec/crowdsec.errors.ts'
-const boundary = createMiddlewareHarness()
-boundary.mockServices('@/server/Admin/CrowdSec/crowdsec.service.ts', [
+const boundary = await createMiddlewareHarness()
+await boundary.mockServices('@/server/Admin/CrowdSec/crowdsec.service.ts', [
     'getCrowdSecConfigurationService',
     'getCrowdSecDashboardService',
     'enrollCrowdSecConsoleService',
     'testCrowdSecConnectionService',
     'updateCrowdSecConfigurationService',
 ])
-boundary.mockServices('@/server/ForwardAuth/forward-auth-summary.service.ts', [
+await boundary.mockServices('@/server/ForwardAuth/forward-auth-summary.service.ts', [
     'getForwardAuthSummaryService',
 ])
 const handlers = await import('@/features/Admin/CrowdSec/middleware.ts')

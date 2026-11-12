@@ -2,8 +2,8 @@ import { beforeEach, describe, expect, test } from 'bun:test'
 import { createMiddlewareHarness } from '@/tests/Helpers/middlewareCoverage.ts'
 import { HostTagDomainError } from '@/lib/HostTags/hostTags.ts'
 
-const boundary = createMiddlewareHarness()
-boundary.mockServices('@/server/Admin/HostTags/host-tags.service.ts', [
+const boundary = await createMiddlewareHarness()
+await boundary.mockServices('@/server/Admin/HostTags/host-tags.service.ts', [
     'getHostTagCatalogService',
     'mutateHostTagService',
 ])

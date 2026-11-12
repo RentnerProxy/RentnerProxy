@@ -81,7 +81,9 @@ export async function activeIsolationPoolQueries(
             "select count(*)::int as active,count(distinct pid)::int as pids from pg_stat_activity where usename='isolation_worker' and datname=current_database() and state='active' and wait_event_type='Lock' and query='select pg_advisory_xact_lock(1380864088)'",
         )
         const cancel = () => {
-            query.cancel()
+            void query.cancel().catch(() => {
+                console.warn('[isolation] Activity query cancellation failed')
+            })
         }
         aborted.addEventListener('abort', cancel, { once: true })
         if (aborted.aborted) cancel()

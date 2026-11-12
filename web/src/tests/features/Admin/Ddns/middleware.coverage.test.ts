@@ -2,8 +2,8 @@ import { beforeEach, describe, expect, test } from 'bun:test'
 import { createMiddlewareHarness } from '@/tests/Helpers/middlewareCoverage.ts'
 import { DdnsDomainError } from '@/server/Admin/Ddns/ddns.errors.ts'
 
-const boundary = createMiddlewareHarness()
-boundary.mockServices('@/server/Admin/Ddns/ddns.service.ts', [
+const boundary = await createMiddlewareHarness()
+await boundary.mockServices('@/server/Admin/Ddns/ddns.service.ts', [
     'getDdnsStatusService',
     'getDdnsConnectionsService',
     'previewDdnsService',
@@ -13,7 +13,7 @@ boundary.mockServices('@/server/Admin/Ddns/ddns.service.ts', [
     'syncDdnsService',
     'applyDdnsService',
 ])
-boundary.mockServices('@/server/Admin/DnsConnections/dns-providers.service.ts', [
+await boundary.mockServices('@/server/Admin/DnsConnections/dns-providers.service.ts', [
     'getDdnsProviderContextService',
 ])
 const handlers = await import('@/features/Admin/Ddns/middleware.ts')

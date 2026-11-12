@@ -380,7 +380,7 @@ async function spawnRole(
         for await (const data of child.stdout) lines.write(data)
         lines.finish()
     })().catch((error: unknown) => ready.reject(error))
-    void new Response(child.stderr).text()
+    void new Response(child.stderr).text().catch((error: unknown) => ready.reject(error))
     try {
         return {
             process: child,
@@ -651,7 +651,9 @@ async function measure(
                 }
             })()
             pending.add(task)
-            void task.finally(() => pending.delete(task))
+            void task.finally(() => pending.delete(task)).catch(() => {
+                console.error('[isolation] Traffic task failed')
+            })
         }, 1000 / contract.requestsPerSecond)
         const stopTraffic = () => {
             clearInterval(traffic)

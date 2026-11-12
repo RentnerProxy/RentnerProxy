@@ -39,7 +39,7 @@ function put(path: string, value: unknown, owner = 0, mode = 0o600) {
     const bytes = JSON.stringify(value)
     files.set(path, { bytes, info: { uid: owner, gid: owner, mode, size: bytes.length, nlink: 1 } })
 }
-mock.module('node:fs/promises', () => ({
+await mock.module('node:fs/promises', () => ({
     lstat: async (path: string) => metadata(entry(path).info),
     stat: async () => ({ dev: 1n, ino: 2n }),
     readFile: async (path: string) => {
@@ -80,7 +80,7 @@ mock.module('node:fs/promises', () => ({
         }
     },
 }))
-mock.module('../../../../../../docker/production/backups/storage.ts', () => ({
+await mock.module('../../../../../../docker/production/backups/storage.ts', () => ({
     controlRoot,
     readPrivateJson: async (path: string) => {
         const file = entry(path)
@@ -97,7 +97,7 @@ mock.module('../../../../../../docker/production/backups/storage.ts', () => ({
         if (publication) entry(path).info.gid = publication.gid
     },
 }))
-mock.module('../../../../../../scripts/backup/maintenance-process.ts', () => ({
+await mock.module('../../../../../../scripts/backup/maintenance-process.ts', () => ({
     runMaintenanceProcess: async (args: string[], options: object) => {
         const pid = Number(args.at(-1)!.split('/')[2])
         expect(args).toEqual([
