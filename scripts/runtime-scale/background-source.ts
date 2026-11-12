@@ -6,7 +6,9 @@ export async function stageBackgroundFixtureSources(directory: string) {
     await Promise.all(
         [
             'scripts/runtime-scale/background-fixture.ts',
+            'scripts/runtime-scale/background-capture.ts',
             'scripts/runtime-scale/background-notifications.ts',
+            'scripts/runtime-scale/background-notification-identities.ts',
             'scripts/runtime-scale/background-receivers.ts',
             'scripts/runtime-scale/background-network.ts',
             'scripts/runtime-scale/background-discovery.ts',

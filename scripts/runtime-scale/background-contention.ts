@@ -22,6 +22,8 @@ export const contentionStateSchema = z.strictObject({
         failed: count,
         cancelled: count,
         deferred: count,
+        deferredIdentities: z.array(z.strictObject({ incidentId: z.uuid(), channelId: z.uuid(), channelRevision: count, type: z.enum(['incident', 'recovery']) })).max(1024).optional(),
+        deferredObservedAt: z.number().finite().nonnegative().optional(),
     }),
     discovery: z.strictObject({
         revision: count,

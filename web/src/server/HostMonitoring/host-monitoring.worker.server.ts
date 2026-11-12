@@ -26,6 +26,7 @@ import type {
 } from './Types/host-monitoring.repository.types.ts'
 import type { HostMonitoringProbeContext } from './Types/host-monitoring-probe.types.ts'
 import { HostMonitoringCleanupError } from './Types/host-monitoring-worker.types.ts'
+import { hostMonitoringCapture } from './host-monitoring.capture.server.ts'
 
 const readContext = createHostMonitoringBatcher<
     HostMonitoringClaim,
@@ -106,17 +107,22 @@ const release = (claim: HostMonitoringClaim) =>
         throw new HostMonitoringCleanupError(cause)
     })
 
-export const hostMonitoringWorker = createHostMonitoringWorker({
+const worker = createHostMonitoringWorker({
     claim: (limit) =>
         observeWorkerOperation(
             'host_monitoring',
-            () => claimDueHostMonitoringPolicies(limit),
+            async () => {
+                const claims = await claimDueHostMonitoringPolicies(limit)
+                if (hostMonitoringCapture) for (const claim of claims) hostMonitoringCapture.record('admitted', claim)
+                return claims
+            },
             undefined,
             () => 'deferred',
             'admission',
         ),
     /** Count progress only after accepted persistence, treating busy outcomes as deferred and unknown dependency results as failures. */
     runClaim: (claim, signal) => {
+        hostMonitoringCapture?.record(signal.aborted ? 'cancelled' : 'started', claim)
         let progress: 'success' | 'failure' | 'deferred' = 'deferred'
         const execute = createHostMonitoringProbe({
             readContext,
@@ -150,6 +156,7 @@ export const hostMonitoringWorker = createHostMonitoringWorker({
         )
     },
     releaseCancelled: async (claim) => {
+        hostMonitoringCapture?.record('cancelled', claim)
         await release(claim)
     },
     /** Observe retention independently from probe execution, then refresh queue evidence after successful pruning. */
@@ -170,6 +177,13 @@ export const hostMonitoringWorker = createHostMonitoringWorker({
             retryMs: HOST_MONITORING_LIMITS.pollIntervalMs,
         }),
 })
+
+export const hostMonitoringWorker = {
+    ...worker,
+    async stop() {
+        try { await worker.stop() } finally { await hostMonitoringCapture?.flush() }
+    },
+}
 
 workerObservability.sample('host_monitoring', {
     concurrency: HOST_MONITORING_LIMITS.workerConcurrency,

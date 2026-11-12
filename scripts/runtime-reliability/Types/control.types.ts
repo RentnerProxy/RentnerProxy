@@ -9,6 +9,7 @@ export type ReliabilityOptions = {
     reportPath?: string
     internalNetwork?: boolean
     backgroundContention?: true
+    backgroundTelemetry?: true
 }
 
 export type ResourceSample = {
