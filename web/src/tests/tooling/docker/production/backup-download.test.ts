@@ -48,6 +48,7 @@ async function fixture(
     }) => Promise<void>,
     timings = BACKUP_DOWNLOAD_TIMEOUTS,
     dumpSize = 0,
+    schedule?: Parameters<typeof createBackupDownload>[5],
 ) {
     const root = await mkdtemp(join(tmpdir(), 'rentnerproxy-download-fixture-'))
     const directory = join(root, id)
@@ -141,6 +142,7 @@ async function fixture(
                         admission.released++
                     }
                 },
+                schedule,
             ),
         })
     } finally {
@@ -194,20 +196,37 @@ test.skipIf(!linuxRoot)(
 
 test.skipIf(!linuxRoot)(
     'unconsumed root snapshot expires at idle and releases its admission slot',
-    () =>
-        fixture(
-            async ({ download }) => {
+    () => {
+        const pending = new Set<{ callback: () => void; delay: number }>()
+        return fixture(
+            async ({ download, admission }) => {
                 const response = await download(new Request('http://localhost'), id)
                 expect(response.status).toBe(200)
-                await Bun.sleep(250)
+                expect(admission).toEqual({ acquired: 1, released: 0 })
+                expect([...pending].map((timer) => timer.delay)).toEqual([150])
+                const idle = [...pending][0]!
+                idle.callback()
                 await expect(response.arrayBuffer()).rejects.toThrow('cancelled')
+                expect(pending.size).toBe(0)
+                expect(admission).toEqual({ acquired: 1, released: 1 })
                 const next = await download(new Request('http://localhost'), id)
                 expect(next.status).toBe(200)
+                expect([...pending].map((timer) => timer.delay)).toEqual([150])
                 await next.body!.cancel()
+                expect(pending.size).toBe(0)
+                expect(admission).toEqual({ acquired: 2, released: 2 })
             },
             { preparationMs: 2000, idleMs: 150, connectionMs: 5 },
             512 * 1024,
-        ),
+            (callback, delay) => {
+                const timer = { callback, delay }
+                pending.add(timer)
+                return () => {
+                    pending.delete(timer)
+                }
+            },
+        )
+    },
 )
 
 test.skipIf(!linuxRoot)(

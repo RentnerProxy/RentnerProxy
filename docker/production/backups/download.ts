@@ -78,6 +78,7 @@ export function createBackupDownload(
     temporaryRoot = backupRoot,
     timings = BACKUP_DOWNLOAD_TIMEOUTS,
     admission?: () => Promise<() => void>,
+    schedule?: Parameters<typeof createBackupDownloadTimeout>[3],
 ) {
     let active = false
     /** Handles one request, releasing any acquired admission before returning an error response. */
@@ -97,7 +98,7 @@ export function createBackupDownload(
         const abort = () => stop.abort()
         request.signal.addEventListener('abort', abort, { once: true })
         if (request.signal.aborted) abort()
-        const timeout = createBackupDownloadTimeout(abort, timings)
+        const timeout = createBackupDownloadTimeout(abort, timings, true, schedule)
         const files: FileHandle[] = []
         let archive: FileHandle | undefined
         let releasePromise: Promise<void> | undefined
