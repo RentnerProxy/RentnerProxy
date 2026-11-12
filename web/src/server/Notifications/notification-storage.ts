@@ -53,18 +53,23 @@ async function readSetting<T>(
     schema: z.ZodType<T>,
     lock: boolean,
 ): Promise<T> {
-    if (lock)
-        await transaction
-            .insert(systemSettings)
-            .values({ key, value: sql`${initial}` })
-            .onConflictDoNothing({ target: systemSettings.key })
     const query = transaction
         .select({ value: systemSettings.value })
         .from(systemSettings)
         .where(eq(systemSettings.key, key))
         .limit(1)
     const [row] = lock ? await query.for('update') : await query
-    return row ? parse(schema, row.value) : structuredClone(initial)
+    if (row) return parse(schema, row.value)
+    if (!lock) return structuredClone(initial)
+    // Existing settings need one locking read. Initialize only a genuinely absent row,
+    // then re-read under its lock in case a competing initializer inserted first.
+    await transaction
+        .insert(systemSettings)
+        .values({ key, value: sql`${initial}` })
+        .onConflictDoNothing({ target: systemSettings.key })
+    const [created] = await query.for('update')
+    if (!created) throw new NotificationDomainError('configuration_unavailable')
+    return parse(schema, created.value)
 }
 
 async function writeSetting<T>(
