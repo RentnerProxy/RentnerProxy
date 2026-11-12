@@ -18,6 +18,7 @@ import type { FixtureContext } from '../runtime-reliability/Types/fixture.types.
 import type { StoredNotificationConfiguration } from '../../web/src/server/Notifications/Types/notification-internal.types.ts'
 import { backgroundDistribution, backgroundSlo } from './background.ts'
 import type { NotificationDeliveryResult } from '../../web/src/lib/Notifications/Types/notifications.types.ts'
+import { backgroundDeferredNotifications } from './background-notification-identities.ts'
 
 /** Produce deterministic per-seed notification identities with a private sequence independent from global random state. */
 function idFactory(seed: number) {
@@ -84,6 +85,17 @@ export async function runBackgroundNotifications(
     let initialAdmitted: string[] = [],
         initialDeferred = 0,
         finalPending = -1
+    let initiallyDeferredIdentities: ReturnType<typeof backgroundDeferredNotifications> = []
+    const admittedIdentities = new Map<
+        string,
+        {
+            incidentId: string
+            channelId: string
+            channelRevision: number
+            type: string
+            deliveryId: string
+        }
+    >()
     const runtime = () => database.transaction(storage.readNotificationRuntime)
     try {
         Date.now = () => now
@@ -110,6 +122,12 @@ export async function runBackgroundNotifications(
             )
             initialAdmitted = engine.deliveries.map((item) => item.id)
             initialDeferred = engine.deferredCount
+            initiallyDeferredIdentities = backgroundDeferredNotifications(
+                engine,
+                configuration,
+                now,
+            )
+            assert.equal(initiallyDeferredIdentities.length, initialDeferred)
             assert.ok(
                 initialDeferred > 0 && initialAdmitted.length <= NOTIFICATION_LIMITS.deliveries,
             )
@@ -139,6 +157,13 @@ export async function runBackgroundNotifications(
                 continue
             }
             admitted.add(claim.id)
+            admittedIdentities.set(claim.id, {
+                incidentId: claim.payload.incidentId,
+                channelId: claim.channelId,
+                channelRevision: claim.channelRevision,
+                type: claim.payload.type,
+                deliveryId: claim.id,
+            })
             attempts.set(claim.id, (attempts.get(claim.id) ?? 0) + 1)
             const channel = configuration.channels.findIndex((item) => item.id === claim.channelId)
             if (channel !== 0 && attempts.get(claim.id) === 1 && slow[claim.channel.kind] < 2) {
@@ -237,6 +262,21 @@ export async function runBackgroundNotifications(
         assert.equal(admitted.size, 320)
         assert.equal(acknowledged.size, 280)
         assert.equal(permanent.size, 40)
+        const deferredAdmissions = initiallyDeferredIdentities.map((identity) => {
+            const matches = [...admittedIdentities.values()].filter(
+                (item) =>
+                    item.incidentId === identity.incidentId &&
+                    item.channelId === identity.channelId &&
+                    item.channelRevision === identity.channelRevision &&
+                    item.type === identity.type,
+            )
+            assert.equal(
+                matches.length,
+                1,
+                'Each deferred obligation has one subsequently allocated delivery identity',
+            )
+            return matches[0]!
+        })
         assert.equal(faults.length, 3)
         assert.deepEqual(slow, { email: 2, webhook: 2 })
         assert.ok(
@@ -309,6 +349,8 @@ export async function runBackgroundNotifications(
             admissionLimit: NOTIFICATION_LIMITS.deliveries,
             initiallyAdmittedIds: initialAdmitted,
             initiallyDeferred: initialDeferred,
+            initiallyDeferredIdentities,
+            deferredAdmissions,
             admittedIds: [...admitted],
             receiverAcceptedIds: [...accepted],
             acknowledgedIds: [...acknowledged],

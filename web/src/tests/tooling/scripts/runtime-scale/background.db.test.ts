@@ -43,6 +43,15 @@ integrationTest(
                 finalIncidentCount: 80,
             })
             expect(result.initiallyDeferred).toBeGreaterThan(0)
+            expect(result.initiallyDeferredIdentities).toHaveLength(result.initiallyDeferred)
+            expect(result.deferredAdmissions).toHaveLength(result.initiallyDeferred)
+            expect(
+                result.deferredAdmissions.every(
+                    (item) =>
+                        result.admittedIds.includes(item.deliveryId) &&
+                        !result.initiallyAdmittedIds.includes(item.deliveryId),
+                ),
+            ).toBe(true)
             expect(result.admittedIds).toHaveLength(320)
             expect(result.acknowledgedIds).toHaveLength(280)
             expect(result.permanentlyFailedIds).toHaveLength(40)
