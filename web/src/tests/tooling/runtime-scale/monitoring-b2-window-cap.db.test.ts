@@ -7,6 +7,7 @@ import {
     writeMonitoringB2WindowSeal,
     qualifyMonitoringB2WindowSession,
     waitForMonitoringB2WindowBackendExit,
+    observeMonitoringB2WindowBackendQuery,
 } from '../../../../../scripts/runtime-scale/monitoring-b2-window-cap.ts'
 import { assertIsolatedMonitoringDatabase } from '../../../../../scripts/runtime-scale/monitoring.ts'
 let isolated = false
@@ -107,6 +108,20 @@ integration(
                 [nativeRole],
             )
             expect(rows.map((row) => row.pid)).toEqual([owner!.pid])
+            const stalled = app.unsafe('SELECT pg_sleep(5)'),
+                began = performance.now()
+            await expect(
+                waitForMonitoringB2WindowBackendExit({
+                    present: (signal) => observeMonitoringB2WindowBackendQuery(stalled, signal),
+                    monotonic: () => performance.now(),
+                    sleep: Bun.sleep,
+                }),
+            ).rejects.toThrow('B2 readiness observer backend retained')
+            expect(performance.now() - began).toBeLessThan(4500)
+            expect(stalled.cancelled).toBe(true)
+            await expect(stalled).rejects.toMatchObject({ errno: '57014' })
+            const [reused] = await app.unsafe<{ usable: number }[]>('SELECT 1 AS usable')
+            expect(reused?.usable).toBe(1)
             await expect(
                 qualifyMonitoringB2WindowSession(app, nativeUrl.toString(), query, () =>
                     Promise.reject(new Error('owned readiness rejected')),
@@ -133,12 +148,13 @@ integration(
             await native.close()
             native = undefined
             await waitForMonitoringB2WindowBackendExit({
-                present: async () =>
-                    (
-                        await app!.unsafe('SELECT pid FROM pg_stat_activity WHERE usename=$1', [
+                present: (signal) =>
+                    observeMonitoringB2WindowBackendQuery(
+                        app!.unsafe('SELECT pid FROM pg_stat_activity WHERE usename=$1', [
                             nativeRole,
-                        ])
-                    ).length !== 0,
+                        ]),
+                        signal,
+                    ),
                 monotonic: () => performance.now(),
                 sleep: Bun.sleep,
             })

@@ -18,14 +18,45 @@ const selectors = z
 export async function waitForMonitoringB2WindowBackendExit(
     dependencies: MonitoringB2WindowBackendExitDependencies,
 ) {
-    const deadline = dependencies.monotonic() + 2000
-    // oxlint-disable no-await-in-loop -- Backend exit is asynchronous and must be observed before qualification succeeds.
-    while (await dependencies.present()) {
-        if (dependencies.monotonic() >= deadline)
-            throw new Error('B2 readiness observer backend retained')
-        await dependencies.sleep(10)
+    const deadline = dependencies.monotonic() + 2000,
+        controller = new AbortController(),
+        failure = new Error('B2 readiness observer backend retained')
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const expired = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+            reject(failure)
+            controller.abort(failure)
+        }, 2000)
+    })
+    try {
+        // oxlint-disable no-await-in-loop -- Backend exit is asynchronous; both observations and pauses share the same deadline.
+        while (await Promise.race([dependencies.present(controller.signal), expired])) {
+            if (dependencies.monotonic() >= deadline) throw failure
+            await Promise.race([dependencies.sleep(10), expired])
+        }
+        // oxlint-enable no-await-in-loop
+    } finally {
+        clearTimeout(timer)
     }
-    // oxlint-enable no-await-in-loop
+}
+
+/** Cancel only this owned PostgreSQL statement when the exit deadline expires, then detach its listener on settlement. */
+export async function observeMonitoringB2WindowBackendQuery(
+    query: SQL.Query<unknown[]>,
+    signal: AbortSignal,
+) {
+    const cancel = () => {
+        query.cancel()
+    }
+    signal.addEventListener('abort', cancel, { once: true })
+    try {
+        if (signal.aborted) cancel()
+        const rows = await query
+        signal.throwIfAborted()
+        return rows.length !== 0
+    } finally {
+        signal.removeEventListener('abort', cancel)
+    }
 }
 
 /** Close the private observer and prove its PostgreSQL backend exits before measurement. */
@@ -33,12 +64,11 @@ async function closeWindowObserver(observer: SQL, database: SQL, observerPid: nu
     await observer.close()
     if (observerPid !== undefined) {
         await waitForMonitoringB2WindowBackendExit({
-            present: async () =>
-                (
-                    await database.unsafe('SELECT pid FROM pg_stat_activity WHERE pid=$1', [
-                        observerPid,
-                    ])
-                ).length !== 0,
+            present: (signal) =>
+                observeMonitoringB2WindowBackendQuery(
+                    database.unsafe('SELECT pid FROM pg_stat_activity WHERE pid=$1', [observerPid]),
+                    signal,
+                ),
             monotonic: () => performance.now(),
             sleep: Bun.sleep,
         })

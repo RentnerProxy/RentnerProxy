@@ -21,7 +21,7 @@ export interface MonitoringB2WindowCapProof {
 
 /** Observe asynchronous PostgreSQL termination with a bounded monotonic wait. */
 export interface MonitoringB2WindowBackendExitDependencies {
-    present: () => Promise<boolean>
+    present: (signal: AbortSignal) => Promise<boolean>
     monotonic: () => number
     sleep: (milliseconds: number) => Promise<unknown>
 }

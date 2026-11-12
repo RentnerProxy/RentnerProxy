@@ -64,6 +64,20 @@ function resources(): MonitoringApplianceResource[] {
 }
 
 describe('absolute appliance measurement window', () => {
+    test('expires and aborts a stalled backend query even when cancellation settlement is delayed', async () => {
+        let observed: AbortSignal | undefined
+        await expect(
+            waitForMonitoringB2WindowBackendExit({
+                present: (signal) => {
+                    observed = signal
+                    return new Promise<boolean>(() => {})
+                },
+                monotonic: () => performance.now(),
+                sleep: Bun.sleep,
+            }),
+        ).rejects.toThrow('B2 readiness observer backend retained')
+        expect(observed?.aborted).toBe(true)
+    })
     test('waits for asynchronous backend exit instead of rejecting the first retained activity row', async () => {
         const timer = clockFixture()
         let polls = 0
