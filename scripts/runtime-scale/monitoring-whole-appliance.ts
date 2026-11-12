@@ -33,6 +33,8 @@ import type {
     MonitoringApplianceStoppedIdentity,
     MonitoringApplianceFaultSession,
     MonitoringApplianceFaultRecord,
+    MonitoringApplianceEvaluationReport,
+    MonitoringApplianceCleanupDependencies,
 } from './Types/monitoring-whole-appliance.types.ts'
 
 const experimentRoot = resolve(import.meta.dir, '../..')
@@ -549,6 +551,29 @@ const signal=async signal=>{const value=await readOwner();if(!value||value.start
 const result=await (${collectMonitoringApplianceContinuity.toString()})({owner,readOwner,report,signal,sleep:Bun.sleep,monotonic:()=>performance.now()},${contract.confirmedBunStopMs});process.stdout.write(JSON.stringify(result));`
 }
 
+/** Attempt every owned cleanup before persisting a verdict; a cleanup failure makes the evidence incomplete. */
+export async function finalizeMonitoringApplianceReport(
+    report: MonitoringApplianceEvaluationReport,
+    reportPath: string,
+    cleanup: MonitoringApplianceCleanupDependencies,
+) {
+    for (const [failure, remove] of [
+        ['fixture-shutdown-unavailable', cleanup.shutdown],
+        ['owned-appliance-cleanup-failed', cleanup.appliance],
+        ['owned-prototype-image-cleanup-failed', cleanup.prototypeImage],
+    ] as const) {
+        try {
+            await remove()
+        } catch {
+            report.failures.push(failure)
+            report.completeness = 'insufficient'
+            report.recommendation = 'incomplete'
+        }
+    }
+    await mkdir(dirname(reportPath), { recursive: true })
+    await writeFile(reportPath, JSON.stringify(report, null, 2) + '\n', { mode: 0o600 })
+}
+
 /** Run source-matched internal-network fixtures; incomplete topology, fault or resource proof fails closed. */
 export async function runMonitoringAppliance(options: MonitoringApplianceOptions) {
     const { baselineSha, baselineImageIdentity } = options
@@ -622,14 +647,7 @@ export async function runMonitoringAppliance(options: MonitoringApplianceOptions
         [],
     )
     const context = harness.context
-    const report: {
-        header: Record<string, unknown>
-        windows: Record<string, unknown>[]
-        faultEvidence: unknown
-        completeness: 'insufficient' | 'complete'
-        recommendation: 'incomplete' | 'keep-hybrid' | 'eligible-for-separate-design-review'
-        failures: string[]
-    } = {
+    const report: MonitoringApplianceEvaluationReport = {
         header: {
             baselineSha,
             baselineHarnessSha256,
@@ -1340,23 +1358,11 @@ export async function runMonitoringAppliance(options: MonitoringApplianceOptions
             report.header.failureDiagnostic = 'unavailable'
         }
     } finally {
-        try {
-            await monitoringApplianceRequest(context, '/shutdown', {})
-        } catch {
-            report.failures.push('fixture-shutdown-unavailable')
-        }
-        try {
-            await harness.cleanup()
-        } catch {
-            report.failures.push('owned-appliance-cleanup-failed')
-        }
-        try {
-            await context.docker(['image', 'rm', prototypeImage])
-        } catch {
-            report.failures.push('owned-prototype-image-cleanup-failed')
-        }
-        await mkdir(dirname(options.reportPath), { recursive: true })
-        await writeFile(options.reportPath, JSON.stringify(report, null, 2) + '\n', { mode: 0o600 })
+        await finalizeMonitoringApplianceReport(report, options.reportPath, {
+            shutdown: () => monitoringApplianceRequest(context, '/shutdown', {}),
+            appliance: () => harness.cleanup(),
+            prototypeImage: () => context.docker(['image', 'rm', prototypeImage]),
+        })
     }
     return report
 }

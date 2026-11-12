@@ -45,6 +45,21 @@ export interface MonitoringApplianceFaultRecord {
     failures: string[]
 }
 
+export interface MonitoringApplianceEvaluationReport {
+    header: Record<string, unknown>
+    windows: Record<string, unknown>[]
+    faultEvidence: unknown
+    completeness: 'insufficient' | 'complete'
+    recommendation: 'incomplete' | 'keep-hybrid' | 'eligible-for-separate-design-review'
+    failures: string[]
+}
+
+export interface MonitoringApplianceCleanupDependencies {
+    shutdown: () => Promise<unknown>
+    appliance: () => Promise<unknown>
+    prototypeImage: () => Promise<unknown>
+}
+
 export interface MonitoringApplianceReport {
     windowId: string
     originMs: number

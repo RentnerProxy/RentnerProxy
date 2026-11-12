@@ -1,6 +1,6 @@
 import { monitoringApplianceWindowProbe } from '../../../../../scripts/runtime-scale/monitoring-whole-appliance.window.ts'
 import { describe, expect, test } from 'bun:test'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { monitoringEvaluationContract as contract } from '../../../../../scripts/runtime-scale/monitoring-evaluation.ts'
@@ -25,12 +25,15 @@ import {
     monitoringApplianceOverlay,
     validateMonitoringApplianceNativeManifest,
     runMonitoringAppliance,
+    finalizeMonitoringApplianceReport,
 } from '../../../../../scripts/runtime-scale/monitoring-whole-appliance.ts'
 import type {
     MonitoringApplianceReport,
     MonitoringApplianceResource,
     MonitoringApplianceTraffic,
     MonitoringAppliancePairInput,
+    MonitoringApplianceCleanupDependencies,
+    MonitoringApplianceEvaluationReport,
 } from '../../../../../scripts/runtime-scale/Types/monitoring-whole-appliance.types.ts'
 
 function progress(): MonitoringApplianceReport {
@@ -221,6 +224,75 @@ function continuityFixture() {
 }
 
 describe('whole-appliance monitoring reference evidence', () => {
+    test.each([
+        ['shutdown', 'fixture-shutdown-unavailable'],
+        ['appliance', 'owned-appliance-cleanup-failed'],
+        ['prototypeImage', 'owned-prototype-image-cleanup-failed'],
+    ] as const)(
+        'persists an incomplete verdict when %s cleanup fails and still attempts every owner',
+        async (owner, failure) => {
+            const root = await mkdtemp(join(tmpdir(), 'monitoring-b2-cleanup-test-'))
+            const report: MonitoringApplianceEvaluationReport = {
+                header: {},
+                windows: [],
+                faultEvidence: null,
+                completeness: 'complete',
+                recommendation: 'eligible-for-separate-design-review',
+                failures: [],
+            }
+            const attempted: string[] = []
+            const remove = async (name: keyof MonitoringApplianceCleanupDependencies) => {
+                attempted.push(name)
+                if (name === owner) throw new Error('injected cleanup failure')
+            }
+            try {
+                const reportPath = join(root, 'report/result.json')
+                await finalizeMonitoringApplianceReport(report, reportPath, {
+                    shutdown: () => remove('shutdown'),
+                    appliance: () => remove('appliance'),
+                    prototypeImage: () => remove('prototypeImage'),
+                })
+                expect(attempted).toEqual(['shutdown', 'appliance', 'prototypeImage'])
+                expect(JSON.parse(await readFile(reportPath, 'utf8'))).toMatchObject({
+                    completeness: 'insufficient',
+                    recommendation: 'incomplete',
+                    failures: [failure],
+                })
+            } finally {
+                expect(dirname(root)).toBe(tmpdir())
+                await rm(root, { recursive: true, force: true })
+            }
+        },
+    )
+    test.each([
+        ['complete', 'keep-hybrid', ['due-to-commit-gate']],
+        ['insufficient', 'incomplete', ['exact-two-cadence-coverage']],
+    ] as const)(
+        'preserves the %s %s verdict when every cleanup succeeds',
+        async (completeness, recommendation, failures) => {
+            const root = await mkdtemp(join(tmpdir(), 'monitoring-b2-cleanup-test-'))
+            const report: MonitoringApplianceEvaluationReport = {
+                header: {},
+                windows: [],
+                faultEvidence: null,
+                completeness,
+                recommendation,
+                failures: [...failures],
+            }
+            try {
+                const reportPath = join(root, 'result.json')
+                await finalizeMonitoringApplianceReport(report, reportPath, {
+                    shutdown: async () => {},
+                    appliance: async () => {},
+                    prototypeImage: async () => {},
+                })
+                expect(JSON.parse(await readFile(reportPath, 'utf8'))).toEqual(report)
+            } finally {
+                expect(dirname(root)).toBe(tmpdir())
+                await rm(root, { recursive: true, force: true })
+            }
+        },
+    )
     test('rejects an old baseline harness before it can create an externally reachable fixture', async () => {
         const root = await mkdtemp(join(tmpdir(), 'monitoring-b2-harness-test-'))
         try {
