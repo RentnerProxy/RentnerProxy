@@ -21,7 +21,9 @@ await boundary.mockServices('@/server/Admin/ProxyHostManagement/proxy-hosts.serv
 await boundary.mockServices('@/server/Admin/ProxyHostManagement/upstream-health.service.ts', [
     'getProxyHostUpstreamHealthService',
 ])
-await boundary.mockServices('@/server/Admin/HostTags/host-list.service.ts', ['getProxyHostPageService'])
+await boundary.mockServices('@/server/Admin/HostTags/host-list.service.ts', [
+    'getProxyHostPageService',
+])
 await boundary.mockServices('@/server/ProxyRuntime/proxy-runtime.service.ts', [
     'applyProxyConfigurationService',
     'getProxyRuntimeStatusService',

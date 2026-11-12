@@ -52,7 +52,9 @@ await mock.module('@/features/Admin/AccessPolicyManagement/middleware.ts', () =>
     getBasicAuthAccountsHandler: accountsRead,
     deleteBasicAuthAccountHandler: removeAccount,
 }))
-await mock.module('@/shared/Live/Hooks/useLiveInvalidation.ts', () => ({ default: () => undefined }))
+await mock.module('@/shared/Live/Hooks/useLiveInvalidation.ts', () => ({
+    default: () => undefined,
+}))
 const { default: useManagement } =
     await import('@/features/Admin/AccessPolicyManagement/Hooks/useAccessPolicyManagementLogic.ts')
 const { default: useAccounts } =

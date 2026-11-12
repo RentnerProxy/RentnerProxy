@@ -180,7 +180,9 @@ const database: AuthenticationTestDatabase = {
 }
 
 await mock.module('@tanstack/react-start/server-only', () => ({}))
-await mock.module('@/server/Auth/Core/database.server.ts', () => ({ getAuthDatabase: () => database }))
+await mock.module('@/server/Auth/Core/database.server.ts', () => ({
+    getAuthDatabase: () => database,
+}))
 await mock.module('@/server/Auth/Oidc/oidc-providers.service.ts', () => ({
     lockOidcProviderInTransaction: async (_transaction: unknown, providerId: string) => {
         events.push('provider-lock')

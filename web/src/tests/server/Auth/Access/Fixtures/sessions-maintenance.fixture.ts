@@ -46,8 +46,12 @@ const actor = (): AuthenticatedUser => ({
 
 // These are explicit test dependencies. Session SQL/transactions/tokens are real;
 // this fixture does not claim coverage of the RBAC resolver or audit persistence.
-await mock.module('@/server/Auth/Core/database.server.ts', () => ({ getAuthDatabase: () => database }))
-await mock.module('@/server/Auth/Access/cookies.server.ts', () => ({ getSessionCookie: () => null }))
+await mock.module('@/server/Auth/Core/database.server.ts', () => ({
+    getAuthDatabase: () => database,
+}))
+await mock.module('@/server/Auth/Access/cookies.server.ts', () => ({
+    getSessionCookie: () => null,
+}))
 await mock.module('@/server/Auth/Access/rbac.service.ts', () => ({
     resolveActiveUserAccessInTransaction: async () => {
         const hook = onResolve

@@ -32,7 +32,10 @@ export function createDiscoveryWorker(
         queuedAt = at
         queued = setTimeout(() => {
             queued = null
-            runDetachedTask(() => trigger(false), () => console.error('[docker-discovery] Background operation failed'))
+            runDetachedTask(
+                () => trigger(false),
+                () => console.error('[docker-discovery] Background operation failed'),
+            )
         }, delay)
         queued.unref?.()
     }
@@ -70,7 +73,10 @@ export function createDiscoveryWorker(
             if (timer || stopped) return flight ?? Promise.resolve()
             unsubscribe = subscribe?.(() => request(true))
             timer = setInterval(() => {
-                runDetachedTask(() => trigger(), () => console.error('[docker-discovery] Background operation failed'))
+                runDetachedTask(
+                    () => trigger(),
+                    () => console.error('[docker-discovery] Background operation failed'),
+                )
             }, intervalMs)
             timer.unref?.()
             return trigger()

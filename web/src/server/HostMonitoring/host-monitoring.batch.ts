@@ -19,7 +19,10 @@ export function createHostMonitoringBatcher<Input, Output>(
         if (running || timer || pending.length === 0) return
         timer = setTimeout(() => {
             timer = undefined
-            runDetachedTask(() => flush(), () => console.error('[host-monitoring] Background operation failed'))
+            runDetachedTask(
+                () => flush(),
+                () => console.error('[host-monitoring] Background operation failed'),
+            )
         }, options.delayMs)
     }
 
@@ -44,7 +47,11 @@ export function createHostMonitoringBatcher<Input, Output>(
         } finally {
             admitted -= entries.length
             running = false
-            if (pending.length >= options.size) runDetachedTask(() => flush(), () => console.error('[host-monitoring] Background operation failed'))
+            if (pending.length >= options.size)
+                runDetachedTask(
+                    () => flush(),
+                    () => console.error('[host-monitoring] Background operation failed'),
+                )
             else schedule()
         }
     }
@@ -56,7 +63,11 @@ export function createHostMonitoringBatcher<Input, Output>(
         const result = new Promise<Output>((resolve, reject) => {
             pending.push({ input, resolve, reject })
         })
-        if (pending.length >= options.size) runDetachedTask(() => flush(), () => console.error('[host-monitoring] Background operation failed'))
+        if (pending.length >= options.size)
+            runDetachedTask(
+                () => flush(),
+                () => console.error('[host-monitoring] Background operation failed'),
+            )
         else schedule()
         return result
     }

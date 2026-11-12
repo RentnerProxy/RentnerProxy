@@ -24,8 +24,12 @@ await mock.module('@/features/Auth/Setup/middleware.ts', () => ({ setupOwnerHand
 await mock.module('@/features/Auth/ForgotPassword/middleware.ts', () => ({
     requestPasswordResetHandler: submit,
 }))
-await mock.module('@/features/Auth/PasswordReset/middleware.ts', () => ({ resetPasswordHandler: submit }))
-await mock.module('@/features/Auth/AcceptInvite/middleware.ts', () => ({ acceptInviteHandler: submit }))
+await mock.module('@/features/Auth/PasswordReset/middleware.ts', () => ({
+    resetPasswordHandler: submit,
+}))
+await mock.module('@/features/Auth/AcceptInvite/middleware.ts', () => ({
+    acceptInviteHandler: submit,
+}))
 await mock.module('@tanstack/react-router', () => ({
     useSearch: () => ({}),
     useNavigate: () => async () => {},

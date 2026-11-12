@@ -28,7 +28,9 @@ const operations = Object.fromEntries(
 await mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
     default: () => ({ t: (key: string) => key }),
 }))
-await mock.module('@rentnerkev/toasts', () => ({ toast: { success: successToast, error: errorToast } }))
+await mock.module('@rentnerkev/toasts', () => ({
+    toast: { success: successToast, error: errorToast },
+}))
 await mock.module('@simplewebauthn/browser', () => ({
     startRegistration: operation('registration'),
 }))

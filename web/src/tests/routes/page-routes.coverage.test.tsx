@@ -249,16 +249,20 @@ const matrix: {
     },
 ]
 const pages = new Map<string, () => null>()
-await Promise.all(matrix.map(({ page }) => {
-    const component = mock(() => null)
-    pages.set(page, component)
-    return mock.module(`@/features/${page}`, () => ({ default: component }))
-}))
+await Promise.all(
+    matrix.map(({ page }) => {
+        const component = mock(() => null)
+        pages.set(page, component)
+        return mock.module(`@/features/${page}`, () => ({ default: component }))
+    }),
+)
 const authenticatedLayout = () => null
 const publicLayout = () => null
 const rootLayout = () => null
 const document = () => null
-await mock.module('@/layouts/AuthenticatedLayout/index.tsx', () => ({ default: authenticatedLayout }))
+await mock.module('@/layouts/AuthenticatedLayout/index.tsx', () => ({
+    default: authenticatedLayout,
+}))
 await mock.module('@/layouts/PublicLayout/index.tsx', () => ({ default: publicLayout }))
 await mock.module('@/layouts/RootLayout/index.tsx', () => ({ default: rootLayout }))
 await mock.module('@/layouts/RootDocument/index.tsx', () => ({ default: document }))

@@ -56,9 +56,7 @@ export default function HostBulkModal(props: BulkHostModalProps) {
                     value={state.values.type}
                     options={state.actionOptions}
                     disabled={state.pending}
-                    onValueChange={(value) =>
-                        handler.handleTypeChange(value)
-                    }
+                    onValueChange={(value) => handler.handleTypeChange(value)}
                 />
                 {state.values.type === 'addTags' || state.values.type === 'removeTags' ? (
                     <HostTagSelect

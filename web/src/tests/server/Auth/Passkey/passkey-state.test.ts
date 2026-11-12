@@ -76,7 +76,9 @@ const database: PasskeyTestDatabase = {
     },
 }
 await mock.module('@tanstack/react-start/server-only', () => ({}))
-await mock.module('@/server/Auth/Core/database.server.ts', () => ({ getAuthDatabase: () => database }))
+await mock.module('@/server/Auth/Core/database.server.ts', () => ({
+    getAuthDatabase: () => database,
+}))
 await mock.module('@/server/Configuration/management-origin.server.ts', () => ({
     getRuntimeWebAuthnConfiguration: async () => ({
         origin: 'https://unit.invalid',

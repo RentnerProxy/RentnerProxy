@@ -215,9 +215,11 @@ export function createBackupDownload(
             /** Publishes cancellation only after the same cleanup awaited by all terminal paths. */
             const abortStream = () => {
                 // Terminal body state acknowledges cleanup and admission release.
-                void release().finally(() => controller?.error(new Error('download cancelled'))).catch(() => {
-                    console.error('[backups] Download cancellation cleanup failed')
-                })
+                void release()
+                    .finally(() => controller?.error(new Error('download cancelled')))
+                    .catch(() => {
+                        console.error('[backups] Download cancellation cleanup failed')
+                    })
             }
             stop.signal.addEventListener('abort', abortStream, { once: true })
             const stream = new ReadableStream<Uint8Array>({

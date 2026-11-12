@@ -31,10 +31,9 @@ export function createLiveVitePlugin(): Plugin {
         const closingSidecar = sidecar
         runtime = null
         sidecar = null
-        closing = Promise.all([
-            closingRuntime?.shutdown(),
-            closingSidecar?.stop(true),
-        ]).then(() => undefined)
+        closing = Promise.all([closingRuntime?.shutdown(), closingSidecar?.stop(true)]).then(
+            () => undefined,
+        )
         return closing
     }
 
@@ -100,7 +99,9 @@ export function createLiveVitePlugin(): Plugin {
             if (server.resolvedUrls) updateOrigin()
             else server.httpServer.once('listening', updateOrigin)
             server.httpServer.once('close', () => {
-                runDetachedTask(cleanup, () => console.error('[live] Development transport shutdown failed'))
+                runDetachedTask(cleanup, () =>
+                    console.error('[live] Development transport shutdown failed'),
+                )
             })
         },
         closeBundle() {

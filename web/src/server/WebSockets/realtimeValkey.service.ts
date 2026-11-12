@@ -38,7 +38,10 @@ export function startRealtimeValkey(): void {
         if (stopped || retry !== undefined) return
         retry = setTimeout(() => {
             retry = undefined
-            runDetachedTask(() => connect(), () => console.error('[realtime] Background operation failed'))
+            runDetachedTask(
+                () => connect(),
+                () => console.error('[realtime] Background operation failed'),
+            )
         }, 5000)
         retry.unref()
     }
@@ -110,5 +113,8 @@ export function startRealtimeValkey(): void {
             scheduleReconnect()
         }
     }
-    runDetachedTask(() => connect(), () => console.error('[realtime] Background operation failed'))
+    runDetachedTask(
+        () => connect(),
+        () => console.error('[realtime] Background operation failed'),
+    )
 }

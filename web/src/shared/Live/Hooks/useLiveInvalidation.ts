@@ -23,14 +23,18 @@ export default function useLiveInvalidation({
             const previousRevision = revisionRef.current
             revisionRef.current = snapshot.revision
             if (previousRevision === snapshot.revision) return
-            runAction(() => Promise.all(
-                queryKeys.map((queryKey) => queryClient.invalidateQueries({ queryKey })),
-            ))
+            runAction(() =>
+                Promise.all(
+                    queryKeys.map((queryKey) => queryClient.invalidateQueries({ queryKey })),
+                ),
+            )
         },
         [queryClient, queryKeys, runAction],
     )
     const onResume = useCallback(() => {
-        runAction(() => Promise.all(queryKeys.map((queryKey) => queryClient.invalidateQueries({ queryKey }))))
+        runAction(() =>
+            Promise.all(queryKeys.map((queryKey) => queryClient.invalidateQueries({ queryKey }))),
+        )
     }, [queryClient, queryKeys, runAction])
 
     const status = useLiveQuery<LiveRevisionSnapshot>({

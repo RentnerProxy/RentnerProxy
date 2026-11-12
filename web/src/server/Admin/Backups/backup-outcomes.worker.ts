@@ -13,7 +13,10 @@ export function createBackupAuditWorker(dependencies: BackupAuditWorkerDependenc
         if (!started || stopped || timer) return
         timer = setTimeout(() => {
             timer = null
-            runDetachedTask(() => runOnce().finally(schedule), () => console.error('[backups] Background operation failed'))
+            runDetachedTask(
+                () => runOnce().finally(schedule),
+                () => console.error('[backups] Background operation failed'),
+            )
         }, 15_000)
         timer.unref()
     }
@@ -44,7 +47,10 @@ export function createBackupAuditWorker(dependencies: BackupAuditWorkerDependenc
             if (started || stopped) return
             started = true
             stopped = false
-            runDetachedTask(() => runOnce().finally(schedule), () => console.error('[backups] Background operation failed'))
+            runDetachedTask(
+                () => runOnce().finally(schedule),
+                () => console.error('[backups] Background operation failed'),
+            )
         },
         /** Stop admission and timers, abort ingestion, and await the actual current pass within the five-second drain bound. */
         async stop() {

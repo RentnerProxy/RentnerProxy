@@ -651,9 +651,11 @@ async function measure(
                 }
             })()
             pending.add(task)
-            void task.finally(() => pending.delete(task)).catch(() => {
-                console.error('[isolation] Traffic task failed')
-            })
+            void task
+                .finally(() => pending.delete(task))
+                .catch(() => {
+                    console.error('[isolation] Traffic task failed')
+                })
         }, 1000 / contract.requestsPerSecond)
         const stopTraffic = () => {
             clearInterval(traffic)

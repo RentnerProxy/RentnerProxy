@@ -133,10 +133,7 @@ export function createResourceAdmission(
                 running,
                 pending: pending.length,
                 oldestPendingAgeMs: oldest
-                    ? Math.min(
-                          Number.MAX_SAFE_INTEGER,
-                          Math.max(0, Math.floor(now() - oldest.at)),
-                      )
+                    ? Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.floor(now() - oldest.at)))
                     : 0,
                 ...counters,
             }

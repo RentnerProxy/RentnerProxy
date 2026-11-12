@@ -301,26 +301,30 @@ export default function useDockerDiscoveryLogic({
             disable: () => {
                 const current = latest()
                 if (!locked && current)
-                    runAction(() => run(
-                        () =>
-                            api.change({
-                                expectedRevision: current.management.revision,
-                                action: 'disable',
-                            }),
-                        'admin.dockerDiscovery.messages.disabled',
-                    ))
+                    runAction(() =>
+                        run(
+                            () =>
+                                api.change({
+                                    expectedRevision: current.management.revision,
+                                    action: 'disable',
+                                }),
+                            'admin.dockerDiscovery.messages.disabled',
+                        ),
+                    )
             },
             retry: () => {
                 const current = latest()
                 if (!locked && current)
-                    runAction(() => run(
-                        () =>
-                            api.change({
-                                expectedRevision: current.management.revision,
-                                action: 'retry',
-                            }),
-                        'admin.dockerDiscovery.messages.retrying',
-                    ))
+                    runAction(() =>
+                        run(
+                            () =>
+                                api.change({
+                                    expectedRevision: current.management.revision,
+                                    action: 'retry',
+                                }),
+                            'admin.dockerDiscovery.messages.retrying',
+                        ),
+                    )
             },
         },
     }

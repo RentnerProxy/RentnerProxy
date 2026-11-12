@@ -173,7 +173,8 @@ export default function useQuickSearchLogic({
             if (attempt.current === selection) {
                 setUnavailableScope(scope)
                 setOpeningScope(null)
-                if (source) runAction(() => queries[QUICK_SEARCH_CATEGORIES.indexOf(source)]?.refetch())
+                if (source)
+                    runAction(() => queries[QUICK_SEARCH_CATEGORIES.indexOf(source)]?.refetch())
             }
         }
     }

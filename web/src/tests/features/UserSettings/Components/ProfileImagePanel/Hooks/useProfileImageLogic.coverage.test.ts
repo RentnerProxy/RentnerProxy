@@ -14,7 +14,9 @@ await mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
     default: () => ({ t: (key: string) => key }),
 }))
 await mock.module('@rentnerkev/toasts', () => ({ toast: { success, error } }))
-await mock.module('@/features/UserSettings/middleware.ts', () => ({ updateProfileImageHandler: save }))
+await mock.module('@/features/UserSettings/middleware.ts', () => ({
+    updateProfileImageHandler: save,
+}))
 await mock.module('@/lib/UserSettings/profileImage.ts', () => ({
     createProfileImageSource: open,
     createCroppedProfileImageDataUrl: crop,

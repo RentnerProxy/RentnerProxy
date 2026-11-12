@@ -5,7 +5,9 @@ const accept = mock(async (_input: unknown) => ({ success: true, message: 'accep
 const navigate = mock(async (_options: unknown) => {})
 const invalidate = mock(async () => {})
 const error = mock(() => {})
-await mock.module('@/features/Auth/AcceptInvite/middleware.ts', () => ({ acceptInviteHandler: accept }))
+await mock.module('@/features/Auth/AcceptInvite/middleware.ts', () => ({
+    acceptInviteHandler: accept,
+}))
 await mock.module('@/shared/Auth/Hooks/useFragmentToken.ts', () => ({
     default: () => 'invite-fixture-token',
 }))

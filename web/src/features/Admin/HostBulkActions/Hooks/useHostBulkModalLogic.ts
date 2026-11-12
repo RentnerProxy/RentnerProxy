@@ -67,9 +67,9 @@ export default function useHostBulkModalLogic(props: BulkHostModalProps): BulkHo
         setResult(null)
     }
     const defaultValues: BulkHostFormValues = {
-            type: types[0] ?? 'enable',
-            tagIds: [],
-            assignmentId: '',
+        type: types[0] ?? 'enable',
+        tagIds: [],
+        assignmentId: '',
     }
     const form = useForm({ defaultValues })
     const values = useStore(form.store, (state) => state.values)

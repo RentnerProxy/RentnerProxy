@@ -3,7 +3,9 @@ import { PERMISSIONS } from '@/config/permissions.config.ts'
 import { createMiddlewareHarness } from '@/tests/Helpers/middlewareCoverage.ts'
 
 const boundary = await createMiddlewareHarness()
-await boundary.mockServices('@/server/Auth/Account/account.service.ts', ['changeCurrentPasswordService'])
+await boundary.mockServices('@/server/Auth/Account/account.service.ts', [
+    'changeCurrentPasswordService',
+])
 await boundary.mockServices('@/server/Auth/Account/profile-image.service.ts', [
     'getProfileImageAssetService',
     'updateCurrentProfileImageService',

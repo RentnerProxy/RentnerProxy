@@ -19,7 +19,11 @@ export async function createMiddlewareHarness() {
             if (failures.has(name)) throw failures.get(name)
             return values.get(name)
         }
-    const mockServices = async (path: string, names: string[], exports: Record<string, unknown> = {}) => {
+    const mockServices = async (
+        path: string,
+        names: string[],
+        exports: Record<string, unknown> = {},
+    ) => {
         await mock.module(path, () => ({
             ...Object.fromEntries(names.map((name) => [name, service(name)])),
             ...exports,

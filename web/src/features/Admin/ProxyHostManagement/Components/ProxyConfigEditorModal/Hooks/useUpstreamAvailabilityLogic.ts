@@ -65,8 +65,7 @@ export default function useUpstreamAvailabilityLogic({
             members: (host.upstreamPool?.members ?? []).map((member, index) => ({
                 index,
                 target: formatProxyHostForward(host.forwardScheme, member.host, member.port),
-                state:
-                    fresh && availability !== 'unknown' ? data.members[index]!.state : 'unknown',
+                state: fresh && availability !== 'unknown' ? data.members[index]!.state : 'unknown',
             })),
         },
     }

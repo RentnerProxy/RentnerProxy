@@ -151,12 +151,12 @@ export default function useAccessPolicyFormModalLogic({
                                     },
                       }
             if (mode === 'create') {
-                return (await createAccessPolicyHandler({ data }))
+                return await createAccessPolicyHandler({ data })
             }
             if (!policy) throw new Error('admin.accessPolicies.errors.policyNotFound')
-            return (await updateAccessPolicyHandler({
+            return await updateAccessPolicyHandler({
                 data: { ...data, accessPolicyId: policy.id },
-            }))
+            })
         },
         onSuccess: async (result) => {
             if (!result.success) {

@@ -251,6 +251,9 @@ export async function changeDiscoveryService(input: DiscoveryAction) {
             return { revision: registry.revision }
         }),
     )
-    runDetachedTask(() => dockerDiscoveryWorker.trigger(), () => console.error('[docker-discovery] Background operation failed'))
+    runDetachedTask(
+        () => dockerDiscoveryWorker.trigger(),
+        () => console.error('[docker-discovery] Background operation failed'),
+    )
     return acknowledgment
 }

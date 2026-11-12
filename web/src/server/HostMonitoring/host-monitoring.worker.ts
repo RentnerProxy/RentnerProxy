@@ -115,7 +115,10 @@ export function createHostMonitoringWorker<Claim>(
         cancelTimer = setTimer(() => {
             cancelTimer = null
             schedule()
-            runDetachedTask(() => runOnce(), () => console.error('[host-monitoring] Background operation failed'))
+            runDetachedTask(
+                () => runOnce(),
+                () => console.error('[host-monitoring] Background operation failed'),
+            )
         }, pollDelayMs)
     }
 
@@ -233,7 +236,10 @@ export function createHostMonitoringWorker<Claim>(
                 schedule()
             })
             schedule()
-            runDetachedTask(() => runOnce(), () => console.error('[host-monitoring] Background operation failed'))
+            runDetachedTask(
+                () => runOnce(),
+                () => console.error('[host-monitoring] Background operation failed'),
+            )
         },
         /** Stops new work and waits for admission, retention, probes and late-lease cleanup. */
         stop(): Promise<void> {

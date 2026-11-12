@@ -64,9 +64,11 @@ export default function useOidcConnectionsLogic(
         nativeNavigation.current = null
         setIsNavigating(false)
         setAction(null)
-        runAction(() => queryClient.invalidateQueries({
-            queryKey: ['auth', 'account', 'oidc-connections', userId],
-        }))
+        runAction(() =>
+            queryClient.invalidateQueries({
+                queryKey: ['auth', 'account', 'oidc-connections', userId],
+            }),
+        )
     })
 
     useEffect(() => {
@@ -87,7 +89,9 @@ export default function useOidcConnectionsLogic(
         toast[linked ? 'success' : 'error'](t(key), {
             title: t(linked ? 'toast.titles.success' : 'toast.titles.error'),
         })
-        runAction(() => navigate({ to: '/account', search: { section: 'linked-accounts' }, replace: true }))
+        runAction(() =>
+            navigate({ to: '/account', search: { section: 'linked-accounts' }, replace: true }),
+        )
     })
 
     const callbackReady =
@@ -131,7 +135,9 @@ export default function useOidcConnectionsLogic(
             query.error.code === 'authentication_required'
         ) {
             queryClient.clear()
-            runAction(() => router.invalidate().then(() => navigate({ to: '/login', replace: true })))
+            runAction(() =>
+                router.invalidate().then(() => navigate({ to: '/login', replace: true })),
+            )
         }
     }, [query.error, queryClient, router, navigate, runAction])
 
@@ -157,9 +163,11 @@ export default function useOidcConnectionsLogic(
         setIsNavigating(false)
         const cancelledGeneration = generation.current
         lock.current = true
-        runAction(() => query.refetch().finally(() => {
-            if (generation.current === cancelledGeneration) lock.current = false
-        }))
+        runAction(() =>
+            query.refetch().finally(() => {
+                if (generation.current === cancelledGeneration) lock.current = false
+            }),
+        )
         cancellationLock.current = false
     }
 

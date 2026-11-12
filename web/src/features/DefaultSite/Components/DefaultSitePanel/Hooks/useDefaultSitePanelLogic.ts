@@ -84,7 +84,9 @@ export function useDefaultSitePanelLogic(canUpdate: boolean) {
                 const result = await mutation.mutateAsync(settings.data)
                 if (!result.success) {
                     if (result.message === 'defaultSite.errors.conflict')
-                        runAction(() => queryClient.invalidateQueries({ queryKey: ['default-site'] }))
+                        runAction(() =>
+                            queryClient.invalidateQueries({ queryKey: ['default-site'] }),
+                        )
                     if (currentGeneration !== saveGeneration.current || !canEdit.current) return
                     toast.error(t(result.message), { title: t('toast.titles.error') })
                     return

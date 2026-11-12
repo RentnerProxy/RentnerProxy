@@ -5,7 +5,9 @@ const reset = mock(async (_input: unknown) => ({ success: true, message: 'reset'
 const navigate = mock(async (_options: unknown) => {})
 const success = mock(() => {})
 const error = mock(() => {})
-await mock.module('@/features/Auth/PasswordReset/middleware.ts', () => ({ resetPasswordHandler: reset }))
+await mock.module('@/features/Auth/PasswordReset/middleware.ts', () => ({
+    resetPasswordHandler: reset,
+}))
 await mock.module('@/shared/Auth/Hooks/useFragmentToken.ts', () => ({
     default: () => 'fragment-fixture-token',
 }))

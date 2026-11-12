@@ -1408,9 +1408,16 @@ export async function runMonitoringB2Appliance(runId: string) {
                         if (path === '/shutdown' && quiesced) {
                             setTimeout(() => {
                                 runDetachedTask(
-                                    () => Promise.all([control.stop(true), nativeUpstream.stop(true), probeBroker.stop(true)]),
+                                    () =>
+                                        Promise.all([
+                                            control.stop(true),
+                                            nativeUpstream.stop(true),
+                                            probeBroker.stop(true),
+                                        ]),
                                     () => {
-                                        console.error('[monitoring] Quiesced listener shutdown failed')
+                                        console.error(
+                                            '[monitoring] Quiesced listener shutdown failed',
+                                        )
                                         process.exitCode = 1
                                     },
                                 )
@@ -1515,13 +1522,14 @@ export async function runMonitoringB2Appliance(runId: string) {
                             await clear()
                             setTimeout(() => {
                                 runDetachedTask(
-                                    () => Promise.all([
-                                        control.stop(true),
-                                        nativeUpstream.stop(true),
-                                        probeBroker.stop(true),
-                                        database.$client.close(),
-                                        sqlClient.close(),
-                                    ]),
+                                    () =>
+                                        Promise.all([
+                                            control.stop(true),
+                                            nativeUpstream.stop(true),
+                                            probeBroker.stop(true),
+                                            database.$client.close(),
+                                            sqlClient.close(),
+                                        ]),
                                     () => {
                                         console.error('[monitoring] Fixture shutdown failed')
                                         process.exitCode = 1

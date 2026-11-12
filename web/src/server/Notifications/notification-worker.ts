@@ -40,7 +40,10 @@ export function createNotificationWorker(dependencies: NotificationWorkerDepende
         deliveryScheduledAt = at
         deliveryTimer = setTimeout(() => {
             deliveryTimer = null
-            runDetachedTask(() => dispatch(), () => console.error('[notifications] Background operation failed'))
+            runDetachedTask(
+                () => dispatch(),
+                () => console.error('[notifications] Background operation failed'),
+            )
         }, delay)
         deliveryTimer.unref()
     }
@@ -88,7 +91,10 @@ export function createNotificationWorker(dependencies: NotificationWorkerDepende
                 if (!started || stopped) return
                 collectionTimer = setTimeout(() => {
                     collectionTimer = null
-                    runDetachedTask(() => collectOnce(), () => console.error('[notifications] Background operation failed'))
+                    runDetachedTask(
+                        () => collectOnce(),
+                        () => console.error('[notifications] Background operation failed'),
+                    )
                 }, limits.pollIntervalMs)
                 collectionTimer.unref()
             })
@@ -182,8 +188,14 @@ export function createNotificationWorker(dependencies: NotificationWorkerDepende
             stopped = false
             controller = new AbortController()
             unsubscribe = dependencies.subscribe?.(() => scheduleDelivery(0))
-            runDetachedTask(() => collectOnce(), () => console.error('[notifications] Background operation failed'))
-            runDetachedTask(() => dispatch(), () => console.error('[notifications] Background operation failed'))
+            runDetachedTask(
+                () => collectOnce(),
+                () => console.error('[notifications] Background operation failed'),
+            )
+            runDetachedTask(
+                () => dispatch(),
+                () => console.error('[notifications] Background operation failed'),
+            )
         },
         /** Fence all timers and admission, then settle late claims, active transports, and durable acknowledgements before confirming quiescence. */
         stop(): Promise<void> {

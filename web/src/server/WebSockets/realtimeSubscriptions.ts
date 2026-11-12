@@ -186,7 +186,8 @@ export function createSubscriptionManager(options: SubscriptionManagerOptions) {
 
     function sampleAll(): void {
         for (const connection of connections) {
-            for (const subscription of connection.subscriptions.values()) requestSample(subscription)
+            for (const subscription of connection.subscriptions.values())
+                requestSample(subscription)
         }
     }
 

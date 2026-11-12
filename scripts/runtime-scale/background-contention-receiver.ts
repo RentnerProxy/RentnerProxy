@@ -34,11 +34,9 @@ export async function startContentionReceivers(
     const stop = () => {
         if (stopping) return stopping
         clearTimeout(timer)
-        stopping = Promise.all([
-            discovery.stop(),
-            control.stop(true),
-            notifications.close(),
-        ]).then(() => undefined)
+        stopping = Promise.all([discovery.stop(), control.stop(true), notifications.close()]).then(
+            () => undefined,
+        )
         return stopping
     }
     const control = Bun.serve({
@@ -58,7 +56,9 @@ export async function startContentionReceivers(
             }
             if (request.method === 'POST' && path === '/stop') {
                 setTimeout(() => {
-                    runDetachedTask(stop, () => console.error('[contention] Receiver shutdown failed'))
+                    runDetachedTask(stop, () =>
+                        console.error('[contention] Receiver shutdown failed'),
+                    )
                 }, 50)
                 return new Response(null, { status: 204 })
             }

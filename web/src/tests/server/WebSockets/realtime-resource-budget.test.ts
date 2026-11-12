@@ -42,7 +42,9 @@ test('a detached snapshot failure closes its connection and releases admission',
     const manager = createSubscriptionManager({
         snapshotTimeoutMs: 1_000,
         maxPayloadBytes: 65_536,
-        readSnapshot: async () => { throw new Error('private transport details') },
+        readSnapshot: async () => {
+            throw new Error('private transport details')
+        },
         closeUnavailable: (_connection, status) => closed.resolve(status),
         closeUnauthorized: () => {},
         closeBackpressured: () => {},
