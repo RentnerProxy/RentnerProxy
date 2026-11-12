@@ -709,20 +709,38 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
         const fixtureNames = [
             'reliability-fixture.js',
             ...(options.backgroundTelemetry
-                ? ['background-contention-receiver.js', 'background-contention-web.js', 'background-capture-read.js']
+                ? [
+                      'background-contention-receiver.js',
+                      'background-contention-web.js',
+                      'background-capture-read.js',
+                  ]
                 : []),
         ]
-        const expectedArtifacts = await Promise.all(fixtureNames.map(async (name) => {
-            const path = join(temp, name)
-            const sha256 = createHash('sha256').update(await readFile(path)).digest('hex')
-            await docker(['cp', path, container + ':/opt/rentnerproxy/web/' + name])
-            return { name, sha256 }
-        }))
-        const installedArtifacts = JSON.parse(await docker([
-            'exec', container, 'bun', '--no-env-file', '-e',
-            `console.log(JSON.stringify(await Promise.all(${JSON.stringify(fixtureNames)}.map(async name=>({name,sha256:new Bun.CryptoHasher('sha256').update(await Bun.file('/opt/rentnerproxy/web/'+name).arrayBuffer()).digest('hex')})))))`,
-        ])) as unknown
-        assert.deepEqual(installedArtifacts, expectedArtifacts, 'Restore reinstalls the exact run-owned fixture and support probes')
+        const expectedArtifacts = await Promise.all(
+            fixtureNames.map(async (name) => {
+                const path = join(temp, name)
+                const sha256 = createHash('sha256')
+                    .update(await readFile(path))
+                    .digest('hex')
+                await docker(['cp', path, container + ':/opt/rentnerproxy/web/' + name])
+                return { name, sha256 }
+            }),
+        )
+        const installedArtifacts = JSON.parse(
+            await docker([
+                'exec',
+                container,
+                'bun',
+                '--no-env-file',
+                '-e',
+                `console.log(JSON.stringify(await Promise.all(${JSON.stringify(fixtureNames)}.map(async name=>({name,sha256:new Bun.CryptoHasher('sha256').update(await Bun.file('/opt/rentnerproxy/web/'+name).arrayBuffer()).digest('hex')})))))`,
+            ]),
+        ) as unknown
+        assert.deepEqual(
+            installedArtifacts,
+            expectedArtifacts,
+            'Restore reinstalls the exact run-owned fixture and support probes',
+        )
         await docker(['cp', statePath, container + ':/tmp/rentnerproxy-reliability-fixture.json'])
         const fixtureStatePath = '/tmp/rentnerproxy-reliability-fixture.json'
         // The maintenance fixture runs as root; match its original private file ownership.

@@ -89,11 +89,15 @@ const schema = z.object({
             .max(1024),
         admittedIds: z.array(z.string()).max(1024),
     }),
-    recovery: z.array(z.object({
-        component: z.enum(['web', 'controller', 'postgres-unavailable']),
-        elapsedMs: z.number().finite().nonnegative(),
-        passed: z.literal(true),
-    })).length(3),
+    recovery: z
+        .array(
+            z.object({
+                component: z.enum(['web', 'controller', 'postgres-unavailable']),
+                elapsedMs: z.number().finite().nonnegative(),
+                passed: z.literal(true),
+            }),
+        )
+        .length(3),
     extendedRecovery: backgroundExtendedRecoverySchema,
     summary: z.object({ passed: z.literal(true), capacity: z.literal('insufficient') }),
     reportSha256: digest,
