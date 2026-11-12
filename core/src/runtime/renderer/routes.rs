@@ -42,7 +42,7 @@ pub(super) fn http_routes(
         )?);
     }
     for host in &config.redirect_hosts {
-        routes.push(redirect_route(host)?);
+        routes.push(redirect_route(host));
     }
     routes.push(super::default_site::default_site_route(
         &config.default_site,
@@ -311,8 +311,8 @@ fn trusted_forwarded_matcher(domains: &[String], trusted_proxy_cidrs: &[String])
     }
 }
 
-pub(super) fn redirect_route(host: &RedirectHost) -> Result<Route, RenderError> {
-    Ok(Route {
+pub(super) fn redirect_route(host: &RedirectHost) -> Route {
+    Route {
         matchers: vec![MatcherSet::host(&host.domains)],
         handle: vec![Handler::StaticResponse(StaticResponse {
             body: None,
@@ -320,7 +320,7 @@ pub(super) fn redirect_route(host: &RedirectHost) -> Result<Route, RenderError> 
             headers: Some(location_headers(redirect_location(host))),
         })],
         terminal: true,
-    })
+    }
 }
 
 pub(super) fn not_found_route() -> Route {

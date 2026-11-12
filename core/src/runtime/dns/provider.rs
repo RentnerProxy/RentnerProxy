@@ -243,13 +243,10 @@ impl DnsProvider {
         let mut deleted_ids = BTreeSet::new();
         let mut failed = false;
         for intent in intents {
-            let records = match self.find_owned_records(intent).await {
-                Ok(records) => records,
-                Err(_) => {
+            let Ok(records) = self.find_owned_records(intent).await else {
                     failed = true;
                     continue;
-                }
-            };
+                };
             for record in records {
                 if !deleted_ids.insert(record.id.clone()) {
                     continue;

@@ -2,7 +2,7 @@ use super::CERTIFICATE_INDEX_FILE;
 use super::cancellation::{delegated_cancellation_pending, settle_delegated_cancellation};
 use super::material_files::public_metadata_with_candidate;
 use super::operations;
-use super::persistence::persist_index;
+use super::persistence::{persist_index, report_recovery_result};
 use super::recovery::{persist_candidate_manifest, reconcile_candidate_manifests};
 use super::scheduling::{account_retry_is_blocking, max_retry_deadline, retry_is_blocking};
 use super::validation::{index_is_valid, read_regular_private_file, utc_now};
@@ -190,22 +190,22 @@ impl CertificateStore {
             )?;
         }
         for (operation_id, certificate_id, error_code) in recovery_events {
-            let _ = operations::append_event(
+            report_recovery_result(operations::append_event(
                 &mut index,
                 &operation_id,
                 &certificate_id,
                 CertificateEventKind::Failed,
                 CertificateOperationStage::Failed,
                 error_code.clone(),
-            );
-            let _ = operations::append_event(
+            ), "append_event");
+            report_recovery_result(operations::append_event(
                 &mut index,
                 &operation_id,
                 &certificate_id,
                 CertificateEventKind::RetryScheduled,
                 CertificateOperationStage::RetryScheduled,
                 error_code,
-            );
+            ), "append_event");
         }
         if generated_store_id || recovered_interrupted_operation || recovered_candidate_state {
             persist_index(&certificates_dir, &index)?;
@@ -296,7 +296,7 @@ impl CertificateStore {
     ) -> Result<CertificateEventPage, CertificateError> {
         self.ensure_ready().await?;
         let index = self.index.lock().await;
-        operations::events_page(&index, after, limit)
+        Ok(operations::events_page(&index, after, limit))
     }
 
     pub(crate) async fn record_operation_stage(
@@ -349,7 +349,7 @@ impl CertificateStore {
         {
             index
                 .certificates
-                .insert(id.to_owned(), previous_active.clone());
+                .insert(id.to_owned(), previous_active);
             if let Some(previous_candidate) = previous_candidate.as_ref() {
                 index
                     .pending_candidates
@@ -365,7 +365,7 @@ impl CertificateStore {
                 index
                     .pending_candidates
                     .insert(id.to_owned(), previous_candidate.clone());
-                let _ = persist_candidate_manifest(&certificates_dir, id, previous_candidate);
+                report_recovery_result(persist_candidate_manifest(&certificates_dir, id, previous_candidate), "persist_candidate_manifest");
             }
             index.events = previous_events;
             index.event_sequence = previous_sequence;

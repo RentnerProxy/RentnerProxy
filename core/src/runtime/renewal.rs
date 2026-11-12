@@ -13,7 +13,7 @@ static PERMISSION_RECOVERY: tokio::sync::Semaphore = tokio::sync::Semaphore::con
 
 /// Distinguish admitted work from idle/busy admission; only actual certificate errors degrade the scan.
 fn certificate_work_outcome<T>(
-    result: Result<Option<T>, certificates::CertificateError>,
+    result: &Result<Option<T>, certificates::CertificateError>,
 ) -> Outcome {
     match result {
         Ok(Some(_)) => Outcome::Success,
@@ -144,7 +144,7 @@ impl ProxyRuntime {
                 self.start_scheduled_acme_renewal(certificate.id, challenges.clone())
                     .await
             };
-            match certificate_work_outcome(result.map(Some)) {
+            match certificate_work_outcome(&result.map(Some)) {
                 Outcome::Success => admitted += 1,
                 Outcome::Failure => failed = true,
                 _ => {}
@@ -200,7 +200,7 @@ impl ProxyRuntime {
             if self.stopping.load(Ordering::SeqCst) {
                 break;
             }
-            match certificate_work_outcome(self.retry_certificate_candidate(&id, true).await) {
+            match certificate_work_outcome(&self.retry_certificate_candidate(&id, true).await) {
                 Outcome::Success if !matches!(outcome, Outcome::Failure) => {
                     outcome = Outcome::Success
                 }

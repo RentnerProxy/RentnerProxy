@@ -212,11 +212,7 @@ impl ProxyRuntime {
                 {
                     return Outcome::Failure;
                 }
-                let saved = match acme_store!(self; [id]; store => store.load_manual_dns_order(&id))
-                {
-                    Ok(saved) => saved,
-                    Err(_) => return Outcome::Failure,
-                };
+                let Ok(saved) = acme_store!(self; [id]; store => store.load_manual_dns_order(&id)) else { return Outcome::Failure };
                 if saved
                     .as_ref()
                     .is_some_and(|(_, order)| order.operation_id != operation_id)

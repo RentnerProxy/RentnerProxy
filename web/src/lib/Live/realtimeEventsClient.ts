@@ -31,9 +31,27 @@ function getRealtimeUrl(): URL {
     return url
 }
 
+function notifyListenerStatus(listener: Listener, status: LiveStatus): void {
+    if (!listener.onStatus) return
+    runDetachedTask(
+        () => listener.onStatus?.(status),
+        () => console.warn('[realtime] Status listener failed'),
+    )
+}
+
 function notifyStatus(status: LiveStatus): void {
     connectionStatus = status
-    for (const listener of listeners.values()) listener.onStatus?.(status)
+    for (const listener of listeners.values()) notifyListenerStatus(listener, status)
+}
+
+function notifyLifecycleListeners(event: 'onResume' | 'onUnauthorized'): void {
+    for (const listener of listeners.values()) {
+        if (!listener[event]) continue
+        runDetachedTask(
+            () => listener[event]?.(),
+            () => console.warn('[realtime] Lifecycle listener failed'),
+        )
+    }
 }
 
 function notifyData(event: SnapshotEvent): void {
@@ -110,7 +128,7 @@ function handleUnauthorized(): void {
     shouldReconnect = false
     clearReconnectTimeout()
     notifyStatus('disconnected')
-    for (const listener of listeners.values()) listener.onUnauthorized?.()
+    notifyLifecycleListeners('onUnauthorized')
     closeCurrentWebSocket()
 }
 
@@ -129,7 +147,7 @@ function connect(): void {
             reconnectDelay = MIN_RECONNECT_DELAY_MS
             notifyStatus('connected')
             sendAllSubscriptions()
-            if (resuming) for (const listener of listeners.values()) listener.onResume?.()
+            if (resuming) notifyLifecycleListeners('onResume')
         })
         current.addEventListener('message', (event) => {
             if (websocket !== current) return
@@ -182,7 +200,7 @@ function resume(): void {
     }
     const wasSuspended = isPageSuspended
     isPageSuspended = false
-    if (wasSuspended) for (const listener of listeners.values()) listener.onResume?.()
+    if (wasSuspended) notifyLifecycleListeners('onResume')
     reconnectDelay = MIN_RECONNECT_DELAY_MS
     if (listeners.size > 0) connect()
 }
@@ -229,7 +247,7 @@ export function subscribeToRealtimeEvents<T>({
     }
     listeners.set(listener.id, listener)
     subscription.listeners.add(listener)
-    onStatus?.(isPageSuspended ? 'inactive' : connectionStatus)
+    notifyListenerStatus(listener, isPageSuspended ? 'inactive' : connectionStatus)
     shouldReconnect = true
     if (websocket?.readyState === WebSocket.OPEN && subscription.listeners.size === 1) {
         sendSubscription(subscription)

@@ -44,9 +44,9 @@ pub(in crate::runtime) fn resolver_for_environment(
 ) -> Result<TokioResolver, CertificateError> {
     let override_addr = configured_test_address(
         environment,
-        read_optional_env(DNS_TEST_ADDR)?,
-        read_optional_env(ACME_TEST_DIRECTORY)?,
-        read_optional_env(ACME_TEST_ROOT)?,
+        read_optional_env(DNS_TEST_ADDR)?.as_deref(),
+        read_optional_env(ACME_TEST_DIRECTORY)?.as_deref(),
+        read_optional_env(ACME_TEST_ROOT)?.as_deref(),
     )?;
     resolver(override_addr)
 }
@@ -291,9 +291,9 @@ fn match_values<'a>(
 
 fn configured_test_address(
     environment: CertificateEnvironment,
-    address: Option<String>,
-    directory: Option<String>,
-    root: Option<String>,
+    address: Option<&str>,
+    directory: Option<&str>,
+    root: Option<&str>,
 ) -> Result<Option<SocketAddr>, CertificateError> {
     if environment == CertificateEnvironment::Production
         && (address.is_some() || directory.is_some() || root.is_some())
@@ -303,7 +303,7 @@ fn configured_test_address(
     let Some(address) = address else {
         return Ok(None);
     };
-    let valid_directory = directory.as_deref().is_some_and(|value| {
+    let valid_directory = directory.is_some_and(|value| {
         value == value.trim()
             && value.len() <= 2048
             && reqwest::Url::parse(value).is_ok_and(|url| {
@@ -315,7 +315,7 @@ fn configured_test_address(
                     && url.fragment().is_none()
             })
     });
-    let valid_root = root.as_deref().is_some_and(|value| {
+    let valid_root = root.is_some_and(|value| {
         !value.trim().is_empty() && value.len() <= 4096 && std::path::Path::new(value).is_absolute()
     });
     let parsed = address

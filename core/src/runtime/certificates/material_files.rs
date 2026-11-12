@@ -1,4 +1,5 @@
 use super::scheduling::next_renewal_at;
+use super::persistence::report_recovery_result;
 use super::validation::{
     format_timestamp, is_certificate_domain, read_regular_private_file, truncate,
     write_private_file,
@@ -59,7 +60,12 @@ pub(super) fn ensure_material_version(
         Ok(())
     })();
     if result.is_err() {
-        let _ = versions_dir.remove_dir_tree(&staging);
+        report_recovery_result(
+            versions_dir
+                .remove_dir_tree(&staging)
+                .map_err(|_| CertificateError::StoreUnavailable),
+            "remove_staged_material",
+        );
     }
     result
 }

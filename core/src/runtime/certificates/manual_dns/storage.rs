@@ -365,11 +365,10 @@ impl CertificateStore {
                     .checked_add(time::Duration::seconds(60))
                     .and_then(|value| value.format(&Rfc3339).ok())
                     .ok_or(CertificateError::StoreUnavailable)?;
-                entry.next_attempt_at = super::super::scheduling::max_retry_deadline_string(
+                entry.next_attempt_at = Some(super::super::scheduling::max_retry_deadline_string(
                     entry.next_attempt_at.as_deref(),
                     &deadline,
-                )
-                .or(Some(deadline));
+                ));
                 let order = order_mut(entry)?;
                 order.last_error_code = Some(error.code().to_owned());
                 if order.phase == ManualDnsPhase::CheckingDns && !order.records.is_empty() {

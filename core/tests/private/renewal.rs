@@ -4,19 +4,19 @@ use super::*;
 fn busy_certificate_work_is_idle_but_real_failures_are_retained() {
     use certificates::CertificateError;
     assert!(matches!(
-        certificate_work_outcome::<()>(Err(CertificateError::OperationInProgress)),
+        certificate_work_outcome::<()>(&Err(CertificateError::OperationInProgress)),
         Outcome::Idle
     ));
     assert!(matches!(
-        certificate_work_outcome::<()>(Err(CertificateError::StoreUnavailable)),
+        certificate_work_outcome::<()>(&Err(CertificateError::StoreUnavailable)),
         Outcome::Failure
     ));
     assert!(matches!(
-        certificate_work_outcome::<()>(Ok(None)),
+        certificate_work_outcome::<()>(&Ok(None)),
         Outcome::Idle
     ));
     assert!(matches!(
-        certificate_work_outcome(Ok(Some(()))),
+        certificate_work_outcome(&Ok(Some(()))),
         Outcome::Success
     ));
 }

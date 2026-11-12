@@ -52,13 +52,9 @@ pub(in crate::server) async fn save(
     state: AppState,
     body: Result<Bytes, BytesRejection>,
 ) -> Response {
-    let request = match body
+    let Some(request) = body
         .ok()
-        .and_then(|body| serde_json::from_slice::<Save>(&body).ok())
-    {
-        Some(value) => value,
-        None => return error(Error::InvalidInput),
-    };
+        .and_then(|body| serde_json::from_slice::<Save>(&body).ok()) else { return error(Error::InvalidInput) };
     match state.runtime.docker_discovery.save(request).await {
         Ok(value) => no_store_json(value),
         Err(e) => error(e),
