@@ -21,7 +21,8 @@ const root = fileURLToPath(new URL('../../../../../', import.meta.url))
 function foreignUidEnvironment() {
     const environment = { ...process.env }
     delete environment.RENTNERPROXY_COVERAGE_MANIFEST
-    if (environment.BUN_OPTIONS === '--preload=' + join(root, 'scripts/coverage/child-preload.ts')) delete environment.BUN_OPTIONS
+    if (environment.BUN_OPTIONS === '--preload=' + join(root, 'scripts/coverage/child-preload.ts'))
+        delete environment.BUN_OPTIONS
     return environment
 }
 
@@ -35,7 +36,9 @@ test('foreign-UID fixture environment removes only root-private coverage state a
         expect(environment.RENTNERPROXY_COVERAGE_MANIFEST).toBeUndefined()
         expect(environment.BUN_OPTIONS).toBeUndefined()
         expect(process.env.RENTNERPROXY_COVERAGE_MANIFEST).toBe('/root-private/manifest.json')
-        expect(process.env.BUN_OPTIONS).toBe('--preload=' + join(root, 'scripts/coverage/child-preload.ts'))
+        expect(process.env.BUN_OPTIONS).toBe(
+            '--preload=' + join(root, 'scripts/coverage/child-preload.ts'),
+        )
         process.env.BUN_OPTIONS = '--smol'
         expect(foreignUidEnvironment().BUN_OPTIONS).toBe('--smol')
     } finally {
@@ -100,7 +103,13 @@ async function fixture(asWeb = true, cleanupFails = true) {
             runId,
             cleanupFails ? 'remove-fails' : 'remove-ok',
         ],
-        { cwd: root, stdin: 'pipe', stdout: 'pipe', stderr: 'pipe', ...(asWeb ? { env: foreignUidEnvironment() } : {}) },
+        {
+            cwd: root,
+            stdin: 'pipe',
+            stdout: 'pipe',
+            stderr: 'pipe',
+            ...(asWeb ? { env: foreignUidEnvironment() } : {}),
+        },
     )
     const stream = child.stdout.getReader()
     const errors = (async () => {
@@ -128,7 +137,11 @@ async function fixture(asWeb = true, cleanupFails = true) {
         try {
             while (!buffered.includes('\n')) {
                 const chunk = await stream.read()
-                if (chunk.done) throw new Error('Capture writer exited before its acknowledgement: ' + JSON.stringify({ exitCode: await child.exited, stderr: await errors }))
+                if (chunk.done)
+                    throw new Error(
+                        'Capture writer exited before its acknowledgement: ' +
+                            JSON.stringify({ exitCode: await child.exited, stderr: await errors }),
+                    )
                 buffered += new TextDecoder().decode(chunk.value)
             }
             const end = buffered.indexOf('\n'),
