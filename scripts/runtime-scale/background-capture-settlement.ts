@@ -14,7 +14,7 @@ function coversObservedAttempts(
         capture.sourceSha !== expected.sourceSha ||
         capture.overflowed ||
         capture.clockRegressed ||
-        capture.expired
+        capture.expired || capture.publication.fd === null || capture.publication.generation === 0
     )
         return false
     return snapshot.observations.every((observation) => {

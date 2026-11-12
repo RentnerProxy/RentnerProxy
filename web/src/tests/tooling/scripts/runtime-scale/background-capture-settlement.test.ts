@@ -28,7 +28,8 @@ function snapshot(complete = false) {
             },
         ],
         schedulerCapture: {
-            version: 1,
+            version: 2,
+            publication: { generation: 1, fd: 123 },
             ...expected,
             pid: 42,
             processStartTicks: '123',

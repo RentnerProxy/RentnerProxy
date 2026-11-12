@@ -116,6 +116,21 @@ test('single-flight capture retains late cancellation through actual writer sett
     expect(() => unavailable.record('started', claim)).not.toThrow()
 })
 
+test('capture lifetime revokes the published lease even without another record', async () => {
+    let held = false
+    const capture = createHostMonitoringCapture({ ...identity, lifetimeMs: 10, now: () => 1000,
+        invalidate: () => { held = false },
+        write: async (_value, isCurrent) => { held = isCurrent() },
+    })
+    capture.record('admitted', claim)
+    await capture.flush()
+    expect(held).toBe(true)
+    await Bun.sleep(30)
+    expect(held).toBe(false)
+    await capture.flush()
+    expect(held).toBe(false)
+})
+
 test('production adapter observes returned claims before starts and flushes after actual worker stop', async () => {
     const output = await runBunScript(
         `

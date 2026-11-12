@@ -27,6 +27,8 @@ test('fixed readonly command has independent nonzero remote and client bounds an
         '/usr/bin/timeout',
         '--signal=KILL',
         '1.000s',
+        'gosu',
+        'rentnerproxy-web',
         'bun',
         '--no-env-file',
         '/opt/rentnerproxy/web/background-capture-read.js',

@@ -1,7 +1,43 @@
 import '@tanstack/react-start/server-only'
-import { writeFile, rename, unlink } from 'node:fs/promises'
-import { readFileSync } from 'node:fs'
+import { readFileSync, openSync, closeSync, renameSync, unlinkSync, writeFile } from 'node:fs'
 import { createHostMonitoringCapture } from './host-monitoring.capture.ts'
+import type { HostMonitoringCapture } from './host-monitoring.capture.ts'
+
+function writeDescriptor(fd: number, contents: string) {
+    return new Promise<void>((resolve, reject) => writeFile(fd, contents, (error) => error ? reject(error) : resolve()))
+}
+
+/** Raw descriptors have one closer. Revocation does not depend on a writable directory, unlink, or a successful replacement write. */
+export function createHostMonitoringCapturePublisher(path: string, io: { write?: typeof writeDescriptor; remove?: typeof unlinkSync } = {}) {
+    let publishedFd: number | undefined
+    const invalidate = () => {
+        const fd = publishedFd
+        publishedFd = undefined
+        if (fd !== undefined) closeSync(fd)
+    }
+    return {
+        invalidate,
+        async write(value: HostMonitoringCapture, isCurrent: () => boolean) {
+            const temporary = path + '.' + value.epoch + '.' + value.publication.generation + '.tmp'
+            // O_EXCL creates a fresh immutable candidate inode. No published inode is ever truncated.
+            const fd = openSync(temporary, 'wx', 0o600)
+            let granted = false
+            try {
+                value.publication.fd = fd
+                await (io.write ?? writeDescriptor)(fd, JSON.stringify(value))
+                // No await may separate this generation/terminal/expiry check from rename and lease grant.
+                if (!isCurrent()) return
+                renameSync(temporary, path)
+                publishedFd = fd
+                granted = true
+            } finally {
+                // Concurrent record/expiry only revokes publishedFd. Candidate I/O has settled before its sole close.
+                if (!granted) closeSync(fd)
+                try { (io.remove ?? unlinkSync)(temporary) } catch { /* Namespace cleanup cannot grant or preserve authority. */ }
+            }
+        },
+    }
+}
 
 /** Only the isolated harness opts in; normal operation performs no capture I/O and accepts no user-selected path. */
 function captureFromEnvironment() {
@@ -31,15 +67,7 @@ function captureFromEnvironment() {
         sourceSha,
         pid: process.pid,
         processStartTicks,
-        write: async (value) => {
-            const temporary = path + '.' + process.pid + '.tmp'
-            try {
-                await writeFile(temporary, JSON.stringify(value), { mode: 0o600, flag: 'wx' })
-                await rename(temporary, path)
-            } finally {
-                await unlink(temporary).catch(() => undefined)
-            }
-        },
+        ...createHostMonitoringCapturePublisher(path),
     })
 }
 export const hostMonitoringCapture = captureFromEnvironment()

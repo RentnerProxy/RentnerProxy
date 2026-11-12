@@ -323,6 +323,7 @@ export function backgroundMonitoringReport(
         !!expectedCapture &&
         capture.runId === expectedCapture.runId &&
         capture.sourceSha === expectedCapture.sourceSha &&
+        capture.publication.fd !== null && capture.publication.generation > 0 &&
         !capture.overflowed &&
         !capture.expired &&
         !capture.clockRegressed
@@ -451,6 +452,7 @@ export function backgroundMonitoringReport(
                       pid: capture.pid,
                       processStartTicks: capture.processStartTicks,
                       epoch: capture.epoch,
+                      publication: capture.publication,
                   }
                 : null,
             rejected: !!capture && !captured,

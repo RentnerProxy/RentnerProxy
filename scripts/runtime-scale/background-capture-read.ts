@@ -37,6 +37,8 @@ export function backgroundCaptureReadCommand(
             '/usr/bin/timeout',
             '--signal=KILL',
             (remoteTimeoutMs / 1000).toFixed(3) + 's',
+            'gosu',
+            'rentnerproxy-web',
             'bun',
             '--no-env-file',
             '/opt/rentnerproxy/web/background-capture-read.js',

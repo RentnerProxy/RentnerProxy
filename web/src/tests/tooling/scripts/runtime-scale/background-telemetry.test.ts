@@ -38,7 +38,8 @@ function fixture() {
             code: 'expected_status',
         })),
         schedulerCapture: {
-            version: 1,
+            version: 2,
+            publication: { generation: 1, fd: 123 },
             ...identity,
             pid: 42,
             processStartTicks: '123',
@@ -110,6 +111,7 @@ test('mismatched source/run, overflow and regressed clocks never qualify as sche
         { overflowed: true },
         { expired: true },
         { clockRegressed: true },
+        { publication: { generation: 0, fd: null } },
     ]) {
         const schedulerCapture = hostMonitoringCaptureSchema.parse({
             ...f.snapshot.schedulerCapture,
@@ -129,6 +131,12 @@ test('mismatched source/run, overflow and regressed clocks never qualify as sche
             schedulerCapture: { rejected: true },
         })
     }
+})
+
+test('unleased legacy snapshots cannot satisfy the current publication contract', () => {
+    const capture = fixture().snapshot.schedulerCapture!
+    const { publication: _publication, ...legacy } = capture
+    expect(hostMonitoringCaptureSchema.safeParse({ ...legacy, version: 1 }).success).toBe(false)
 })
 
 test('capture belongs to the same live serving owner on both census brackets, not a fixture child or reused PID', () => {

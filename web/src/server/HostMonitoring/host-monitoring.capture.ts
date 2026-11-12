@@ -4,12 +4,13 @@ import type { HostMonitoringClaim } from './Types/host-monitoring.repository.typ
 
 const timestamp = z.number().finite().nonnegative()
 export const hostMonitoringCaptureSchema = z.strictObject({
-    version: z.literal(1),
+    version: z.literal(2),
     runId: z.string().regex(/^[a-f0-9]{12}$/u),
     sourceSha: z.string().regex(/^[a-f0-9]{40}$/u),
     pid: z.number().int().positive(),
     processStartTicks: z.string().regex(/^\d+$/u),
     epoch: z.uuid(),
+    publication: z.strictObject({ generation: z.number().int().nonnegative().safe(), fd: z.number().int().min(3).max(1_048_575).nullable() }),
     createdAt: timestamp,
     expiresAt: timestamp,
     overflowed: z.boolean(),
@@ -37,7 +38,9 @@ export function createHostMonitoringCapture(options: {
     sourceSha: string
     pid: number
     processStartTicks: string
-    write: (capture: HostMonitoringCapture) => Promise<void>
+    write: (capture: HostMonitoringCapture, isCurrent: () => boolean) => Promise<void>
+    /** Synchronously revoke only the published lease, never an in-flight candidate descriptor. */
+    invalidate?: () => void
     now?: () => number
     monotonic?: () => number
     capacity?: number
@@ -47,12 +50,13 @@ export function createHostMonitoringCapture(options: {
     const monotonic = options.monotonic ?? performance.now.bind(performance)
     const createdAt = now()
     const capture = hostMonitoringCaptureSchema.parse({
-        version: 1,
+        version: 2,
         runId: options.runId,
         sourceSha: options.sourceSha,
         pid: options.pid,
         processStartTicks: options.processStartTicks,
         epoch: randomUUID(),
+        publication: { generation: 0, fd: null },
         createdAt,
         expiresAt: createdAt + Math.min(options.lifetimeMs ?? 600_000, 600_000),
         overflowed: false,
@@ -67,6 +71,13 @@ export function createHostMonitoringCapture(options: {
     let writing: Promise<void> | undefined
     let dirty = false
     let failed = false
+    let generation = 0
+    const expiryTimer = setTimeout(() => {
+        options.invalidate?.()
+        generation++
+        capture.expired = true
+    }, Math.max(1, capture.expiresAt - createdAt))
+    expiryTimer.unref()
     /** One writer and one dirty bit; disk failure stops capture without affecting worker authority. */
     async function flush(): Promise<void> {
         if (timer) clearTimeout(timer)
@@ -79,10 +90,13 @@ export function createHostMonitoringCapture(options: {
         if (!dirty || failed) return
         dirty = false
         const snapshot = structuredClone(capture)
+        const writingGeneration = generation
         writing = options
-            .write(snapshot)
+            .write(snapshot, () => !failed && !dirty && generation === writingGeneration && !capture.expired && !capture.overflowed && !capture.clockRegressed && now() <= capture.expiresAt)
             .catch(() => {
+                options.invalidate?.()
                 failed = true
+                clearTimeout(expiryTimer)
             })
             .finally(() => {
                 writing = undefined
@@ -94,6 +108,10 @@ export function createHostMonitoringCapture(options: {
         kind: HostMonitoringCapture['events'][number]['kind'],
         claim: HostMonitoringClaim,
     ) {
+        // A pending or failed flush must never leave an older readable snapshot authoritative.
+        options.invalidate?.()
+        generation++
+        capture.publication.generation = generation
         if (failed || capture.overflowed || capture.expired) return
         const at = now(),
             monotonicMs = monotonic()
