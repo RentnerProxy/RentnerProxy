@@ -229,7 +229,7 @@ describe('bounded seeded background workload', () => {
             networkAccepted: 100,
             committed: 100,
             schedulerAdmitted: null,
-            status: 'met',
+            status: 'insufficient',
         })
         expect(
             backgroundMonitoringReport(

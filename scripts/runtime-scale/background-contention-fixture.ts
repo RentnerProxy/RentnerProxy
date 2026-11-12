@@ -7,6 +7,7 @@ import { users } from '../../web/src/db/schema.ts'
 import { buildNotificationConfiguration } from '../../web/src/server/Notifications/notification-settings.ts'
 import * as notifications from '../../web/src/server/Notifications/notification-storage.ts'
 import { observeNotificationSignals } from '../../web/src/server/Notifications/incident-engine.ts'
+import { backgroundDeferredNotifications } from './background-notification-identities.ts'
 import { dockerDiscoveryController } from '../../web/src/server/Controller/docker-discovery.server.ts'
 import {
     readDiscoveryRegistry,
@@ -228,8 +229,15 @@ export async function backgroundContentionFixture(context: FixtureContext) {
         return { drained: true }
     }
     assert.equal(context.command.phase, 'background-contention-read')
-    const [runtime, registry, rows] = await Promise.all([
-        database.transaction(notifications.readNotificationRuntime),
+    const [notificationSnapshot, registry, rows] = await Promise.all([
+        database.transaction(
+            async (transaction) => ({
+                runtime: await notifications.readNotificationRuntime(transaction),
+                configuration: await notifications.readNotificationConfiguration(transaction),
+                observedAt: Date.now(),
+            }),
+            { isolationLevel: 'repeatable read', accessMode: 'read only' },
+        ),
         database.transaction(readDiscoveryRegistry),
         database.execute<{
             connections: number
@@ -241,10 +249,20 @@ export async function backgroundContentionFixture(context: FixtureContext) {
             sql`select count(*)::int as connections, count(*) filter (where state = 'active' and pid <> pg_backend_pid())::int as active, count(*) filter (where wait_event_type = 'Lock')::int as "lockWaiters", count(*) filter (where state = 'idle in transaction')::int as "idleTransactions", (select count(*)::int from rentnerproxy.host_check_policies where lease_expires_at > clock_timestamp()) as "monitoringLeases" from pg_stat_activity where datname = current_database()`,
         ),
     ])
+    const { runtime, configuration, observedAt } = notificationSnapshot
     const totals = { pending: 0, inflight: 0, succeeded: 0, failed: 0, cancelled: 0 }
     for (const delivery of runtime.engine.deliveries) totals[delivery.status]++
     return {
-        notification: { ...totals, deferred: runtime.engine.deferredCount },
+        notification: {
+            ...totals,
+            deferred: runtime.engine.deferredCount,
+            deferredIdentities: backgroundDeferredNotifications(
+                runtime.engine,
+                configuration,
+                observedAt,
+            ),
+            deferredObservedAt: observedAt,
+        },
         discovery: {
             revision: registry.revision,
             error: registry.error,

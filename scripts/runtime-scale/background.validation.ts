@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { hostMonitoringCaptureSchema } from '../../web/src/server/HostMonitoring/host-monitoring.capture.ts'
 
 export const backgroundSnapshotSchema = z.strictObject({
     origin: z.number().finite().nonnegative(),
@@ -39,6 +40,7 @@ export const backgroundSnapshotSchema = z.strictObject({
         )
         .max(10000),
     managementReadMs: z.number().finite().nonnegative(),
+    schedulerCapture: hostMonitoringCaptureSchema.nullable().optional(),
 })
 
 export const backgroundReceiptsSchema = z.strictObject({

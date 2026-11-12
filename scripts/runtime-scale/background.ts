@@ -314,8 +314,20 @@ export function backgroundMonitoringReport(
     snapshot: BackgroundSnapshot,
     receipts: BackgroundReceipt[],
     elapsedMs: number,
+    expectedCapture?: { runId: string; sourceSha: string },
 ) {
     const expected = backgroundPolicies(options)
+    const capture = snapshot.schedulerCapture
+    const captured =
+        !!capture &&
+        !!expectedCapture &&
+        capture.runId === expectedCapture.runId &&
+        capture.sourceSha === expectedCapture.sourceSha &&
+        capture.publication.fd !== null &&
+        capture.publication.generation > 0 &&
+        !capture.overflowed &&
+        !capture.expired &&
+        !capture.clockRegressed
     const policies = snapshot.policies.map((policy) => {
         const observations = snapshot.observations.filter((item) => item.policyId === policy.id)
         const network = receipts.filter((item) => item.index === policy.index)
@@ -327,11 +339,47 @@ export function backgroundMonitoringReport(
                   ? 'unexpected_status'
                   : 'expected_status'
         const first = observations[0]
+        const admitted = captured
+            ? capture.events.filter(
+                  (event) =>
+                      event.kind === 'admitted' &&
+                      event.policyId === policy.id &&
+                      event.policyVersion === policy.version &&
+                      event.dueAt === policy.dueAt,
+              )
+            : []
+        const admission = admitted.length === 1 ? admitted[0] : undefined
+        const started = captured
+            ? capture!.events.filter(
+                  (event) =>
+                      event.kind === 'started' &&
+                      event.policyId === policy.id &&
+                      event.policyVersion === policy.version &&
+                      event.dueAt === policy.dueAt,
+              )
+            : []
+        const adapterStart =
+            started.length === 1 && started[0]!.attemptHash === admission?.attemptHash
+                ? started[0]
+                : undefined
+        const validTiming =
+            admission &&
+            adapterStart &&
+            admission.at >= policy.dueAt &&
+            adapterStart.at >= admission.at &&
+            adapterStart.monotonicMs >= admission.monotonicMs
         return {
             id: policy.id,
             index: policy.index,
             expectedCode,
             attempted: 1,
+            schedulerAdmitted: captured ? admitted.length : null,
+            schedulerStarted: captured ? started.length : null,
+            dueToAdmissionMs:
+                admission && admission.at >= policy.dueAt ? admission.at - policy.dueAt : null,
+            admissionToAdapterStartMs: validTiming
+                ? adapterStart.monotonicMs - admission.monotonicMs
+                : null,
             networkAccepted: network.length,
             committed: observations.length,
             correctOutcome:
@@ -350,6 +398,34 @@ export function backgroundMonitoringReport(
         policies.flatMap((policy) => (policy.dueToCommitMs === null ? [] : [policy.dueToCommitMs])),
     )
     const committed = policies.reduce((sum, policy) => sum + policy.committed, 0)
+    const admissions = captured
+        ? policies.reduce((sum, policy) => sum + (policy.schedulerAdmitted ?? 0), 0)
+        : null
+    const queueLag = captured
+        ? backgroundDistribution(
+              policies.flatMap((policy) =>
+                  policy.dueToAdmissionMs === null ? [] : [policy.dueToAdmissionMs],
+              ),
+          )
+        : null
+    const schedulerStartLag = captured
+        ? backgroundDistribution(
+              policies.flatMap((policy) =>
+                  policy.admissionToAdapterStartMs === null
+                      ? []
+                      : [policy.admissionToAdapterStartMs],
+              ),
+          )
+        : null
+    const schedulerComplete =
+        captured &&
+        policies.every(
+            (policy) =>
+                policy.schedulerAdmitted === 1 &&
+                policy.schedulerStarted === 1 &&
+                policy.dueToAdmissionMs !== null &&
+                policy.admissionToAdapterStartMs !== null,
+        )
     const throughput = elapsedMs > 0 ? committed / (elapsedMs / 1000) : null
     const complete =
         policies.length === options.policies &&
@@ -361,25 +437,60 @@ export function backgroundMonitoringReport(
     return {
         policies,
         attempted: options.policies,
-        schedulerAdmitted: null,
-        schedulerAdmissionEvidence:
-            'unavailable; upstream receipts establish network acceptance only',
+        schedulerAdmitted: admissions,
+        schedulerAdmissionEvidence: captured
+            ? 'actual web owner: committed claim returned to scheduler adapter; not the SQL commit instant'
+            : 'unavailable or invalid capture; upstream receipts establish network acceptance only',
+        schedulerCapture: {
+            status: schedulerComplete ? 'complete' : 'insufficient',
+            expectedAttempts: options.policies,
+            capturedAdmissions: admissions,
+            matchedStartedAttempts: schedulerStartLag?.count ?? null,
+            identity: captured
+                ? {
+                      runId: capture.runId,
+                      sourceSha: capture.sourceSha,
+                      pid: capture.pid,
+                      processStartTicks: capture.processStartTicks,
+                      epoch: capture.epoch,
+                      publication: capture.publication,
+                  }
+                : null,
+            rejected: !!capture && !captured,
+            flags: capture
+                ? {
+                      overflowed: capture.overflowed,
+                      expired: capture.expired,
+                      clockRegressed: capture.clockRegressed,
+                  }
+                : null,
+        },
         networkAccepted: receipts.length,
         committed,
         checksPerSecond: throughput,
-        queueLag: null,
-        schedulerStartLag: null,
+        queueLag,
+        schedulerStartLag,
+        timingSemantics: {
+            queueLag:
+                'policy due wall time to actual committed-claim-return observation in web; includes SQL/admission wait, not exact database commit',
+            schedulerStartLag:
+                'same-attempt monotonic committed-claim-return to probe adapter entry; excludes context lookup/controller/native network start',
+            startLag:
+                'policy due wall time to independent controlled upstream HEAD receipt; never scheduler admission',
+            completionLag:
+                'policy due wall time to persisted observation checkedAt; not exact SQL commit visibility',
+        },
         startLag: starts,
         completionLag: completions,
-        status: !complete
-            ? 'unmet'
-            : starts.count < options.policies
-              ? 'insufficient'
-              : starts.p99! > backgroundSlo.dueToNetworkStartP99Ms ||
-                  completions.max! > backgroundSlo.dueToCommitMaxMs ||
-                  throughput === null ||
-                  throughput < backgroundSlo.minimumChecksPerSecond[options.policies]
+        status:
+            !complete ||
+            starts.p99! > backgroundSlo.dueToNetworkStartP99Ms ||
+            completions.max! > backgroundSlo.dueToCommitMaxMs ||
+            throughput === null ||
+            throughput < backgroundSlo.minimumChecksPerSecond[options.policies]
                 ? 'unmet'
-                : 'met',
+                : starts.count < options.policies || !schedulerComplete
+                  ? 'insufficient'
+                  : 'met',
     }
 }

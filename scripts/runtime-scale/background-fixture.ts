@@ -26,6 +26,7 @@ import { backgroundRecoveryFixture } from './background-recovery.ts'
 import { backgroundContentionFixture } from './background-contention-fixture.ts'
 import { runBackgroundDiscovery } from './background-discovery.ts'
 import { runBackgroundNotifications } from './background-notifications.ts'
+import { readBackgroundCapture } from './background-capture.ts'
 import type { BackgroundOptions } from './Types/background.types.ts'
 import {
     TLS_TEST_CA,
@@ -66,6 +67,7 @@ async function snapshot(context: FixtureContext) {
     return backgroundSnapshotSchema.parse({
         origin,
         managementReadMs,
+        schedulerCapture: await readBackgroundCapture(context.command.runId),
         policies: inventory.flatMap((item) => {
             const policy = policies.find((candidate) => candidate.proxyHostId === item.id)
             return policy

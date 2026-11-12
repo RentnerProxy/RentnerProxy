@@ -1,7 +1,7 @@
 // oxlint-disable no-await-in-loop -- Bounded workload observations and fault recovery depend on the preceding durable state.
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { chmod, mkdir, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { createHarness, ReliabilityError } from '../runtime-reliability/harness.ts'
 import { recoveryDependencies } from '../runtime-reliability/run.ts'
@@ -27,6 +27,16 @@ import { exerciseExtendedBackgroundRecovery } from './background-extended.ts'
 import { backgroundPolicies } from './background.ts'
 import { backgroundReceiptsSchema, backgroundSnapshotSchema } from './background.validation.ts'
 import { stageBackgroundFixtureSources } from './background-source.ts'
+import { settleBackgroundCapture } from './background-capture-settlement.ts'
+import { backgroundCaptureReadCommand } from './background-capture-read.ts'
+import { hostMonitoringCaptureSchema } from '../../web/src/server/HostMonitoring/host-monitoring.capture.ts'
+import { z } from 'zod'
+import {
+    backgroundSourceManifest,
+    backgroundReportBinding,
+    backgroundAutomationManifest,
+    recheckBackgroundAutomationManifest,
+} from './background-provenance.ts'
 import type {
     BackgroundOptions,
     BackgroundResourceSample,
@@ -101,6 +111,52 @@ async function installFixture(context: ReliabilityContext) {
         probe,
         context.container + ':/opt/rentnerproxy/web/background-contention-web.js',
     ])
+    const captureReader = join(context.temp, 'background-capture-read.js')
+    await context.command([
+        process.execPath,
+        '--no-env-file',
+        'build',
+        join(source, 'scripts/runtime-scale/background-capture-read.ts'),
+        '--tsconfig-override=' + join(source, 'tsconfig.json'),
+        '--target=bun',
+        '--packages=external',
+        '--outfile=' + captureReader,
+    ])
+    await context.docker([
+        'cp',
+        captureReader,
+        context.container + ':/opt/rentnerproxy/web/background-capture-read.js',
+    ])
+    const sourceManifest = await backgroundSourceManifest(source)
+    const artifacts = await Promise.all(
+        [
+            ['reliability-fixture.js', bundle],
+            ['background-contention-receiver.js', receiver],
+            ['background-contention-web.js', probe],
+            ['background-capture-read.js', captureReader],
+        ].map(async ([name, path]) => ({
+            name: name!,
+            sha256: createHash('sha256')
+                .update(await readFile(path!))
+                .digest('hex'),
+        })),
+    )
+    const installed = JSON.parse(
+        await context.docker([
+            'exec',
+            context.container,
+            'bun',
+            '--no-env-file',
+            '-e',
+            "const names=['reliability-fixture.js','background-contention-receiver.js','background-contention-web.js','background-capture-read.js'];console.log(JSON.stringify(await Promise.all(names.map(async name=>({name,sha256:new Bun.CryptoHasher('sha256').update(await Bun.file('/opt/rentnerproxy/web/'+name).arrayBuffer()).digest('hex')})))))",
+        ]),
+    ) as unknown
+    assert.deepEqual(
+        installed,
+        artifacts,
+        'Installed fixture artifacts must match the exact locally built bytes',
+    )
+    return { sourceManifest, artifacts, installedArtifactsVerified: true as const }
 }
 
 /** Pause the single identified Bun owner behind a detached emergency-resume guard and require completed resume before returning. */
@@ -177,6 +233,7 @@ async function withPausedWeb<T>(
 /** Run the bounded seeded appliance scenario with cancellation checks, generation-bound evidence, staged recovery, and harness cleanup. */
 export async function runBackgroundScenarios(options: BackgroundOptions) {
     const scenarioStarted = performance.now()
+    const automationSources = await backgroundAutomationManifest(resolve(import.meta.dir, '../..'))
     const harness = await createHarness(
         {
             source: 'current',
@@ -184,6 +241,7 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
             iterations: 1,
             concurrency: 2,
             captureResources: true,
+            backgroundTelemetry: true,
             ...(options.contention ? { backgroundContention: true as const } : {}),
             seed: options.seed,
             ...(options.image ? { image: options.image } : {}),
@@ -209,6 +267,8 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
     let snapshot: BackgroundSnapshot | undefined
     let contention: Awaited<ReturnType<typeof runContentionWindow>>['report'] | undefined
     let monitoring: ReturnType<typeof backgroundMonitoringReport> | undefined
+    let captureSettlement:
+        Omit<Awaited<ReturnType<typeof settleBackgroundCapture>>, 'snapshot'> | undefined
     let fences: unknown
     let notifications: unknown
     let discovery: unknown
@@ -236,6 +296,33 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
     let recoveryComponent: 'web' | 'controller' | null = null
     let trafficDiagnostic: TrafficDiagnostic | undefined
     let imagePlatform: string | undefined
+    let fixtureProvenance: Awaited<ReturnType<typeof installFixture>> | undefined
+    const scenarioIdentity = {
+        runId: context.runId,
+        seed: options.seed,
+        policyCount: options.policies,
+        pattern: options.pattern,
+        profile: options.profile,
+        durationSeconds: options.durationSeconds,
+        contention: options.contention === true,
+        extendedRecovery: options.extendedRecovery === true,
+        faults: [
+            'policy-version',
+            'lease-expiry',
+            'host-change',
+            'host-disabled',
+            'access-policy-change',
+            'trusted-ca-change',
+            'database-lock',
+            'cancelled',
+            'duplicate-completion',
+            'notification-lease-faults',
+            'web-stop',
+            'controller-stop',
+            'postgres-pause',
+            'web-pause',
+        ],
+    }
     let proxyFailures = 0
     let origin = 0
     let elapsedMs = 0
@@ -286,7 +373,7 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
         ])
         assert.match(imagePlatform, /^linux\/(amd64|arm64)$/u)
         checkBackgroundCancellation(abort.signal)
-        await installFixture(context)
+        fixtureProvenance = await installFixture(context)
         checkBackgroundCancellation(abort.signal)
         await context.synced(await context.fixture('prepare'))
         checkBackgroundCancellation(abort.signal)
@@ -369,9 +456,41 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
         }
         elapsedMs = performance.now() - origin
         assert.ok(snapshot)
+        enter('capture-settlement')
+        const settled = await settleBackgroundCapture(
+            snapshot,
+            { runId: context.runId, sourceSha: harness.targetSha },
+            {
+                signal: abort.signal,
+                read: async (remainingMs) => {
+                    const command = backgroundCaptureReadCommand(
+                        context.container,
+                        context.runId,
+                        remainingMs,
+                    )
+                    const output = await context.docker(command.args, {
+                        timeoutMs: command.clientTimeoutMs,
+                    })
+                    const value = z
+                        .strictObject({ capture: hostMonitoringCaptureSchema.nullable() })
+                        .parse(JSON.parse(output))
+                    return { ...snapshot!, schedulerCapture: value.capture }
+                },
+            },
+        )
+        snapshot = settled.snapshot
+        captureSettlement = {
+            status: settled.status,
+            reads: settled.reads,
+            budgetMs: settled.budgetMs,
+            elapsedMs: settled.elapsedMs,
+        }
         const receipts = backgroundReceiptsSchema.parse(await harness.backgroundReceipts())
         receiptsOverflowed = receipts.overflowed
-        monitoring = backgroundMonitoringReport(options, snapshot, receipts.receipts, elapsedMs)
+        monitoring = backgroundMonitoringReport(options, snapshot, receipts.receipts, elapsedMs, {
+            runId: context.runId,
+            sourceSha: harness.targetSha,
+        })
         const quiescent = backgroundSnapshotSchema.parse(
             (await context.fixture('background-quiesce', extra)).background,
         )
@@ -525,6 +644,12 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
         process.off('SIGTERM', interrupt)
     }
     const resourceEvidence = backgroundResourceEvidence(resources)
+    const automationSourceRecheck = await recheckBackgroundAutomationManifest(
+        resolve(import.meta.dir, '../..'),
+        automationSources.sha256,
+    )
+    const automationSourcesUnchanged = automationSourceRecheck.unchanged
+    if (!automationSourcesUnchanged) failure ??= 'automation-source-changed'
     const interactive = {
         management: {
             ...backgroundDistribution(managementMs),
@@ -558,6 +683,23 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
         recovery.every((item) => item.passed)
     const report = {
         version: 1,
+        provenance: {
+            runId: context.runId,
+            scenario: scenarioIdentity,
+            bindingSha256: backgroundReportBinding({
+                targetSha: harness.targetSha,
+                imageIdentity: harness.imageIdentity,
+                imagePlatform,
+                scenario: scenarioIdentity,
+                fixture: fixtureProvenance ?? null,
+            }),
+            fixture: fixtureProvenance ?? null,
+            automationSources,
+            automationSourcesUnchanged,
+            automationSourceRecheck,
+            semantics:
+                'Image revision is checked by the harness; fixture source is staged independently and its manifest and installed bundle bytes are recorded separately. Selected faults are not proof of completion; inspect actual per-stage results.',
+        },
         targetSha: harness.targetSha,
         imageIdentity: harness.imageIdentity,
         imagePlatform,
@@ -570,7 +712,20 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
         scenarioElapsedMs: performance.now() - scenarioStarted,
         extendedRecoverySelected: options.extendedRecovery === true,
         slo: backgroundSlo,
+        instrumentation: {
+            schedulerCapture:
+                'opt-in actual web owner; instrumentation overhead is included, not an uninstrumented capacity measurement',
+            maximumEvents: 20_000,
+            captureLifetimeMs: 600_000,
+            maximumCaptureBytes: 8 * 1024 * 1024,
+            writeCoalesceMs: 25,
+            finalCaptureSemantics:
+                'Only persisted matching events qualify; an unflushed or missing last event yields insufficient evidence rather than inferred admission',
+            captureReadOwnership:
+                'Capture-only remote Bun reader has a separate timeout --signal=KILL configured deadline of at most 1000ms from remote wrapper startup; client waits at most the remaining settlement budget. Client timeout is not remote-drain proof; final container cleanup retains ownership. No SQL/context is created by the reader.',
+        },
         monitoring,
+        captureSettlement,
         ...(contention ? { contention } : {}),
         interactive,
         fences,
@@ -596,7 +751,8 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
         options.reportPath ?? join(import.meta.dir, '../../tmp/runtime-background/report.json'),
     )
     await mkdir(dirname(path), { recursive: true })
-    await writeFile(path, JSON.stringify(report, null, 2) + '\n', { mode: 0o600 })
+    const artifact = { ...report, reportSha256: backgroundReportBinding(report) }
+    await writeFile(path, JSON.stringify(artifact, null, 2) + '\n', { mode: 0o600 })
     await chmod(path, 0o600)
     console.log(
         'Runtime background: ' +
@@ -605,7 +761,7 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
             options.policies +
             '; capacity=insufficient',
     )
-    return report
+    return artifact
 }
 
 if (import.meta.main) {
