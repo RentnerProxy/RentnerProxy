@@ -112,8 +112,21 @@ async function installFixture(context: ReliabilityContext) {
         context.container + ':/opt/rentnerproxy/web/background-contention-web.js',
     ])
     const captureReader = join(context.temp, 'background-capture-read.js')
-    await context.command([process.execPath, '--no-env-file', 'build', join(source, 'scripts/runtime-scale/background-capture-read.ts'), '--tsconfig-override=' + join(source, 'tsconfig.json'), '--target=bun', '--packages=external', '--outfile=' + captureReader])
-    await context.docker(['cp', captureReader, context.container + ':/opt/rentnerproxy/web/background-capture-read.js'])
+    await context.command([
+        process.execPath,
+        '--no-env-file',
+        'build',
+        join(source, 'scripts/runtime-scale/background-capture-read.ts'),
+        '--tsconfig-override=' + join(source, 'tsconfig.json'),
+        '--target=bun',
+        '--packages=external',
+        '--outfile=' + captureReader,
+    ])
+    await context.docker([
+        'cp',
+        captureReader,
+        context.container + ':/opt/rentnerproxy/web/background-capture-read.js',
+    ])
     const sourceManifest = await backgroundSourceManifest(source)
     const artifacts = await Promise.all(
         [
@@ -135,7 +148,7 @@ async function installFixture(context: ReliabilityContext) {
             'bun',
             '--no-env-file',
             '-e',
-                "const names=['reliability-fixture.js','background-contention-receiver.js','background-contention-web.js','background-capture-read.js'];console.log(JSON.stringify(await Promise.all(names.map(async name=>({name,sha256:new Bun.CryptoHasher('sha256').update(await Bun.file('/opt/rentnerproxy/web/'+name).arrayBuffer()).digest('hex')})))))",
+            "const names=['reliability-fixture.js','background-contention-receiver.js','background-contention-web.js','background-capture-read.js'];console.log(JSON.stringify(await Promise.all(names.map(async name=>({name,sha256:new Bun.CryptoHasher('sha256').update(await Bun.file('/opt/rentnerproxy/web/'+name).arrayBuffer()).digest('hex')})))))",
         ]),
     ) as unknown
     assert.deepEqual(
@@ -254,7 +267,8 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
     let snapshot: BackgroundSnapshot | undefined
     let contention: Awaited<ReturnType<typeof runContentionWindow>>['report'] | undefined
     let monitoring: ReturnType<typeof backgroundMonitoringReport> | undefined
-    let captureSettlement: Omit<Awaited<ReturnType<typeof settleBackgroundCapture>>, 'snapshot'> | undefined
+    let captureSettlement:
+        Omit<Awaited<ReturnType<typeof settleBackgroundCapture>>, 'snapshot'> | undefined
     let fences: unknown
     let notifications: unknown
     let discovery: unknown
@@ -443,17 +457,34 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
         elapsedMs = performance.now() - origin
         assert.ok(snapshot)
         enter('capture-settlement')
-        const settled = await settleBackgroundCapture(snapshot, { runId: context.runId, sourceSha: harness.targetSha }, {
-            signal: abort.signal,
-            read: async (remainingMs) => {
-                const command = backgroundCaptureReadCommand(context.container, context.runId, remainingMs)
-                const output = await context.docker(command.args, { timeoutMs: command.clientTimeoutMs })
-                const value = z.strictObject({ capture: hostMonitoringCaptureSchema.nullable() }).parse(JSON.parse(output))
-                return { ...snapshot!, schedulerCapture: value.capture }
+        const settled = await settleBackgroundCapture(
+            snapshot,
+            { runId: context.runId, sourceSha: harness.targetSha },
+            {
+                signal: abort.signal,
+                read: async (remainingMs) => {
+                    const command = backgroundCaptureReadCommand(
+                        context.container,
+                        context.runId,
+                        remainingMs,
+                    )
+                    const output = await context.docker(command.args, {
+                        timeoutMs: command.clientTimeoutMs,
+                    })
+                    const value = z
+                        .strictObject({ capture: hostMonitoringCaptureSchema.nullable() })
+                        .parse(JSON.parse(output))
+                    return { ...snapshot!, schedulerCapture: value.capture }
+                },
             },
-        })
+        )
         snapshot = settled.snapshot
-        captureSettlement = { status: settled.status, reads: settled.reads, budgetMs: settled.budgetMs, elapsedMs: settled.elapsedMs }
+        captureSettlement = {
+            status: settled.status,
+            reads: settled.reads,
+            budgetMs: settled.budgetMs,
+            elapsedMs: settled.elapsedMs,
+        }
         const receipts = backgroundReceiptsSchema.parse(await harness.backgroundReceipts())
         receiptsOverflowed = receipts.overflowed
         monitoring = backgroundMonitoringReport(options, snapshot, receipts.receipts, elapsedMs, {
@@ -613,7 +644,10 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
         process.off('SIGTERM', interrupt)
     }
     const resourceEvidence = backgroundResourceEvidence(resources)
-    const automationSourceRecheck = await recheckBackgroundAutomationManifest(resolve(import.meta.dir, '../..'), automationSources.sha256)
+    const automationSourceRecheck = await recheckBackgroundAutomationManifest(
+        resolve(import.meta.dir, '../..'),
+        automationSources.sha256,
+    )
     const automationSourcesUnchanged = automationSourceRecheck.unchanged
     if (!automationSourcesUnchanged) failure ??= 'automation-source-changed'
     const interactive = {
@@ -687,7 +721,8 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
             writeCoalesceMs: 25,
             finalCaptureSemantics:
                 'Only persisted matching events qualify; an unflushed or missing last event yields insufficient evidence rather than inferred admission',
-            captureReadOwnership: 'Capture-only remote Bun reader has a separate timeout --signal=KILL configured deadline of at most 1000ms from remote wrapper startup; client waits at most the remaining settlement budget. Client timeout is not remote-drain proof; final container cleanup retains ownership. No SQL/context is created by the reader.',
+            captureReadOwnership:
+                'Capture-only remote Bun reader has a separate timeout --signal=KILL configured deadline of at most 1000ms from remote wrapper startup; client waits at most the remaining settlement budget. Client timeout is not remote-drain proof; final container cleanup retains ownership. No SQL/context is created by the reader.',
         },
         monitoring,
         captureSettlement,

@@ -37,7 +37,14 @@ export function backgroundReportBinding(value: unknown) {
 /** Follow literal executable imports, including dynamic imports, without executing modules or resolving external packages. */
 export async function backgroundAutomationManifest(root: string) {
     const rootPath = await realpath(root)
-    const pending = ['scripts/runtime-scale/background-run.ts', 'scripts/runtime-reliability/harness.ts', 'package.json', 'bun.lock', 'tsconfig.json', 'tsconfig.scripts.json'].map((path) => resolve(rootPath, path))
+    const pending = [
+        'scripts/runtime-scale/background-run.ts',
+        'scripts/runtime-reliability/harness.ts',
+        'package.json',
+        'bun.lock',
+        'tsconfig.json',
+        'tsconfig.scripts.json',
+    ].map((path) => resolve(rootPath, path))
     const visited = new Set<string>()
     const files: { path: string; sha256: string }[] = []
     while (pending.length) {
@@ -45,18 +52,31 @@ export async function backgroundAutomationManifest(root: string) {
         if (visited.has(path)) continue
         if (visited.size >= 10_000) throw new Error('Automation import graph exceeds bound')
         const relativePath = relative(rootPath, path).replaceAll('\\', '/')
-        if (isAbsolute(relativePath) || relativePath.startsWith('../') || relativePath.split('/').includes('node_modules') || (!['.ts', '.tsx', '.json'].includes(extname(path)) && relativePath !== 'bun.lock')) throw new Error('Automation input is outside the source boundary')
+        if (
+            isAbsolute(relativePath) ||
+            relativePath.startsWith('../') ||
+            relativePath.split('/').includes('node_modules') ||
+            (!['.ts', '.tsx', '.json'].includes(extname(path)) && relativePath !== 'bun.lock')
+        )
+            throw new Error('Automation input is outside the source boundary')
         // oxlint-disable-next-line no-await-in-loop -- Resolve each newly discovered local source before reading it.
-        if (await realpath(path) !== path) throw new Error('Automation source must not contain symlinks')
+        if ((await realpath(path)) !== path)
+            throw new Error('Automation source must not contain symlinks')
         visited.add(path)
         // oxlint-disable-next-line no-await-in-loop -- The exact hashed bytes also supply this module's import scan.
         const contents = await readFile(path)
-        files.push({ path: relativePath, sha256: createHash('sha256').update(contents).digest('hex') })
+        files.push({
+            path: relativePath,
+            sha256: createHash('sha256').update(contents).digest('hex'),
+        })
         if (!['.ts', '.tsx'].includes(extname(path))) continue
-        const imports = new Bun.Transpiler({ loader: path.endsWith('.tsx') ? 'tsx' : 'ts' }).scanImports(contents)
+        const imports = new Bun.Transpiler({
+            loader: path.endsWith('.tsx') ? 'tsx' : 'ts',
+        }).scanImports(contents)
         for (const item of imports) {
             if (item.path.startsWith('.')) pending.push(resolve(dirname(path), item.path))
-            else if (item.path.startsWith('@/')) pending.push(resolve(rootPath, 'web/src', item.path.slice(2)))
+            else if (item.path.startsWith('@/'))
+                pending.push(resolve(rootPath, 'web/src', item.path.slice(2)))
         }
     }
     files.sort((a, b) => a.path.localeCompare(b.path, 'en'))
@@ -67,7 +87,11 @@ export async function backgroundAutomationManifest(root: string) {
 export async function recheckBackgroundAutomationManifest(root: string, expectedSha256: string) {
     try {
         const current = await backgroundAutomationManifest(root)
-        return { unchanged: current.sha256 === expectedSha256, sha256: current.sha256, status: current.sha256 === expectedSha256 ? 'matched' as const : 'changed' as const }
+        return {
+            unchanged: current.sha256 === expectedSha256,
+            sha256: current.sha256,
+            status: current.sha256 === expectedSha256 ? ('matched' as const) : ('changed' as const),
+        }
     } catch {
         return { unchanged: false, sha256: null, status: 'unavailable' as const }
     }

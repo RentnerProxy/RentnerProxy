@@ -356,7 +356,10 @@ export function backgroundMonitoringReport(
                       event.dueAt === policy.dueAt,
               )
             : []
-        const adapterStart = started.length === 1 && started[0]!.attemptHash === admission?.attemptHash ? started[0] : undefined
+        const adapterStart =
+            started.length === 1 && started[0]!.attemptHash === admission?.attemptHash
+                ? started[0]
+                : undefined
         const validTiming =
             admission &&
             adapterStart &&
