@@ -1,11 +1,13 @@
 import '@tanstack/react-start/server-only'
 import { HOST_MONITORING_LIMITS } from '@/config/host-monitoring.config.ts'
-import { DATABASE_CONNECTION_BUDGET } from '@/config/database.config.ts'
 import { withBackgroundDatabaseContext } from '@/db/background-admission.ts'
 import { observeWorkerOperation } from '@/server/Foundation/worker-operation.ts'
 import { workerObservability } from '@/server/Foundation/worker-observability.ts'
 import { inspectControllerDomain } from '@/server/Controller/domain-diagnostics.server.ts'
-import { publishApplicationChange } from '@/server/WebSockets/applicationChanges.ts'
+import {
+    publishApplicationChange,
+    subscribeToApplicationChanges,
+} from '@/server/WebSockets/applicationChanges.ts'
 import { createHostMonitoringBatcher } from './host-monitoring.batch.ts'
 import { createHostMonitoringWorker } from './host-monitoring.worker.ts'
 import { createHostMonitoringProbe } from './host-monitoring.probe.ts'
@@ -14,8 +16,9 @@ import {
     claimDueHostMonitoringPolicies,
     completeHostMonitoringClaims,
     readHostMonitoringClaimContexts,
-    releaseHostMonitoringClaim,
+    releaseHostMonitoringClaims,
     pruneHostMonitoringHistory,
+    readNextHostMonitoringAdmissionAt,
 } from './host-monitoring.repository.ts'
 import type {
     HostMonitoringClaim,
@@ -49,17 +52,52 @@ const complete = createHostMonitoringBatcher<HostMonitoringCompletion, boolean>(
     },
 })
 
-// The existing batcher retains at most 64 owned releases and sends only eight at a time to the shared SQL gate.
+// Coalesce a cancelled 64-probe flight into one fenced transaction within the drain budget.
 const releaseBatch = createHostMonitoringBatcher<HostMonitoringClaim, boolean>({
-    size: DATABASE_CONNECTION_BUDGET.backgroundTransactions,
+    size: HOST_MONITORING_LIMITS.workerConcurrency,
     delayMs: 0,
-    /** Settle every sibling independently; one rejection cannot discard the remaining fenced releases. */
-    run: (claims) =>
-        Promise.allSettled(
-            claims.map(async (claim) =>
-                withBackgroundDatabaseContext(() => releaseHostMonitoringClaim(claim), null),
-            ),
-        ),
+    /** Keep repeated policies in separate ordered transactions so every old/new token retains its own fence and result. */
+    run: async (claims) => {
+        const batches: HostMonitoringClaim[][] = []
+        let batch: HostMonitoringClaim[] = []
+        let seen = new Set<string>()
+        for (const claim of claims) {
+            if (seen.has(claim.policy.id)) {
+                batches.push(batch)
+                batch = []
+                seen = new Set()
+            }
+            batch.push(claim)
+            seen.add(claim.policy.id)
+        }
+        if (batch.length) batches.push(batch)
+        const results: PromiseSettledResult<boolean>[] = []
+        let released = false
+        for (const current of batches) {
+            try {
+                // oxlint-disable-next-line no-await-in-loop -- A later token for the same policy must follow the earlier fenced release.
+                const values = await withBackgroundDatabaseContext(
+                    () => releaseHostMonitoringClaims(current),
+                    null,
+                )
+                if (values.length !== current.length)
+                    throw new Error('Invalid monitoring release result.')
+                released ||= values.some(Boolean)
+                results.push(
+                    ...values.map((value): PromiseFulfilledResult<boolean> => ({
+                        status: 'fulfilled',
+                        value,
+                    })),
+                )
+            } catch (reason) {
+                results.push(
+                    ...current.map((): PromiseRejectedResult => ({ status: 'rejected', reason })),
+                )
+            }
+        }
+        if (released) publishApplicationChange()
+        return results
+    },
 })
 
 /** Retain failed cleanup ownership separately from ordinary probe errors, without bypassing SQL admission or changing claim fences. */
@@ -125,6 +163,8 @@ export const hostMonitoringWorker = createHostMonitoringWorker({
         )
         await sampleHostMonitoringBacklog()
     },
+    nextAdmissionAt: readNextHostMonitoringAdmissionAt,
+    subscribe: subscribeToApplicationChanges,
     unavailable: () =>
         console.warn('[host-monitoring] Worker temporarily unavailable.', {
             retryMs: HOST_MONITORING_LIMITS.pollIntervalMs,

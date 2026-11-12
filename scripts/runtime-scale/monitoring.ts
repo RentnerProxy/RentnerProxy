@@ -179,6 +179,9 @@ export async function runMonitoringCapacity(options: MonitoringScaleOptions) {
         { createHostMonitoringProbe },
         { createHostMonitoringBatcher },
         { HOST_MONITORING_LIMITS },
+        { BACKGROUND_DATABASE_POLICY },
+        { settleWorkerTasks },
+        { HostMonitoringCleanupError },
     ] = await Promise.all([
         import('../../web/src/db/index.ts'),
         import('../../web/src/db/schema.ts'),
@@ -188,6 +191,9 @@ export async function runMonitoringCapacity(options: MonitoringScaleOptions) {
         import('../../web/src/server/HostMonitoring/host-monitoring.probe.ts'),
         import('../../web/src/server/HostMonitoring/host-monitoring.batch.ts'),
         import('../../web/src/config/host-monitoring.config.ts'),
+        import('../../web/src/config/background-resources.config.ts'),
+        import('../../web/src/server/Foundation/worker-lifecycle.server.ts'),
+        import('../../web/src/server/HostMonitoring/Types/host-monitoring-worker.types.ts'),
     ])
     const { hostCheckPolicies, hostCheckObservations, proxyHosts, redirectHosts, hostDomains } =
         schema
@@ -279,6 +285,23 @@ export async function runMonitoringCapacity(options: MonitoringScaleOptions) {
     let legacyActive = false
     let legacyNextAt = 0
     let runAborted = false
+    let workerDrain: Promise<void> | undefined
+    /** Own the first stop checkpoint and its actual writer drain, preserving failure evidence without detached rejections. */
+    function stopWorker(): Promise<void> {
+        if (!worker) return Promise.resolve()
+        workerDrain ??= (async () => {
+            const checkpoint = Promise.resolve().then(() => worker!.stop())
+            void checkpoint.catch(() => {
+                failures.push('Monitoring worker stop failed')
+            })
+            try {
+                await settleWorkerTasks([checkpoint])
+            } catch {
+                failures.push('Monitoring worker drain failed')
+            }
+        })()
+        return workerDrain
+    }
     /** Stops admission once and lets the run unwind through fixture cleanup on deadlines or signals. */
     function abortRun(reason: 'budget' | 'SIGINT' | 'SIGTERM') {
         if (runAborted) return
@@ -288,7 +311,8 @@ export async function runMonitoringCapacity(options: MonitoringScaleOptions) {
                 ? 'Monitoring capacity wall-clock budget exhausted'
                 : `Monitoring capacity interrupted by ${reason}`,
         )
-        void worker?.stop()
+        samplerController.abort()
+        void stopWorker()
     }
     const budgetTimer = setTimeout(() => abortRun('budget'), 240000)
     const interrupt = () => abortRun('SIGINT')
@@ -407,6 +431,19 @@ export async function runMonitoringCapacity(options: MonitoringScaleOptions) {
                     return results
                 }),
         })
+        // A cancelled flight owns up to 64 claims. Send only the monitoring class's
+        // running allowance to SQL at once; each original token/version fence stays intact.
+        const release = createHostMonitoringBatcher<
+            Parameters<typeof repository.releaseHostMonitoringClaim>[0],
+            boolean
+        >({
+            size: BACKGROUND_DATABASE_POLICY.classes.monitoring.running,
+            delayMs: 0,
+            run: (claims) =>
+                Promise.allSettled(
+                    claims.map(async (claim) => repository.releaseHostMonitoringClaim(claim)),
+                ),
+        })
         const runClaim = createHostMonitoringProbe({
             readContext,
             inspect: async (input, signal, probeOptions) =>
@@ -429,7 +466,13 @@ export async function runMonitoringCapacity(options: MonitoringScaleOptions) {
                 }),
             complete: (claim, outcome, before, signal) =>
                 complete({ claim, outcome, before, signal }),
-            release: repository.releaseHostMonitoringClaim,
+            release: async (claim) => {
+                try {
+                    return await release(claim)
+                } catch (cause) {
+                    throw new HostMonitoringCleanupError(cause)
+                }
+            },
         })
         worker = createHostMonitoringWorker({
             claim: (limit) => {
@@ -452,7 +495,7 @@ export async function runMonitoringCapacity(options: MonitoringScaleOptions) {
                 }
             },
             releaseCancelled: async (claim) => {
-                await repository.releaseHostMonitoringClaim(claim)
+                await release(claim)
             },
             prune: () => measure('retention', repository.pruneHostMonitoringHistory),
             unavailable: () => {
@@ -517,7 +560,7 @@ export async function runMonitoringCapacity(options: MonitoringScaleOptions) {
             // oxlint-disable-next-line no-await-in-loop -- Wait for the fixed final cadence window.
             await sleep(Math.min(200, end - Date.now()))
         }
-        await worker.stop()
+        await stopWorker()
         samplerController.abort()
         await sampler
         const elapsedMs = Date.now() - startedAt
@@ -633,16 +676,22 @@ export async function runMonitoringCapacity(options: MonitoringScaleOptions) {
         clearTimeout(budgetTimer)
         process.removeListener('SIGINT', interrupt)
         process.removeListener('SIGTERM', terminate)
-        await worker?.stop()
         samplerController.abort()
-        await sampler
         try {
-            if (seeded) await db.delete(proxyHosts).where(inArray(proxyHosts.id, hostIds))
+            await stopWorker()
         } finally {
             try {
-                await native?.stop()
+                await sampler
             } finally {
-                await closeDatabaseForRestoreMaintenance()
+                try {
+                    if (seeded) await db.delete(proxyHosts).where(inArray(proxyHosts.id, hostIds))
+                } finally {
+                    try {
+                        await native?.stop()
+                    } finally {
+                        await closeDatabaseForRestoreMaintenance()
+                    }
+                }
             }
         }
     }

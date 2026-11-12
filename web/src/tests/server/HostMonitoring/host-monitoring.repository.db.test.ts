@@ -19,6 +19,7 @@ import type {
     HostMonitoringOutcome,
     HostMonitoringSettings,
 } from '@/lib/HostMonitoring/Types/host-monitoring.types.ts'
+import { ResourceAdmissionError } from '@/server/Foundation/resource-admission.ts'
 import { getDatabaseUrl } from '@/server/env.server.ts'
 import { lockProxyRuntimeSettings } from '@/server/ProxyRuntime/proxy-runtime-settings.ts'
 import {
@@ -31,6 +32,7 @@ import {
     readHostMonitoringHistory,
     readHostMonitoringClaimContexts,
     releaseHostMonitoringClaim,
+    releaseHostMonitoringClaims,
     saveHostMonitoringPolicy,
 } from '@/server/HostMonitoring/host-monitoring.repository.ts'
 import type {
@@ -52,6 +54,24 @@ let actorId: string | undefined
 const fixtureContext: HostMonitoringContext = {
     proof: 'sha256:' + 'a'.repeat(64),
     revision: 'sha256:' + 'b'.repeat(64),
+}
+
+/** Retry only typed failures that prove admission never started SQL; bound each logical claimer. */
+async function claimWithAdmissionRetry(): Promise<HostMonitoringClaim[]> {
+    for (let attempt = 1; attempt <= 7; attempt++) {
+        try {
+            // oxlint-disable-next-line no-await-in-loop -- Retry only after this bounded admission attempt settles.
+            return await claimDueHostMonitoringPolicies(16)
+        } catch (error) {
+            if (
+                !(error instanceof ResourceAdmissionError) ||
+                (error.reason !== 'busy' && error.reason !== 'deadline') ||
+                attempt === 7
+            )
+                throw error
+        }
+    }
+    throw new Error('Monitoring claim admission attempt limit exhausted.')
 }
 
 function complete(
@@ -141,6 +161,67 @@ async function completions(
 }
 
 describe('durable scheduled monitoring repository', () => {
+    integrationTest(
+        'a whole cancelled flight releases in one transaction with independent live fences',
+        async () => {
+            const policies = await Promise.all(Array.from({ length: 64 }, () => fixture()))
+            await db
+                .update(hostCheckPolicies)
+                .set({ nextCheckAt: new Date(0) })
+                .where(
+                    inArray(
+                        hostCheckPolicies.id,
+                        policies.map((policy) => policy.id),
+                    ),
+                )
+            const claims = (
+                await Promise.all(
+                    Array.from({ length: 4 }, () => claimDueHostMonitoringPolicies(16)),
+                )
+            ).flat()
+            expect(claims).toHaveLength(64)
+            const [staleVersion, staleToken, expired] = claims
+            await db
+                .update(hostCheckPolicies)
+                .set({ version: randomUUID() })
+                .where(eq(hostCheckPolicies.id, staleVersion!.policy.id))
+            await db
+                .update(hostCheckPolicies)
+                .set({ leaseToken: randomUUID() })
+                .where(eq(hostCheckPolicies.id, staleToken!.policy.id))
+            await db
+                .update(hostCheckPolicies)
+                .set({ leaseExpiresAt: new Date(0) })
+                .where(eq(hostCheckPolicies.id, expired!.policy.id))
+            expect(await releaseHostMonitoringClaims(claims)).toEqual(
+                claims.map((_, index) => index >= 3),
+            )
+            const currentRows = await db
+                .select()
+                .from(hostCheckPolicies)
+                .where(
+                    inArray(
+                        hostCheckPolicies.id,
+                        claims.map((claimed) => claimed.policy.id),
+                    ),
+                )
+            for (const [index, claimed] of claims.entries()) {
+                const current = currentRows.find((policy) => policy.id === claimed.policy.id)!
+                expect(current.leaseToken === null).toBe(index >= 3)
+                if (index >= 3)
+                    expect(current.nextCheckAt.getTime()).toBeGreaterThan(Date.now() - 1_000)
+            }
+            expect(await releaseHostMonitoringClaims(claims)).toEqual(claims.map(() => false))
+            expect(await releaseHostMonitoringClaims([])).toEqual([])
+            await expect(releaseHostMonitoringClaims([claims[0]!, claims[0]!])).rejects.toThrow(
+                'Invalid monitoring release batch',
+            )
+            await expect(releaseHostMonitoringClaims([...claims, claims[0]!])).rejects.toThrow(
+                'Invalid monitoring release batch',
+            )
+        },
+    )
+
     integrationTest('claims and releases do not wait for the runtime settings lock', async () => {
         const policy = await fixture()
         let release!: () => void
@@ -295,7 +376,7 @@ describe('durable scheduled monitoring repository', () => {
                 })),
             )
             const batches = await Promise.all(
-                Array.from({ length: 6 }, () => claimDueHostMonitoringPolicies(16)),
+                Array.from({ length: 6 }, () => claimWithAdmissionRetry()),
             )
             const active = batches.flat()
             expect(active).toHaveLength(64)

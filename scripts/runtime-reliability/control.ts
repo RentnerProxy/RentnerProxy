@@ -1,3 +1,4 @@
+import { memoryResourceEvidence } from './resource-probe.ts'
 import { resourceLimits, metrics } from './control.config.ts'
 import type { ResourceMetric, ResourceAnalysis } from './Types/control.types.ts'
 import type {
@@ -179,6 +180,7 @@ export function analyzeResources(samples: ResourceSample[], concurrency: number)
     }
     return {
         sampleCount: samples.length,
+        memoryMeasurements: memoryResourceEvidence(samples),
         trendEvidence: comparable ? 'comparable' : 'insufficient',
         passed: violations.length === 0,
         violations,

@@ -9,30 +9,57 @@ import {
 } from '../../web/src/tests/server/Notifications/Types/tls-test.types.ts'
 import type { NotificationMailClient } from '../../web/src/server/Mail/Types/notification-mail.types.ts'
 
-/** Own loopback webhook and TLS SMTP receivers with payload-identity deduplication; return explicit client and server cleanup handles. */
-export async function startBackgroundNotificationReceivers() {
+/** Own configurable loopback TLS-SMTP/webhook receivers, deduplicate payload identities and track active overlap; callers close clients and servers. */
+export async function startBackgroundNotificationReceivers(
+    options: {
+        smtpPort?: number
+        webhookPort?: number
+        delayMs?: number
+        holdDeliveries?: boolean
+    } = {},
+) {
     const accepted = new Set<string>()
     const receiverAttempts = new Map<string, number>()
     const receiverIdentity = new Map<string, string>()
     const slowPayloadIds = new Set<string>()
-    /** Normalize transport message IDs to stable payload IDs while counting every receiver attempt separately from unique accepted effects. */
-    const record = (id: string) => {
+    const kinds = { email: new Set<string>(), webhook: new Set<string>() }
+    let activeWebhooks = 0
+    let webhookStarted!: () => void
+    let smtpReady!: () => void
+    let releaseDeliveries!: () => void
+    const webhookReady = new Promise<void>((resolve) => (webhookStarted = resolve))
+    const smtpDeliveryReady = new Promise<void>((resolve) => (smtpReady = resolve))
+    const deliveryGate = new Promise<void>((resolve) => {
+        releaseDeliveries = resolve
+        if (!options.holdDeliveries) resolve()
+    })
+    /** Normalize stable payload identity while keeping per-transport unique acceptance separate from repeated receiver attempts. */
+    const record = (id: string, kind: keyof typeof kinds) => {
         const stable = receiverIdentity.get(id) ?? id
         accepted.add(stable)
         receiverAttempts.set(stable, (receiverAttempts.get(stable) ?? 0) + 1)
+        kinds[kind].add(stable)
     }
     const webhook = Bun.serve({
         hostname: '127.0.0.1',
-        port: 0,
-        /** Require a payload identity, apply the controlled receiver delay, and record acceptance before returning success. */
+        port: options.webhookPort ?? 0,
+        /** Accept only webhook POSTs with identities, count active delayed sends, and record acceptance before returning success. */
         async fetch(request) {
+            if (request.method !== 'POST') return new Response(null, { status: 405 })
             const input: unknown = await request.json()
             assert.ok(
                 input && typeof input === 'object' && 'id' in input && typeof input.id === 'string',
             )
-            await Bun.sleep(slowPayloadIds.has(input.id) ? 500 : 15)
-            record(input.id)
-            return new Response(null, { status: 204 })
+            activeWebhooks++
+            webhookStarted()
+            try {
+                await deliveryGate
+                await Bun.sleep(options.delayMs ?? (slowPayloadIds.has(input.id) ? 500 : 15))
+                record(input.id, 'webhook')
+                return new Response(null, { status: 204 })
+            } finally {
+                activeWebhooks--
+            }
         },
     })
     const sockets = new Set<Socket>()
@@ -61,18 +88,25 @@ export async function startBackgroundNotificationReceivers() {
                         /^Message-ID:[ \t\r\n]*<([a-f0-9]{64})@notifications\.rentnerproxy>/imu.exec(
                             body,
                         )?.[1]
-                    if (messageId) record(messageId)
                     const delay =
-                        messageId &&
+                        options.delayMs ??
+                        (messageId &&
                         slowPayloadIds.has(receiverIdentity.get(messageId) ?? messageId)
                             ? 500
-                            : 30
-                    setTimeout(() => {
-                        if (!socket.destroyed) socket.write('250 accepted\r\n')
-                    }, delay)
+                            : 30)
+                    smtpReady()
+                    void (async () => {
+                        await deliveryGate
+                        await Bun.sleep(delay)
+                        if (!socket.destroyed) {
+                            if (messageId) record(messageId, 'email')
+                            socket.write('250 accepted\r\n')
+                        }
+                    })()
                     continue
                 }
-                if (/^EHLO|^HELO/iu.test(line)) socket.write('250 fixture\r\n')
+                if (/^EHLO|^HELO/iu.test(line)) socket.write('250-fixture\r\n250 AUTH PLAIN\r\n')
+                else if (/^AUTH PLAIN(?: |$)/iu.test(line)) socket.write('235 authenticated\r\n')
                 else if (/^MAIL FROM/iu.test(line)) {
                     reject = false
                     body = ''
@@ -92,11 +126,22 @@ export async function startBackgroundNotificationReceivers() {
             }
         })
     })
-    await new Promise<void>((resolve, reject) => {
-        smtp.once('error', reject)
-        smtp.listen(0, '127.0.0.1', resolve)
-    })
-    const address = smtp.address()
+    let address: ReturnType<typeof smtp.address>
+    try {
+        await new Promise<void>((resolve, reject) => {
+            const onError = (error: Error) => reject(error)
+            smtp.once('error', onError)
+            smtp.listen(options.smtpPort ?? 0, '127.0.0.1', () => {
+                resolve()
+            })
+        })
+        address = smtp.address()
+        assert.ok(address && typeof address === 'object')
+    } catch (error) {
+        webhook.stop(true)
+        if (smtp.listening) await new Promise<void>((resolve) => smtp.close(() => resolve()))
+        throw error
+    }
     assert.ok(address && typeof address === 'object')
     return {
         webhook,
@@ -105,6 +150,17 @@ export async function startBackgroundNotificationReceivers() {
         receiverAttempts,
         receiverIdentity,
         slowPayloadIds,
+        webhookReady,
+        smtpDeliveryReady,
+        releaseDeliveries,
+        stats: () => ({
+            accepted: accepted.size,
+            emailAccepted: kinds.email.size,
+            webhookAccepted: kinds.webhook.size,
+            attempts: [...receiverAttempts.values()].reduce((sum, count) => sum + count, 0),
+            activeWebhooks,
+            smtpConnections: sockets.size,
+        }),
         /** Create an isolated TLS client that trusts only the fixture CA and uses bounded transport timeouts; the caller must close it. */
         createMailClient(): NotificationMailClient {
             const transport = createTransport({
@@ -122,7 +178,7 @@ export async function startBackgroundNotificationReceivers() {
             })
             return {
                 from: 'fixture@fixture.invalid',
-                sendMail: (options) => transport.sendMail(options),
+                sendMail: (message) => transport.sendMail(message),
                 close: () => transport.close(),
             }
         },

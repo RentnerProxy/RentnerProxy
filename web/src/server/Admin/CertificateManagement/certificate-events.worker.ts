@@ -8,13 +8,14 @@ import type {
 // oxlint-disable-next-line import/no-unassigned-import -- Keeps the synchronization worker server-only.
 import '@tanstack/react-start/server-only'
 
-import { lt, sql } from 'drizzle-orm'
+import { sql } from 'drizzle-orm'
+import { BACKGROUND_RESOURCE_ENVELOPE } from '@/config/background-resources.config.ts'
 
 import { certificateEventCursor, certificateEventReceipts } from '@/db/schema.ts'
 import type { CertificateEventMetadata } from '@/lib/Admin/CertificateManagement/Types/certificates.types.ts'
 import { appendAuditEventsInTransactionService } from '@/server/Audit/audit.service.ts'
 import { getControllerCertificateEvents } from '@/server/Controller/certificates.server.ts'
-import { getAuthDatabase } from '@/server/Auth/Core/database.server.ts'
+import { getBackgroundDatabase } from '@/server/Foundation/background-database.server.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
 import { persistControllerCertificatesMetadataInTransaction } from './certificate-metadata.persistence.ts'
 import { getCertificateMetadataSnapshot } from './certificate-metadata-snapshot.server.ts'
@@ -64,12 +65,17 @@ function cursorIsAtLeast(candidate: Cursor, current: Cursor): boolean {
     )
 }
 
+/** Read the cursor through the reserved critical SQL class while preserving invalid durable input as the expected write fence. */
 async function readCursor(): Promise<CursorSnapshot> {
-    const rows = await getAuthDatabase()
-        .select({ cursor: certificateEventCursor.cursor })
-        .from(certificateEventCursor)
-        .where(sql`${certificateEventCursor.id} = 1`)
-        .limit(1)
+    const rows = await getBackgroundDatabase('critical').transaction(
+        async (transaction) =>
+            transaction
+                .select({ cursor: certificateEventCursor.cursor })
+                .from(certificateEventCursor)
+                .where(sql`${certificateEventCursor.id} = 1`)
+                .limit(1),
+        { accessMode: 'read only' },
+    )
     const cursor = rows.at(0)?.cursor ?? null
     return {
         expectedCursor: cursor,
@@ -113,25 +119,35 @@ function eventResult(event: CertificateEventMetadata): 'success' | 'failure' {
         : 'success'
 }
 
+/** Bound both age-based and excess-row deletes to half the per-pass retention budget each. */
 async function pruneEventReceiptsInTransaction(transaction: AuthTransaction): Promise<void> {
+    const pageSize = BACKGROUND_RESOURCE_ENVELOPE.certificates.receiptDeletesPerPass / 2
     const cutoff = new Date(
         Date.now() - CERTIFICATE_EVENT_RECEIPT_RETENTION_DAYS * 24 * 60 * 60 * 1_000,
     )
-    await transaction
-        .delete(certificateEventReceipts)
-        .where(lt(certificateEventReceipts.receivedAt, cutoff))
+    await transaction.execute(sql`
+        delete from "rentnerproxy"."certificate_event_receipts"
+        where "event_id" in (
+            select "event_id" from "rentnerproxy"."certificate_event_receipts"
+            where "received_at" < ${cutoff.toISOString()}::timestamptz
+            order by "received_at", "event_id"
+            limit ${pageSize}
+        )
+    `)
     await transaction.execute(sql`
         delete from "rentnerproxy"."certificate_event_receipts"
         where "event_id" in (
             select "event_id" from "rentnerproxy"."certificate_event_receipts"
             order by "received_at" desc, "event_id" desc
             offset ${CERTIFICATE_EVENT_RECEIPT_MAX_ROWS}
+            limit ${pageSize}
         )
     `)
 }
 
+/** Commit event receipts and cursor under the critical SQL partition with serialization and expected-cursor fencing; retention runs separately. */
 async function persistFetchedBatch(batch: FetchedEvents): Promise<boolean> {
-    return getAuthDatabase().transaction(async (transaction) => {
+    return getBackgroundDatabase('critical').transaction(async (transaction) => {
         await transaction.execute(
             sql`select pg_advisory_xact_lock(${CERTIFICATE_EVENT_SYNC_LOCK_ID})`,
         )
@@ -203,19 +219,36 @@ async function persistFetchedBatch(batch: FetchedEvents): Promise<boolean> {
                 .set({ cursor: candidateCursor, updatedAt: new Date() })
                 .where(sql`${certificateEventCursor.id} = 1`)
         }
-        await pruneEventReceiptsInTransaction(transaction)
         return true
     })
 }
 
-/** Check cancellation before reads, remote fetch, and durable persistence so an aborted batch cannot start a late cursor write. */
+/** Check cancellation before reads, fetch and persistence; commit critical cursor progress before separate best-effort housekeeping. */
 export async function synchronizeCertificateEventsOnce(signal?: AbortSignal): Promise<boolean> {
     signal?.throwIfAborted()
     const cursor = await readCursor()
     signal?.throwIfAborted()
     const batch = await fetchEventsAndMetadata(cursor.fetchCursor, cursor.expectedCursor, signal)
     signal?.throwIfAborted()
-    return persistFetchedBatch(batch)
+    const committed = await persistFetchedBatch(batch)
+    if (committed) {
+        try {
+            // Retention cannot spend a reserved renewal/recovery SQL slot or roll back a committed cursor.
+            await observeWorkerOperation(
+                'certificate_events',
+                () =>
+                    getBackgroundDatabase('housekeeping').transaction(
+                        pruneEventReceiptsInTransaction,
+                    ),
+                undefined,
+                undefined,
+                'retention',
+            )
+        } catch {
+            // The bounded retention lane remains degraded until a later pass succeeds.
+        }
+    }
+    return committed
 }
 
 let stopped = false

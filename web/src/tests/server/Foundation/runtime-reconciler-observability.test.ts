@@ -6,7 +6,7 @@ import {
     admitDatabaseTransaction,
     withBackgroundDatabaseContext,
 } from '@/db/background-admission.ts'
-import { DATABASE_CONNECTION_BUDGET } from '@/config/database.config.ts'
+import { BACKGROUND_DATABASE_POLICY } from '@/config/background-resources.config.ts'
 
 const read = () =>
     workerObservability.snapshot().workers.find((worker) => worker.id === 'proxy_reconciliation')!
@@ -39,10 +39,10 @@ test('an independent reconciler outlives its first discovery owner while retaini
             'applied',
         )
         owner.abort()
-        held = Array.from({ length: DATABASE_CONNECTION_BUDGET.backgroundTransactions }, () =>
+        held = Array.from({ length: BACKGROUND_DATABASE_POLICY.classes.critical.running }, () =>
             withBackgroundDatabaseContext(() =>
                 admitDatabaseTransaction(async () => {
-                    if (++admitted === DATABASE_CONNECTION_BUDGET.backgroundTransactions)
+                    if (++admitted === BACKGROUND_DATABASE_POLICY.classes.critical.running)
                         occupied.resolve()
                     await release.promise
                 }),

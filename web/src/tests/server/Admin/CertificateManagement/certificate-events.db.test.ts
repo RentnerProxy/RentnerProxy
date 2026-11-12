@@ -1,6 +1,7 @@
 // oxlint-disable no-await-in-loop -- The bounded polling helper intentionally checks progress in order.
 import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test'
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
+import { getBackgroundDatabaseResourceSnapshot } from '@/server/Foundation/background-database.server.ts'
 
 import {
     auditEvents,
@@ -217,6 +218,28 @@ afterEach(async () => {
 })
 
 describe('certificate event synchronization with PostgreSQL', () => {
+    integrationTest(
+        'retention is incremental in the housekeeping partition after the event cursor commits',
+        async () => {
+            await getAuthDatabase().execute(sql`
+            insert into "rentnerproxy"."certificate_event_receipts"
+            (event_id, operation_id, certificate_id, kind, stage, occurred_at, received_at)
+            select gen_random_uuid(), ${OPERATION_ID}::uuid, ${CERTIFICATE_ID}::uuid,
+                'started', 'creating_order', clock_timestamp() - interval '181 days', clock_timestamp() - interval '181 days'
+            from generate_series(1, 1500)
+        `)
+            const before = getBackgroundDatabaseResourceSnapshot().housekeeping!.admitted
+            await synchronizeCertificateEventsOnce()
+            expect(await readCursor()).toBe(CURSOR)
+            expect(await readEventRows()).toHaveLength(1001)
+            await synchronizeCertificateEventsOnce()
+            expect(await readEventRows()).toHaveLength(501)
+            await synchronizeCertificateEventsOnce()
+            expect(await readEventRows()).toHaveLength(1)
+            expect(getBackgroundDatabaseResourceSnapshot().housekeeping!.admitted - before).toBe(3)
+            expect(await readAuditRows()).toHaveLength(1)
+        },
+    )
     integrationTest(
         'shutdown waits for an uncancellable event read and prevents its late persistence',
         async () => {

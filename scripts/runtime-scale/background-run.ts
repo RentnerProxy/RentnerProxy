@@ -1,7 +1,7 @@
 // oxlint-disable no-await-in-loop -- Bounded workload observations and fault recovery depend on the preceding durable state.
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { createHarness, ReliabilityError } from '../runtime-reliability/harness.ts'
 import { recoveryDependencies } from '../runtime-reliability/run.ts'
@@ -16,6 +16,7 @@ import {
     backgroundSlo,
     parseBackgroundOptions,
 } from './background.ts'
+import { runContentionWindow } from './background-contention-run.ts'
 import {
     backgroundPauseDetachedScript,
     backgroundPauseMarker,
@@ -25,6 +26,7 @@ import {
 import { exerciseExtendedBackgroundRecovery } from './background-extended.ts'
 import { backgroundPolicies } from './background.ts'
 import { backgroundReceiptsSchema, backgroundSnapshotSchema } from './background.validation.ts'
+import { stageBackgroundFixtureSources } from './background-source.ts'
 import type {
     BackgroundOptions,
     BackgroundResourceSample,
@@ -50,22 +52,7 @@ function generationOf(
 /** Stage the explicit fixture sources, bundle against external production packages, and install only into the owned appliance. */
 async function installFixture(context: ReliabilityContext) {
     const source = join(context.temp, 'fixture-source')
-    for (const relative of [
-        'scripts/runtime-scale/background-fixture.ts',
-        'scripts/runtime-scale/background-notifications.ts',
-        'scripts/runtime-scale/background-receivers.ts',
-        'scripts/runtime-scale/background-network.ts',
-        'scripts/runtime-scale/background-discovery.ts',
-        'scripts/runtime-scale/background-recovery.ts',
-        'scripts/runtime-scale/background.ts',
-        'scripts/runtime-scale/background.validation.ts',
-        'scripts/runtime-reliability/control.ts',
-        'scripts/runtime-reliability/control.config.ts',
-    ]) {
-        const destination = join(source, relative)
-        await mkdir(dirname(destination), { recursive: true })
-        await writeFile(destination, await readFile(resolve(import.meta.dir, '../..', relative)))
-    }
+    await stageBackgroundFixtureSources(source)
     const bundle = join(context.temp, 'reliability-fixture.js')
     await context.command([
         process.execPath,
@@ -81,6 +68,38 @@ async function installFixture(context: ReliabilityContext) {
         'cp',
         bundle,
         context.container + ':/opt/rentnerproxy/web/reliability-fixture.js',
+    ])
+    const receiver = join(context.temp, 'background-contention-receiver.js')
+    await context.command([
+        process.execPath,
+        '--no-env-file',
+        'build',
+        join(source, 'scripts/runtime-scale/background-contention-receiver.ts'),
+        '--tsconfig-override=' + join(source, 'tsconfig.json'),
+        '--target=bun',
+        '--packages=external',
+        '--outfile=' + receiver,
+    ])
+    await context.docker([
+        'cp',
+        receiver,
+        context.container + ':/opt/rentnerproxy/web/background-contention-receiver.js',
+    ])
+    const probe = join(context.temp, 'background-contention-web.js')
+    await context.command([
+        process.execPath,
+        '--no-env-file',
+        'build',
+        join(source, 'scripts/runtime-scale/background-contention-web.ts'),
+        '--tsconfig-override=' + join(source, 'tsconfig.json'),
+        '--target=bun',
+        '--packages=external',
+        '--outfile=' + probe,
+    ])
+    await context.docker([
+        'cp',
+        probe,
+        context.container + ':/opt/rentnerproxy/web/background-contention-web.js',
     ])
 }
 
@@ -165,6 +184,7 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
             iterations: 1,
             concurrency: 2,
             captureResources: true,
+            ...(options.contention ? { backgroundContention: true as const } : {}),
             seed: options.seed,
             ...(options.image ? { image: options.image } : {}),
         },
@@ -184,9 +204,10 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
     const recovery: { component: string; elapsedMs: number; passed: boolean }[] = []
     const abort = new AbortController()
     const interrupt = () => abort.abort()
-    process.once('SIGINT', interrupt)
-    process.once('SIGTERM', interrupt)
+    process.on('SIGINT', interrupt)
+    process.on('SIGTERM', interrupt)
     let snapshot: BackgroundSnapshot | undefined
+    let contention: Awaited<ReturnType<typeof runContentionWindow>>['report'] | undefined
     let monitoring: ReturnType<typeof backgroundMonitoringReport> | undefined
     let fences: unknown
     let notifications: unknown
@@ -199,6 +220,7 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
             : 'Explicit --extended-recovery true required for certificate interruption, active-work restore and audit replay',
     }
     let failure: string | undefined
+    const cleanupFailures: 'contention-stop-failed'[] = []
     let failureContext:
         | (ReturnType<typeof backgroundFailureDiagnostic> & {
               stage: string
@@ -238,6 +260,7 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
             warmup: performance.now() - origin < 5000,
             sample: { ...value, phase: kind },
         })
+        return value
     }
     console.log(
         JSON.stringify({
@@ -276,53 +299,73 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
             )
         origin = performance.now()
         enter('workload')
-        snapshot = backgroundSnapshotSchema.parse(
-            (await context.fixture('background-start', extra)).background,
-        )
-        while (performance.now() - origin < options.durationSeconds * 1000) {
-            checkBackgroundCancellation(abort.signal)
-            const responses = await Promise.allSettled([
-                (async () => {
-                    const start = performance.now()
-                    const response = await context.http()
-                    proxyMs.push(performance.now() - start)
-                    assert.equal(response.status, 200)
-                    assert.equal(response.body.backend, 'a')
-                })(),
-                (async () => {
-                    const start = performance.now()
-                    const response = await context.docker(
-                        [
-                            'exec',
-                            context.container,
-                            'bun',
-                            '--no-env-file',
-                            '-e',
-                            "const r=await fetch('http://127.0.0.1:3000/login',{signal:AbortSignal.timeout(3000),redirect:'manual'});await r.body?.cancel();if(r.status!==200)process.exit(1)",
-                        ],
-                        { timeoutMs: 5000 },
-                    )
-                    assert.equal(response, '')
-                    ssrMs.push(performance.now() - start)
-                })(),
-                (async () => {
-                    snapshot = backgroundSnapshotSchema.parse(
-                        (await context.fixture('background-read', extra)).background,
-                    )
-                    managementMs.push(snapshot.managementReadMs)
-                })(),
-                sample('continuous'),
-            ])
-            if (responses[0]!.status === 'rejected') proxyFailures++
-            const rejected = responses.find((response) => response.status === 'rejected')
-            if (rejected?.status === 'rejected') throw rejected.reason
-            assert.ok(snapshot)
-            if (
-                snapshot.observations.length >= options.policies &&
-                performance.now() - origin >= 35000
+        if (options.contention) {
+            const result = await runContentionWindow(
+                harness,
+                options,
+                () => sample('continuous'),
+                () => {
+                    origin = performance.now()
+                },
+                abort.signal,
+                (category) => {
+                    cleanupFailures.push(category)
+                },
             )
-                break
-            await Bun.sleep(500)
+            snapshot = result.snapshot
+            contention = result.report
+            proxyMs.push(...result.proxyMs)
+            managementMs.push(...result.managementMs)
+            proxyFailures += result.proxyErrors
+        } else {
+            snapshot = backgroundSnapshotSchema.parse(
+                (await context.fixture('background-start', extra)).background,
+            )
+            while (performance.now() - origin < options.durationSeconds * 1000) {
+                checkBackgroundCancellation(abort.signal)
+                const responses = await Promise.allSettled([
+                    (async () => {
+                        const start = performance.now()
+                        const response = await context.http()
+                        proxyMs.push(performance.now() - start)
+                        assert.equal(response.status, 200)
+                        assert.equal(response.body.backend, 'a')
+                    })(),
+                    (async () => {
+                        const start = performance.now()
+                        const response = await context.docker(
+                            [
+                                'exec',
+                                context.container,
+                                'bun',
+                                '--no-env-file',
+                                '-e',
+                                "const r=await fetch('http://127.0.0.1:3000/login',{signal:AbortSignal.timeout(3000),redirect:'manual'});await r.body?.cancel();if(r.status!==200)process.exit(1)",
+                            ],
+                            { timeoutMs: 5000 },
+                        )
+                        assert.equal(response, '')
+                        ssrMs.push(performance.now() - start)
+                    })(),
+                    (async () => {
+                        snapshot = backgroundSnapshotSchema.parse(
+                            (await context.fixture('background-read', extra)).background,
+                        )
+                        managementMs.push(snapshot.managementReadMs)
+                    })(),
+                    sample('continuous'),
+                ])
+                if (responses[0]!.status === 'rejected') proxyFailures++
+                const rejected = responses.find((response) => response.status === 'rejected')
+                if (rejected?.status === 'rejected') throw rejected.reason
+                assert.ok(snapshot)
+                if (
+                    snapshot.observations.length >= options.policies &&
+                    performance.now() - origin >= 35000
+                )
+                    break
+                await Bun.sleep(500)
+            }
         }
         elapsedMs = performance.now() - origin
         assert.ok(snapshot)
@@ -473,31 +516,45 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
             .catch(() => undefined)
     } finally {
         if (origin && !elapsedMs) elapsedMs = performance.now() - origin
-        process.off('SIGINT', interrupt)
-        process.off('SIGTERM', interrupt)
+        stage = 'cleanup'
         await harness.cleanup().catch(() => {
             failure ??= 'cleanup'
         })
+        if (abort.signal.aborted) failure ??= 'cancelled'
+        process.off('SIGINT', interrupt)
+        process.off('SIGTERM', interrupt)
     }
     const resourceEvidence = backgroundResourceEvidence(resources)
     const interactive = {
-        management: backgroundDistribution(managementMs),
-        ssr: backgroundDistribution(ssrMs),
+        management: {
+            ...backgroundDistribution(managementMs),
+            measuredIn: options.contention
+                ? 'actual authenticated management SSR/auth HTTP read in the web process'
+                : 'authorized host-list service in the fixture child',
+        },
+        ssr: options.contention ? null : backgroundDistribution(ssrMs),
+        ssrEvidence: options.contention
+            ? 'Same operation as interactive.management; no second independent series'
+            : 'Separate public login SSR request',
         proxy: backgroundDistribution(proxyMs),
         proxyFailures,
     }
     const passed =
         !failure &&
         monitoring?.status === 'met' &&
+        (!options.contention || contention?.status === 'met') &&
         !receiptsOverflowed &&
         resourceEvidence.status !== 'unmet' &&
         proxyFailures === 0 &&
         interactive.management.p99 !== null &&
-        interactive.management.p99 <= backgroundSlo.managementReadP99Ms &&
+        interactive.management.p99 <=
+            (options.contention ? 1000 : backgroundSlo.managementReadP99Ms) &&
         interactive.proxy.p99 !== null &&
         interactive.proxy.p99 <= backgroundSlo.proxyP99Ms &&
-        interactive.ssr.p99 !== null &&
-        interactive.ssr.p99 <= backgroundSlo.ssrP99Ms &&
+        (options.contention ||
+            (interactive.ssr?.p99 !== null &&
+                interactive.ssr?.p99 !== undefined &&
+                interactive.ssr.p99 <= backgroundSlo.ssrP99Ms)) &&
         recovery.every((item) => item.passed)
     const report = {
         version: 1,
@@ -514,6 +571,7 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
         extendedRecoverySelected: options.extendedRecovery === true,
         slo: backgroundSlo,
         monitoring,
+        ...(contention ? { contention } : {}),
         interactive,
         fences,
         notifications,
@@ -532,6 +590,7 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
             reason: 'A bounded first-cadence regression cannot establish sustained production capacity',
         },
         ...(failure ? { failure, failureContext } : {}),
+        ...(cleanupFailures.length ? { cleanupFailures } : {}),
     }
     const path = resolve(
         options.reportPath ?? join(import.meta.dir, '../../tmp/runtime-background/report.json'),

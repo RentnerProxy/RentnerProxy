@@ -24,6 +24,7 @@ import type { ProxyRuntimeMutationStatus } from '@/lib/ProxyRuntime/Types/proxy-
 import { requirePermissionService } from '@/server/Auth/Access/authorization.service.ts'
 import { requirePermissionInTransaction } from '@/server/Auth/Access/rbac.service.ts'
 import { getAuthDatabase } from '@/server/Auth/Core/database.server.ts'
+import { getBackgroundDatabase } from '@/server/Foundation/background-database.server.ts'
 import { isProxyRuntimeReconciliationEnabled } from '@/server/env.server.ts'
 import { appendAuditEventInTransactionService } from '@/server/Audit/audit.service.ts'
 import {
@@ -70,8 +71,9 @@ function runtimeMatches(
     )
 }
 
+/** Load configuration through reserved critical SQL capacity, then derive the controller request after releasing the database permit. */
 async function loadReconcileSnapshot(): Promise<ReconcileSnapshot> {
-    const stored = await getAuthDatabase().transaction(
+    const stored = await getBackgroundDatabase('critical').transaction(
         (transaction) => readStoredCrowdSecConfiguration(transaction),
         { isolationLevel: 'repeatable read', accessMode: 'read only' },
     )

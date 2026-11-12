@@ -1,4 +1,5 @@
 // oxlint-disable no-await-in-loop -- Ownership proof requires ordered census/readiness checks within one deadline.
+import { memoryResourceEvidence } from '../runtime-reliability/resource-probe.ts'
 import { createHash } from 'node:crypto'
 import assert from 'node:assert/strict'
 import { createSeededRandom, parseReliabilityOptions } from '../runtime-reliability/control.ts'
@@ -148,6 +149,7 @@ export function parseBackgroundOptions(args: string[]): BackgroundOptions {
                 '--image',
                 '--report',
                 '--extended-recovery',
+                '--contention',
             ].includes(flag) ||
             flags.has(flag) ||
             !value ||
@@ -160,11 +162,13 @@ export function parseBackgroundOptions(args: string[]): BackgroundOptions {
     const pattern = flags.get('--pattern') ?? 'simultaneous'
     const profile = flags.get('--profile') ?? 'mixed'
     const extendedRecovery = flags.get('--extended-recovery') ?? 'false'
+    const contention = flags.get('--contention') ?? 'false'
     if (
         !['100', '500', '1000'].includes(policies) ||
         !['simultaneous', 'staggered'].includes(pattern) ||
         !['mixed', 'healthy', 'slow', 'timeout'].includes(profile) ||
-        !['true', 'false'].includes(extendedRecovery)
+        !['true', 'false'].includes(extendedRecovery) ||
+        !['true', 'false'].includes(contention)
     )
         throw new Error('Background workload outside fixed bounds')
     const inherited = parseReliabilityOptions(
@@ -187,6 +191,7 @@ export function parseBackgroundOptions(args: string[]): BackgroundOptions {
         ...(inherited.image ? { image: inherited.image } : {}),
         ...(inherited.reportPath ? { reportPath: inherited.reportPath } : {}),
         ...(extendedRecovery === 'true' ? { extendedRecovery: true as const } : {}),
+        ...(contention === 'true' ? { contention: true as const } : {}),
     }
 }
 
@@ -276,6 +281,7 @@ export function backgroundResourceEvidence(samples: BackgroundResourceSample[]) 
                 : null,
         ]),
     )
+    const processMemory = memoryResourceEvidence(samples.map((item) => item.sample))
     const violated = values.some(
         (value) =>
             value.memoryBytes > resourceLimits.memoryBytes ||
@@ -295,7 +301,9 @@ export function backgroundResourceEvidence(samples: BackgroundResourceSample[]) 
             : valid.length !== samples.length || !values.length
               ? 'insufficient'
               : 'met',
-        maxima,
+        maxima: { ...maxima, ...processMemory.maxima },
+        processMemoryComplete: processMemory.complete,
+        memoryMeasurementSemantics: processMemory.semantics,
         stabilityClaimed: false,
     }
 }

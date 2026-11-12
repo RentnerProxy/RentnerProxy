@@ -4,16 +4,27 @@ export class ResponseBodyLimitError extends Error {
     }
 }
 
+/** Bound caller observation while allowing a resource owner to retain actual source-cancellation work. */
 export async function readBoundedStream(
     body: ReadableStream<Uint8Array>,
     limit: number,
     signal?: AbortSignal,
+    trackWork?: (work: Promise<unknown>) => void,
 ): Promise<Uint8Array> {
     const reader = body.getReader()
     const chunks: Uint8Array[] = []
     let size = 0
+    let cancellation: Promise<void> | undefined
+    /** Reuse the original cancellation promise even after the stream has already become closed. */
+    const cancel = () => {
+        if (!cancellation) {
+            cancellation = reader.cancel().catch(() => {})
+            trackWork?.(cancellation)
+        }
+        return cancellation
+    }
     const abort = () => {
-        void reader.cancel().catch(() => {})
+        void cancel()
     }
     signal?.addEventListener('abort', abort, { once: true })
     try {
@@ -37,7 +48,7 @@ export async function readBoundedStream(
         return result
     } finally {
         signal?.removeEventListener('abort', abort)
-        void reader.cancel().catch(() => {})
+        void cancel()
         reader.releaseLock()
     }
 }

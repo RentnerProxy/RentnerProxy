@@ -1,6 +1,57 @@
 import { expect, spyOn, test } from 'bun:test'
 import { readBoundedStream, ResponseBodyLimitError } from '@/lib/Http/readBoundedStream.ts'
 
+test.each([
+    ['overflow', 'resolve'],
+    ['overflow', 'reject'],
+    ['abort', 'resolve'],
+    ['abort', 'reject'],
+] as const)(
+    '%s reports its original failure and tracks the actual %s cancellation for the resource owner',
+    async (phase, outcome) => {
+        const cancelled = Promise.withResolvers<void>()
+        const cleanup = Promise.withResolvers<void>()
+        const controller = new AbortController()
+        const failure = new Error('caller abort')
+        const tracked: Promise<unknown>[] = []
+        let calls = 0,
+            settled = false
+        const body = new ReadableStream<Uint8Array>({
+            start(source) {
+                if (phase === 'overflow') source.enqueue(Uint8Array.of(1, 2))
+            },
+            cancel() {
+                calls++
+                cancelled.resolve()
+                return cleanup.promise
+            },
+        })
+        try {
+            const reading = readBoundedStream(body, 1, controller.signal, (work) =>
+                tracked.push(work),
+            )
+            if (phase === 'abort') controller.abort(failure)
+            await cancelled.promise
+            if (phase === 'abort') await expect(reading).rejects.toBe(failure)
+            else await expect(reading).rejects.toBeInstanceOf(ResponseBodyLimitError)
+            expect(body.locked).toBe(false)
+            expect(tracked).toHaveLength(1)
+            const drained = Promise.all(tracked).then(() => {
+                settled = true
+            })
+            await Bun.sleep(0)
+            expect(settled).toBe(false)
+            expect(calls).toBe(1)
+            if (outcome === 'reject') cleanup.reject(new Error('ignored cleanup failure'))
+            else cleanup.resolve()
+            await drained
+            expect(settled).toBe(true)
+        } finally {
+            cleanup.resolve()
+        }
+    },
+)
+
 test('reads ordered byte chunks at the exact limit and releases the reader', async () => {
     const body = new ReadableStream<Uint8Array>({
         start(controller) {

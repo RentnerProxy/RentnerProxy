@@ -1,3 +1,7 @@
+import type { BACKGROUND_DATABASE_POLICY } from '@/config/background-resources.config.ts'
+
+export type BackgroundDatabaseClass = keyof typeof BACKGROUND_DATABASE_POLICY.classes
+
 export interface ResourceAdmissionPolicy {
     readonly running: number
     readonly pending: number

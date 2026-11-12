@@ -2,6 +2,12 @@ import { describe, expect, test } from 'bun:test'
 import { eq } from 'drizzle-orm'
 import { sql } from 'drizzle-orm'
 import { DATABASE_CONNECTION_BUDGET } from '@/config/database.config.ts'
+import { BACKGROUND_DATABASE_POLICY } from '@/config/background-resources.config.ts'
+import {
+    getBackgroundDatabase,
+    getBackgroundDatabaseResourceSnapshot,
+} from '@/server/Foundation/background-database.server.ts'
+import type { BackgroundDatabaseClass } from '@/server/Foundation/Types/resource-admission.types.ts'
 
 import { db } from '@/db/index.ts'
 import {
@@ -16,6 +22,11 @@ import { checkDatabaseHealth } from '@/server/Foundation/database-health.server.
 
 const integrationTest =
     process.env.RENTNERPROXY_DATABASE_INTEGRATION === '1' && getDatabaseUrl() ? test : test.skip
+
+const backgroundSlots = Object.entries(BACKGROUND_DATABASE_POLICY.classes).flatMap(
+    ([resource, policy]) =>
+        Array.from({ length: policy.running }, () => resource as BackgroundDatabaseClass),
+)
 
 async function waitForAdmission(ready: () => boolean): Promise<void> {
     const deadline = Date.now() + 2000
@@ -35,7 +46,7 @@ describe('PostgreSQL integration', () => {
         })
         let running = 0
         let queuedRan = false
-        const held = Array.from({ length: DATABASE_CONNECTION_BUDGET.backgroundTransactions }, () =>
+        const held = backgroundSlots.map((resource) =>
             withBackgroundDatabaseContext(
                 () =>
                     admitDatabaseTransaction(async () => {
@@ -43,6 +54,7 @@ describe('PostgreSQL integration', () => {
                         await gate
                     }),
                 controller.signal,
+                resource,
             ),
         )
         let queued: Promise<unknown> | undefined
@@ -78,7 +90,7 @@ describe('PostgreSQL integration', () => {
     })
 
     integrationTest(
-        'excess certificate and notification transactions wait while all eight interactive slots remain available',
+        'class reservations admit eight background transactions once and leave all eight interactive slots available',
         async () => {
             let release!: () => void
             const gate = new Promise<void>((resolve) => {
@@ -89,20 +101,23 @@ describe('PostgreSQL integration', () => {
             let overflowAdmitted = false
             const backgroundPids = new Set<number>()
             const interactivePids = new Set<number>()
-            const hold = () =>
-                db.transaction(async (transaction) => {
-                    await transaction.execute(sql`set local transaction_timeout = '3000ms'`)
-                    const [row] = await transaction.execute<{ pid: number }>(
-                        sql`select pg_backend_pid() pid`,
+            const hold = (resource: BackgroundDatabaseClass) =>
+                getBackgroundDatabase(resource).transaction(async (transaction) => {
+                    const [row] = await transaction.execute<{ pid: number; timeout: string }>(
+                        sql`select pg_backend_pid() pid, current_setting('statement_timeout') as timeout`,
+                    )
+                    expect(row!.timeout).toBe(
+                        `${BACKGROUND_DATABASE_POLICY.classes[resource].transactionMs / 1000}s`,
                     )
                     backgroundPids.add(row!.pid)
                     admitted++
                     await gate
                 })
-            const background = Array.from(
-                { length: DATABASE_CONNECTION_BUDGET.backgroundTransactions },
-                (_, index) =>
-                    observeWorkerOperation(index < 4 ? 'certificate_jobs' : 'notifications', hold),
+            const background = backgroundSlots.map((resource) =>
+                observeWorkerOperation(
+                    resource === 'critical' ? 'certificate_jobs' : 'notifications',
+                    () => hold(resource),
+                ),
             )
             let overflow: Promise<unknown> | undefined
             let management: Promise<unknown>[] = []
@@ -142,6 +157,10 @@ describe('PostgreSQL integration', () => {
                 )
                 await Bun.sleep(25)
                 expect(overflowAdmitted).toBe(false)
+                const usage = getBackgroundDatabaseResourceSnapshot()
+                for (const [resource, policy] of Object.entries(BACKGROUND_DATABASE_POLICY.classes))
+                    expect(usage[resource]!.running).toBe(policy.running)
+                expect(usage.critical!.pending).toBe(1)
                 expect(backgroundPids.size).toBe(DATABASE_CONNECTION_BUDGET.backgroundTransactions)
                 expect(interactivePids.size).toBe(DATABASE_CONNECTION_BUDGET.interactiveHeadroom)
                 expect(new Set([...backgroundPids, ...interactivePids]).size).toBe(
@@ -169,15 +188,11 @@ describe('PostgreSQL integration', () => {
                 release = resolve
             })
             let admitted = 0
-            const held = Array.from(
-                { length: DATABASE_CONNECTION_BUDGET.backgroundTransactions },
-                () =>
-                    withBackgroundDatabaseContext(() =>
-                        db.transaction(async () => {
-                            admitted++
-                            await gate
-                        }),
-                    ),
+            const held = backgroundSlots.map((resource) =>
+                getBackgroundDatabase(resource).transaction(async () => {
+                    admitted++
+                    await gate
+                }),
             )
             let cancelled: Promise<unknown> | undefined
             try {
@@ -219,13 +234,11 @@ describe('PostgreSQL integration', () => {
             }
             const failure = new Error('fixture transaction failure')
             const outcomes = await Promise.allSettled(
-                Array.from({ length: DATABASE_CONNECTION_BUDGET.backgroundTransactions }, () =>
-                    withBackgroundDatabaseContext(() =>
-                        db.transaction(async (transaction) => {
-                            await transaction.execute(sql`select 1`)
-                            throw failure
-                        }),
-                    ),
+                backgroundSlots.map((resource) =>
+                    getBackgroundDatabase(resource).transaction(async (transaction) => {
+                        await transaction.execute(sql`select 1`)
+                        throw failure
+                    }),
                 ),
             )
             expect(
@@ -234,16 +247,14 @@ describe('PostgreSQL integration', () => {
                 ),
             ).toBe(true)
             const recovered = await Promise.all(
-                Array.from({ length: DATABASE_CONNECTION_BUDGET.backgroundTransactions }, () =>
-                    withBackgroundDatabaseContext(() =>
-                        db.transaction((transaction) =>
-                            transaction.transaction(async (nested) => {
-                                const [row] = await nested.execute<{ ready: number }>(
-                                    sql`select 1 as ready`,
-                                )
-                                return row!.ready
-                            }),
-                        ),
+                backgroundSlots.map((resource) =>
+                    getBackgroundDatabase(resource).transaction((transaction) =>
+                        transaction.transaction(async (nested) => {
+                            const [row] = await nested.execute<{ ready: number }>(
+                                sql`select 1 as ready`,
+                            )
+                            return row!.ready
+                        }),
                     ),
                 ),
             )

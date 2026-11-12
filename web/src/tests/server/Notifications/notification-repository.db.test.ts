@@ -6,6 +6,8 @@ import { NOTIFICATION_SETTINGS_KEY, NOTIFICATION_STATE_KEY } from '@/config/noti
 import { systemSettings } from '@/db/schema.ts'
 import { getAuthDatabase } from '@/server/Auth/Core/database.server.ts'
 import { getDatabaseUrl } from '@/server/env.server.ts'
+import { ResourceAdmissionError } from '@/server/Foundation/resource-admission.ts'
+import { getBackgroundDatabaseResourceSnapshot } from '@/server/Foundation/background-database.server.ts'
 import {
     createNotificationState,
     observeNotificationSignals,
@@ -336,9 +338,25 @@ describe('notification repository PostgreSQL durability and concurrency', () => 
                 )
                 await writeNotificationRuntime(transaction, runtime)
             })
-            const claims = (
-                await Promise.all(Array.from({ length: 32 }, () => claimNextNotificationDelivery()))
-            ).filter((claim) => claim !== null)
+            const beforePressure = getBackgroundDatabaseResourceSnapshot().notifications!.busy
+            const attempts = await Promise.allSettled(
+                Array.from({ length: 32 }, () => claimNextNotificationDelivery()),
+            )
+            const rejected = attempts.filter((attempt) => attempt.status === 'rejected')
+            expect(rejected).toHaveLength(18)
+            expect(
+                rejected.every(
+                    (attempt) =>
+                        attempt.reason instanceof ResourceAdmissionError &&
+                        attempt.reason.reason === 'busy',
+                ),
+            ).toBe(true)
+            expect(
+                getBackgroundDatabaseResourceSnapshot().notifications!.busy - beforePressure,
+            ).toBe(18)
+            const claims = attempts.flatMap((attempt) =>
+                attempt.status === 'fulfilled' && attempt.value ? [attempt.value] : [],
+            )
             expect(claims).toHaveLength(8)
             expect(new Set(claims.map((claim) => claim.id)).size).toBe(8)
             expect(claims.filter((claim) => claim.channel.kind === 'email')).toHaveLength(4)

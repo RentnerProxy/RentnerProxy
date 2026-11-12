@@ -49,6 +49,7 @@ function abortable<T>(
     }
 }
 
+/** Bound response/body observation by cancellation and payload size while tracking underlying promises for truthful permit release and drain. */
 export async function readSubscriptionSnapshot(
     subscription: LiveTopicSubscription,
     signal: AbortSignal,
@@ -58,6 +59,7 @@ export async function readSubscriptionSnapshot(
     ) => Response | Promise<Response>,
     getSnapshotUrl: (subscription: LiveTopicSubscription) => string,
     maxPayloadBytes = LIVE_MAX_PAYLOAD_BYTES,
+    trackWork?: (work: Promise<unknown>) => void,
 ): Promise<LiveReadResult> {
     const headers = new Headers()
     if (subscription.connection.cookie !== null) {
@@ -66,36 +68,47 @@ export async function readSubscriptionSnapshot(
     headers.set('origin', subscription.connection.origin)
     const request = new Request(getSnapshotUrl(subscription), { method: 'GET', headers, signal })
     let response: Response
+    let unclaimedResponse: Response | undefined
     const responseAbort = abortable<Response>(signal, () => undefined)
     try {
-        const responsePromise = Promise.resolve(
-            readSnapshot(request, {
-                request,
-                topic: subscription.topic,
-                query: subscription.query,
-            }),
-        ).then((result) => {
-            if (signal.aborted) void result.body?.cancel().catch(() => undefined)
-            return result
-        })
+        const responsePromise = Promise.resolve()
+            .then(() => {
+                signal.throwIfAborted()
+                return readSnapshot(request, {
+                    request,
+                    topic: subscription.topic,
+                    query: subscription.query,
+                })
+            })
+            .then(async (result) => {
+                // Late bodies still own the admitted resource until cancellation actually settles.
+                if (signal.aborted) await result.body?.cancel().catch(() => undefined)
+                else unclaimedResponse = result
+                return result
+            })
+        trackWork?.(responsePromise)
         response = await Promise.race([responsePromise, responseAbort.promise])
     } catch {
+        // Abort can win after the late check but before the response reaches this reader.
+        const cancelling = unclaimedResponse?.body?.cancel().catch(() => undefined)
+        if (cancelling) trackWork?.(cancelling)
         responseAbort.cleanup()
         return { kind: 'failure', status: 503 }
     }
     responseAbort.cleanup()
     if (!response.ok) {
-        void response.body?.cancel().catch(() => undefined)
+        const cancelling = response.body?.cancel().catch(() => undefined)
+        if (cancelling) trackWork?.(cancelling)
         return { kind: 'failure', status: response.status }
     }
     const bodyAbort = abortable<unknown>(signal, () => {
-        void response.body?.cancel().catch(() => undefined)
+        const cancelling = response.body?.cancel().catch(() => undefined)
+        if (cancelling) trackWork?.(cancelling)
     })
     try {
-        const data = await Promise.race([
-            readBoundedJson(response, maxPayloadBytes, signal),
-            bodyAbort.promise,
-        ])
+        const reading = readBoundedJson(response, maxPayloadBytes, signal, trackWork)
+        trackWork?.(reading)
+        const data = await Promise.race([reading, bodyAbort.promise])
         return { kind: 'success', data }
     } catch {
         void response.body?.cancel().catch(() => undefined)
@@ -105,12 +118,14 @@ export async function readSubscriptionSnapshot(
     }
 }
 
+/** Authorize through the bounded snapshot reader with a dedicated handshake deadline and expose underlying work to the shared resource owner. */
 export async function readLiveHandshake(
     connection: LiveConnectionData,
     snapshotPath: string,
     snapshotTimeoutMs: number,
     maxPayloadBytes: number,
     readSnapshot: LiveSnapshotReader,
+    trackWork?: (work: Promise<unknown>) => void,
 ): Promise<number> {
     const controller = new AbortController()
     connection.handshakeAbortController = controller
@@ -124,6 +139,7 @@ export async function readLiveHandshake(
             (current) =>
                 snapshotUrl(connection.requestUrl, snapshotPath, current.topic, current.queryText),
             maxPayloadBytes,
+            trackWork,
         )
         return result.kind === 'failure' ? (result.status ?? 503) : 200
     } finally {

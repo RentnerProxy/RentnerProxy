@@ -27,7 +27,9 @@ export {
     completeHostMonitoringClaim,
     completeHostMonitoringClaims,
     readHostMonitoringClaimContexts,
+    readNextHostMonitoringAdmissionAt,
     releaseHostMonitoringClaim,
+    releaseHostMonitoringClaims,
 } from './host-monitoring.execution.ts'
 export { pruneHostMonitoringHistory } from './host-monitoring.storage.ts'
 

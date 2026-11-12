@@ -11,6 +11,7 @@ export type BackgroundOptions = {
     image?: string
     reportPath?: string
     extendedRecovery?: true
+    contention?: true
 }
 
 export type BackgroundPolicy = {

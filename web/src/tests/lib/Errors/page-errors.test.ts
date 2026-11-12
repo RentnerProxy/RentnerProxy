@@ -14,6 +14,9 @@ describe('safe page error diagnostics', () => {
         ['42P01', 'DATABASE_SCHEMA', 503],
         ['3F000', 'DATABASE_SCHEMA', 503],
         ['53300', 'DATABASE_BUSY', 503],
+        ['25P04', 'DATABASE_BUSY', 503],
+        ['55P03', 'DATABASE_BUSY', 503],
+        ['57014', 'DATABASE_BUSY', 503],
         ['28P01', 'DATABASE_AUTHENTICATION', 503],
         ['28000', 'DATABASE_AUTHENTICATION', 503],
         ['ERR_POSTGRES_AUTHENTICATION_FAILED', 'DATABASE_AUTHENTICATION', 503],
@@ -52,6 +55,14 @@ describe('safe page error diagnostics', () => {
             command: 'bun run db:migrate',
         })
         expect(getPageErrorDetails({ sqlState: '53300' }).code).toBe('RP_DATABASE_BUSY')
+        const lockDeadline = Object.assign(new Error(sensitiveFixture), {
+            code: 'ERR_POSTGRES_SERVER_ERROR',
+            errno: '55P03',
+        })
+        const ormFailure = new Error('ORM query failed', {
+            cause: new Error('transaction failed', { cause: lockDeadline }),
+        })
+        expect(getPageErrorDetails(ormFailure).code).toBe('RP_DATABASE_BUSY')
     })
 
     test.each([

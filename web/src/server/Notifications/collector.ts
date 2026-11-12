@@ -122,7 +122,7 @@ export const collectNotificationObservations = createNotificationCollector({
     proxySnapshot: async () =>
         (
             await import('@/server/ProxyRuntime/proxy-runtime.service.ts')
-        ).getProxyRuntimeSnapshotService(),
+        ).getBackgroundProxyRuntimeSnapshotService('notifications'),
     proxyStatus: getProxyRuntimeStatus,
     now: Date.now,
 })

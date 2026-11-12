@@ -6,6 +6,7 @@ import {
     dockerEventSchema,
     responseObjectSchema,
 } from './responses.validation.ts'
+import { runtimeResourceProbeSource } from './resource-probe.ts'
 import { runSmokeProcess } from '../smoke/process.ts'
 import { waitForSmoke } from '../smoke/wait.ts'
 import type { CommandOptions, FixtureResult, ReliabilityContext } from './Types/harness.types.ts'
@@ -24,6 +25,7 @@ import { sharedSmokeImage } from '../smoke/images.ts'
 import { smokeCompose, smokeDockerArguments, smokeRunScope } from '../smoke/resources.ts'
 import type { ReliabilityCheck, ReliabilityOptions, ResourceSample } from './Types/control.types.ts'
 import { fixtureTransport } from './fixture-transport.config.ts'
+import { TLS_TEST_CA } from '../../web/src/tests/server/Notifications/Types/tls-test.types.ts'
 import {
     caddyTransportErrors,
     createTrafficObserver,
@@ -594,6 +596,10 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
         return evidence
     }
     async function writeCompose() {
+        if (options.backgroundContention)
+            await writeFile(join(temp, 'background-contention-ca.pem'), TLS_TEST_CA, {
+                mode: 0o644,
+            })
         const config = {
             services: {
                 rentnerproxy: {
@@ -613,18 +619,32 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
                         RENTNERPROXY_PROXY_PUBLIC_HTTPS_PORT: '8443',
                         RENTNERPROXY_ACME_TEST_DIRECTORY_URL: 'https://pebble:14000/dir',
                         RENTNERPROXY_ACME_TEST_ROOT_CERT: '/test/pebble.minica.pem',
-                        SMTP_HOST: '127.0.0.1',
+                        SMTP_HOST: options.backgroundContention
+                            ? 'notification-tls.invalid'
+                            : '127.0.0.1',
                         SMTP_PORT: '2525',
-                        SMTP_SECURE: 'false',
+                        SMTP_SECURE: options.backgroundContention ? 'true' : 'false',
                         SMTP_FROM: 'reliability@example.invalid',
                         SMTP_USER: 'reliability',
                         SMTP_PASSWORD: 'fixture-only',
+                        ...(options.backgroundContention
+                            ? { NODE_EXTRA_CA_CERTS: '/test/background-contention-ca.pem' }
+                            : {}),
                     },
                     volumes: [
                         volume + ':/var/lib/rentnerproxy',
                         join(temp, 'pebble.minica.pem') + ':/test/pebble.minica.pem:ro',
+                        ...(options.backgroundContention
+                            ? [
+                                  join(temp, 'background-contention-ca.pem') +
+                                      ':/test/background-contention-ca.pem:ro',
+                              ]
+                            : []),
                     ],
                     networks: ['fixture'],
+                    ...(options.backgroundContention
+                        ? { extra_hosts: ['notification-tls.invalid:127.0.0.1'] }
+                        : {}),
                 },
             },
             volumes: { [volume]: { name: volume, external: true } },
@@ -951,20 +971,14 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
     }
     let previousCpu: { usage: number; time: number } | undefined
     async function resources(elapsedSeconds: number): Promise<ResourceSample> {
-        const script = `import { readdir, readFile } from 'node:fs/promises';
+        const script = `${runtimeResourceProbeSource()}
+const {readFile}=await import('node:fs/promises');
 const text = p => readFile(p,'utf8');
-let webFds=0, controllerFds=0, caddyFds=0;
-for(const pid of await readdir('/proc')) { if(!/^\\d+$/.test(pid)||Number(pid)===process.pid) continue; try {
-const name=(await text('/proc/'+pid+'/comm')).trim();
-let kind=name==='caddy'?'caddy':name==='rentnerproxy-co'?'controller':undefined;
-if(name==='bun' && (await text('/proc/'+pid+'/cmdline')).includes('/docker/web/serve.ts')) kind='web';
-if(kind) { const count=(await readdir('/proc/'+pid+'/fd')).length; if(kind==='web')webFds+=count; if(kind==='controller')controllerFds+=count; if(kind==='caddy')caddyFds+=count; }
-} catch {} }
 const memory=Number(await text('/sys/fs/cgroup/memory.current'));
 const stat=await text('/sys/fs/cgroup/memory.stat');
 const inactive=Number(stat.match(/^inactive_file (\\d+)/m)?.[1]??0);
 const cpu=Number((await text('/sys/fs/cgroup/cpu.stat')).match(/^usage_usec (\\d+)/m)?.[1]);
-console.log(JSON.stringify({memoryBytes:Math.max(0,memory-inactive),pids:Number(await text('/sys/fs/cgroup/pids.current')),usage:cpu,webFds,controllerFds,caddyFds}));`
+console.log(JSON.stringify({...processResources,cgroupMemoryCurrentBytes:memory,memoryBytes:Math.max(0,memory-inactive),pids:Number(await text('/sys/fs/cgroup/pids.current')),usage:cpu}));`
         const metrics = JSON.parse(
             await docker(['exec', container, 'bun', '--no-env-file', '-e', script]),
         ) as Record<string, number>
@@ -1024,6 +1038,10 @@ console.log(JSON.stringify({memoryBytes:Math.max(0,memory-inactive),pids:Number(
             elapsedSeconds,
             phase: 'quiescent',
             memoryBytes: metrics.memoryBytes!,
+            cgroupMemoryCurrentBytes: metrics.cgroupMemoryCurrentBytes!,
+            webRssBytes: metrics.webRssBytes ?? null,
+            controllerRssBytes: metrics.controllerRssBytes ?? null,
+            caddyRssBytes: metrics.caddyRssBytes ?? null,
             cpuPercent,
             pids: metrics.pids!,
             postgresConnections,

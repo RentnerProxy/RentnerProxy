@@ -34,11 +34,40 @@ import type { CertificateJobRow } from './Types/certificate-jobs-storage.types.t
 import { observeWorkerOperation } from '@/server/Foundation/worker-operation.ts'
 import { workerObservability } from '@/server/Foundation/worker-observability.ts'
 import type { WorkerOutcome } from '@/server/Foundation/Types/worker-observability.types.ts'
+import { ResourceAdmissionError } from '@/server/Foundation/resource-admission.ts'
+import { getPageErrorDetails } from '@/lib/Errors/pageError.ts'
+import { isRecord } from '@/lib/Records/isRecord.ts'
 
 const certificateJobController = {
     get: getControllerCertificate,
     issue: issueControllerCertificate,
     renew: renewControllerCertificate,
+}
+
+/** SQL pressure defers existing durable work without blaming the controller or changing retry intent. */
+function admissionOutcome(error: ResourceAdmissionError): WorkerOutcome {
+    if (error.reason === 'cancelled') return 'cancelled'
+    workerObservability.count('certificate_jobs', 'admissionRejected')
+    workerObservability.count('certificate_jobs', 'retry')
+    return 'deferred'
+}
+
+/** Reuse page error classification for PostgreSQL pressure SQLSTATEs across nested driver/ORM causes only. */
+function isDatabasePressureFailure(error: unknown): boolean {
+    let cause = error
+    for (let depth = 0; depth < 8 && isRecord(cause); depth++) {
+        const sqlStates = [cause.errno, cause.sqlState, cause.code]
+        if (
+            sqlStates.some(
+                (value) =>
+                    typeof value === 'string' &&
+                    ['25P04', '55P03', '57014', '53300'].includes(value),
+            )
+        )
+            return getPageErrorDetails(cause).code === 'RP_DATABASE_BUSY'
+        cause = cause.cause
+    }
+    return false
 }
 
 /** An owned lease remains unsafe for restore until its original fenced release succeeds. */
@@ -212,6 +241,11 @@ async function processCertificateJob(
             await releaseCertificateJob(job, {})
             return 'cancelled'
         }
+        if (error instanceof ResourceAdmissionError) {
+            const outcome = admissionOutcome(error)
+            await releaseCertificateJob(job, {})
+            return outcome
+        }
         if (error instanceof CertificateJobDomainError) {
             await releaseCertificateJob(job, {
                 stage: 'needs_attention',
@@ -220,6 +254,11 @@ async function processCertificateJob(
             })
             workerObservability.count('certificate_jobs', 'exhausted')
             return 'failure'
+        }
+        if (isDatabasePressureFailure(error)) {
+            workerObservability.count('certificate_jobs', 'retry')
+            await releaseCertificateJob(job, {})
+            return 'deferred'
         }
         const code = error instanceof CertificateDomainError ? error.code : 'controller_unavailable'
         const temporary =
@@ -254,14 +293,20 @@ export async function runCertificateJobsOnce(
     const claims = await Promise.allSettled(Array.from({ length: 4 }, () => claimCertificateJob()))
     const results = await Promise.allSettled(
         claims.map(async (claim): Promise<WorkerOutcome> => {
-            if (claim.status === 'rejected') throw claim.reason
-            const job = claim.value
-            if (!job) return 'deferred'
-            if (signal?.aborted) {
-                await releaseCertificateJob(job, {})
-                return 'cancelled'
+            try {
+                if (claim.status === 'rejected') throw claim.reason
+                const job = claim.value
+                if (!job) return 'deferred'
+                if (signal?.aborted) {
+                    await releaseCertificateJob(job, {})
+                    return 'cancelled'
+                }
+                return await processCertificateJob(job, controller, runtime, signal)
+            } catch (error) {
+                if (!(error instanceof ResourceAdmissionError)) throw error
+                const outcome = admissionOutcome(error)
+                return signal?.aborted ? 'cancelled' : outcome
             }
-            return processCertificateJob(job, controller, runtime, signal)
         }),
     )
     const failed = results.find((result) => result.status === 'rejected')

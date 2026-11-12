@@ -16,6 +16,118 @@ function connection(): LiveConnectionData {
     }
 }
 
+test.each(['resolve', 'reject'] as const)(
+    'an abort between the response late check and race handoff owns the original %s cancellation',
+    async (outcome) => {
+        const cleanup = Promise.withResolvers<void>()
+        const state = connection()
+        const work: Promise<unknown>[] = []
+        let cancellations = 0,
+            settled = false
+        const response = new Response(
+            new ReadableStream<Uint8Array>({
+                cancel() {
+                    cancellations++
+                    return cleanup.promise
+                },
+            }),
+        )
+        try {
+            expect(
+                await readLiveHandshake(
+                    state,
+                    '/api/live-snapshot',
+                    1000,
+                    100,
+                    () => {
+                        // The first job precedes the late check; the second aborts before
+                        // the async response handler forwards its result to Promise.race.
+                        queueMicrotask(() =>
+                            queueMicrotask(() =>
+                                state.handshakeAbortController!.abort(
+                                    new Error('abort during response handoff'),
+                                ),
+                            ),
+                        )
+                        return response
+                    },
+                    (pending) => work.push(pending),
+                ),
+            ).toBe(503)
+            expect(cancellations).toBe(1)
+            expect(work).toHaveLength(2)
+            const drain = Promise.allSettled(work).then(() => {
+                settled = true
+            })
+            await Bun.sleep(0)
+            expect(settled).toBe(false)
+            if (outcome === 'reject') cleanup.reject(new Error('upstream cancellation failure'))
+            else cleanup.resolve()
+            await drain
+            expect(settled).toBe(true)
+            expect(cancellations).toBe(1)
+            expect(state.handshakeAbortController).toBeNull()
+        } finally {
+            cleanup.resolve()
+            await Promise.allSettled(work)
+        }
+    },
+)
+
+test.each(['resolve', 'reject'] as const)(
+    'an abort after response observation retains the original %s cancellation before the body reader takes ownership',
+    async (outcome) => {
+        const cleanup = Promise.withResolvers<void>()
+        const entered = Promise.withResolvers<void>()
+        const state = connection()
+        const work: Promise<unknown>[] = []
+        let cancellations = 0,
+            settled = false
+        const response = new Response(
+            new ReadableStream<Uint8Array>({
+                cancel() {
+                    cancellations++
+                    entered.resolve()
+                    return cleanup.promise
+                },
+            }),
+        )
+        Object.defineProperty(response, 'ok', {
+            get() {
+                state.handshakeAbortController!.abort(new Error('abort before body ownership'))
+                return true
+            },
+        })
+        try {
+            expect(
+                await readLiveHandshake(
+                    state,
+                    '/api/live-snapshot',
+                    1000,
+                    100,
+                    () => response,
+                    (pending) => work.push(pending),
+                ),
+            ).toBe(503)
+            await entered.promise
+            const drain = Promise.allSettled(work).then(() => {
+                settled = true
+            })
+            await Bun.sleep(0)
+            expect(settled).toBe(false)
+            expect(cancellations).toBe(1)
+            if (outcome === 'reject')
+                cleanup.reject(new Error('ignored upstream cancellation failure'))
+            else cleanup.resolve()
+            await drain
+            expect(settled).toBe(true)
+            expect(state.handshakeAbortController).toBeNull()
+        } finally {
+            cleanup.resolve()
+        }
+    },
+)
+
 test.each([401, 403, 503])(
     'snapshot HTTP status %s does not wait for hanging body cancellation',
     async (status) => {

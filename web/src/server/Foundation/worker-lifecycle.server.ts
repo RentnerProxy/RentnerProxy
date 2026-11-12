@@ -2,7 +2,6 @@ import '@tanstack/react-start/server-only'
 // oxlint-disable no-await-in-loop -- Startup attempts and maintenance observations must remain serial.
 
 import type { WorkerLifecycle, WorkerLifecycleOptions } from './Types/worker-lifecycle.types.ts'
-import { WorkerDrainTimeoutError } from './Types/worker-lifecycle.types.ts'
 import type {
     BackgroundWorkerId,
     BackgroundWorkerState,
@@ -10,46 +9,13 @@ import type {
 import { workerObservability } from './worker-observability.ts'
 import { startEventLoopObservation } from './event-loop-observation.ts'
 import { readRestoreMaintenanceObservation } from '@/server/Backups/restore-maintenance-status.server.ts'
+import { WorkerDrainTimeoutError, drainWorker, settleWorkerTasks } from './worker-drain.ts'
+export { WorkerDrainTimeoutError, drainWorker, settleWorkerTasks } from './worker-drain.ts'
 import { advanceRestoreAdmission } from '@/server/Backups/restore-admission.ts'
 
 class WorkerStoppedInstanceError extends Error {
     constructor(cause: unknown) {
         super('worker_instance_stopped', { cause })
-    }
-}
-
-/** Wait for every admitted sibling before propagating the first rejection; one failed task cannot establish writer quiescence. */
-export async function settleWorkerTasks(tasks: Iterable<Promise<unknown> | null>): Promise<void> {
-    const results = await Promise.allSettled(
-        Array.from(tasks, async (task) => {
-            try {
-                await task
-            } catch (error) {
-                // A nested worker deadline ends its checkpoint, not its execution.
-                if (error instanceof WorkerDrainTimeoutError) return error.drained
-                throw error
-            }
-        }),
-    )
-    const failed = results.find((result) => result.status === 'rejected')
-    if (failed?.status === 'rejected') throw failed.reason
-}
-
-/** Bound waiting for a drain and clear the timer; timeout rejects the checkpoint without claiming the underlying work has ended. */
-export async function drainWorker(pending: Promise<unknown>, timeoutMs = 15_000): Promise<void> {
-    let timer: ReturnType<typeof setTimeout> | undefined
-    try {
-        await Promise.race([
-            pending,
-            new Promise<never>((_, reject) => {
-                timer = setTimeout(
-                    () => reject(new WorkerDrainTimeoutError(settleWorkerTasks([pending]))),
-                    timeoutMs,
-                )
-            }),
-        ])
-    } finally {
-        clearTimeout(timer)
     }
 }
 
@@ -63,7 +29,7 @@ export function createWorkerLifecycleSupervisor() {
         shutdownRequested = true
     })
 
-    /** Share startup by stable worker ID and reject new admission once maintenance or shutdown has latched. */
+    /** Share startup by stable worker ID, wait for restore readiness and reject admission once maintenance or shutdown latches. */
     function startWorkerLifecycle(
         load: (signal: AbortSignal) => Promise<WorkerLifecycle>,
         id?: BackgroundWorkerId,

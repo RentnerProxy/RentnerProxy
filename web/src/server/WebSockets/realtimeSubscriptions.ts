@@ -6,6 +6,12 @@ import type {
 } from './Types/realtime-subscriptions.types.ts'
 
 import { LIVE_INTERVALS, LIVE_MAX_SUBSCRIPTIONS } from '@/config/realtime.config.ts'
+import { BACKGROUND_RESOURCE_ENVELOPE } from '@/config/background-resources.config.ts'
+import {
+    createResourceAdmission,
+    ResourceAdmissionError,
+    releaseAfterSettled,
+} from '@/server/Foundation/resource-admission.ts'
 import type { LiveTopic } from '@/lib/Live/Types/realtime.types.ts'
 import { comparisonKey, snapshotMessage } from '@/lib/Live/snapshot.ts'
 
@@ -23,7 +29,39 @@ function unsubscribe(connection: LiveConnectionData, topic: LiveTopic): void {
     connection.subscriptions.delete(topic)
 }
 
+/** Own globally bounded realtime permits across handshakes and snapshots, retaining capacity until tracked underlying reads actually settle. */
 export function createSubscriptionManager(options: SubscriptionManagerOptions) {
+    const admission = createResourceAdmission(BACKGROUND_RESOURCE_ENVELOPE.realtime)
+    const outstanding = new Set<Promise<void>>()
+    let pressureLoggedAt = -Infinity
+    /** Track each admitted permit through idempotent release and emit rate-limited numeric pressure diagnostics without swallowing admission errors. */
+    async function acquireResource(signal?: AbortSignal) {
+        try {
+            const release = await admission.acquire(signal)
+            const completion = Promise.withResolvers<void>()
+            outstanding.add(completion.promise)
+            let released = false
+            return () => {
+                if (released) return
+                released = true
+                release()
+                outstanding.delete(completion.promise)
+                completion.resolve()
+            }
+        } catch (error) {
+            if (
+                error instanceof ResourceAdmissionError &&
+                error.reason !== 'cancelled' &&
+                Date.now() - pressureLoggedAt >=
+                    BACKGROUND_RESOURCE_ENVELOPE.realtime.pressureLogIntervalMs
+            ) {
+                pressureLoggedAt = Date.now()
+                console.warn('[realtime] Snapshot admission deferred', admission.snapshot())
+            }
+            throw error
+        }
+    }
+    /** Coalesce per-subscription reads and defer overloaded admission to the periodic sampler; hold capacity past response timeout for tracked work. */
     async function sample(subscription: LiveTopicSubscription): Promise<void> {
         const { connection } = subscription
         if (!subscription.active || connection.closed) return
@@ -35,9 +73,19 @@ export function createSubscriptionManager(options: SubscriptionManagerOptions) {
         subscription.pending = false
         const controller = new AbortController()
         subscription.abortController = controller
-        subscription.abortTimer = setTimeout(() => controller.abort(), options.snapshotTimeoutMs)
+        let release: (() => void) | undefined
+        let deferred = false
+        const actualWork = new Set<Promise<unknown>>()
         try {
-            const result = await options.readSnapshot(subscription, controller.signal)
+            release = await acquireResource(controller.signal)
+            if (!subscription.active || connection.closed) return
+            subscription.abortTimer = setTimeout(
+                () => controller.abort(),
+                options.snapshotTimeoutMs,
+            )
+            const result = await options.readSnapshot(subscription, controller.signal, (work) =>
+                actualWork.add(work),
+            )
             if (!subscription.active || connection.closed) return
             if (result.kind === 'failure') {
                 if (result.status === 401 || result.status === 403) {
@@ -76,12 +124,17 @@ export function createSubscriptionManager(options: SubscriptionManagerOptions) {
                 return
             }
             subscription.lastComparison = comparison
+        } catch (error) {
+            if (!(error instanceof ResourceAdmissionError)) throw error
+            // The existing periodic sampler retries; no additional callback/retry timer is queued.
+            deferred = true
         } finally {
+            releaseAfterSettled(release, actualWork)
             subscription.inflight = false
             if (subscription.abortTimer !== null) clearTimeout(subscription.abortTimer)
             subscription.abortTimer = null
             subscription.abortController = null
-            if (subscription.pending && subscription.active && !connection.closed) {
+            if (!deferred && subscription.pending && subscription.active && !connection.closed) {
                 subscription.pending = false
                 queueMicrotask(() => void sample(subscription))
             }
@@ -132,12 +185,21 @@ export function createSubscriptionManager(options: SubscriptionManagerOptions) {
     const connections = new Set<LiveConnectionData>()
 
     const manager: LiveSubscriptionManager = {
+        /** Wait until every admitted underlying read releases its permit; callers must stop admission before claiming a completed drain. */
+        async drainResources() {
+            while (outstanding.size > 0) {
+                // oxlint-disable-next-line no-await-in-loop -- All admitted reads must settle before claiming a completed drain.
+                await Promise.allSettled(outstanding)
+            }
+        },
         connections,
         sample,
         sampleAll,
         subscribe,
         unsubscribe,
         dispose,
+        resourceUsage: admission.snapshot,
+        acquireResource,
     }
     return manager
 }

@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 
 import { createLiveWebSocketRuntime } from '@/server/WebSockets/realtimeWebSocket.ts'
 import { publishApplicationChange } from '@/server/WebSockets/applicationChanges.ts'
+import { BACKGROUND_RESOURCE_ENVELOPE } from '@/config/background-resources.config.ts'
 import { LIVE_CHANGE_COALESCE_MS } from '@/config/realtime.config.ts'
 import type { LiveSocketData as RuntimeSocketData } from '@/server/WebSockets/Types/bun.types.ts'
 
@@ -110,11 +111,12 @@ describe('live WebSocket transport', () => {
         await runtime.shutdown()
     })
 
-    test('releases a handshake reservation when the snapshot reader hangs', async () => {
+    test('releases a handshake reservation but drains timed-out snapshot work before shutdown', async () => {
+        const reader = Promise.withResolvers<Response>()
         const runtime = createLiveWebSocketRuntime({
             allowedOrigin: 'http://allowed.test',
             snapshotTimeoutMs: 5,
-            readSnapshot: () => new Promise<Response>(() => undefined),
+            readSnapshot: () => reader.promise,
         })
         const result = await runtime.handle(
             new Request('http://localhost/api/live', {
@@ -125,7 +127,15 @@ describe('live WebSocket transport', () => {
 
         expect(result.response?.status).toBe(503)
         expect(runtime.connectionCount).toBe(0)
-        await runtime.shutdown()
+        let drained = false
+        const shutdown = runtime.shutdown().then(() => {
+            drained = true
+        })
+        await new Promise<void>((resolve) => setImmediate(resolve))
+        expect(drained).toBe(false)
+        reader.resolve(Response.json({ revision: 'fixture' }))
+        await shutdown
+        expect(drained).toBe(true)
     })
 
     test('sends changed snapshots, ignores volatile fields, and stops sampling after close', async () => {
@@ -230,3 +240,89 @@ describe('live WebSocket transport', () => {
         }
     })
 })
+
+test.each([
+    ['late', 'resolve'],
+    ['late', 'reject'],
+    ['non-OK', 'resolve'],
+    ['non-OK', 'reject'],
+    ['overflow', 'resolve'],
+    ['overflow', 'reject'],
+] as const)(
+    '%s response body cancellation retains all permits and shutdown ownership until cancel %s',
+    async (phase, outcome) => {
+        const slots = BACKGROUND_RESOURCE_ENVELOPE.realtime.running
+        const responses = Array.from({ length: slots }, () => Promise.withResolvers<Response>())
+        const cancel = Promise.withResolvers<void>()
+        const cancelled = Promise.withResolvers<void>()
+        let reads = 0,
+            cancellations = 0,
+            nextSettled = false,
+            drained = false
+        const runtime = createLiveWebSocketRuntime({
+            allowedOrigin: 'http://allowed.test',
+            snapshotTimeoutMs: phase === 'late' ? 5 : 5_000,
+            ...(phase === 'overflow' ? { maxPayloadBytes: 1 } : {}),
+            readSnapshot: () =>
+                responses[reads++]?.promise ?? Response.json({ revision: 'unexpected fresh read' }),
+        })
+        const request = () =>
+            runtime.handle(
+                new Request('http://localhost/api/live', {
+                    headers: { upgrade: 'websocket', origin: 'http://allowed.test' },
+                }),
+                { upgrade: () => false } as unknown as Bun.Server<RuntimeSocketData>,
+            )
+        const initial = Promise.all(Array.from({ length: slots }, request))
+        if (phase === 'late')
+            expect((await initial).every((result) => result.response?.status === 503)).toBe(true)
+        try {
+            for (const response of responses)
+                response.resolve(
+                    new Response(
+                        new ReadableStream({
+                            start(source) {
+                                if (phase === 'overflow') source.enqueue(Uint8Array.of(1, 2))
+                            },
+                            cancel() {
+                                if (++cancellations === slots) cancelled.resolve()
+                                return cancel.promise
+                            },
+                        }),
+                        { status: phase === 'non-OK' ? 403 : 200 },
+                    ),
+                )
+            await cancelled.promise
+            expect(
+                (await initial).every(
+                    (result) =>
+                        result.response?.status ===
+                        (phase === 'late' ? 503 : phase === 'overflow' ? 413 : 403),
+                ),
+            ).toBe(true)
+            const next = request().then((result) => {
+                nextSettled = true
+                return result
+            })
+            await new Promise<void>((resolve) => setImmediate(resolve))
+            await new Promise<void>((resolve) => setImmediate(resolve))
+            expect(reads).toBe(slots)
+            expect(nextSettled).toBe(false)
+            const shutdown = runtime.shutdown().then(() => {
+                drained = true
+            })
+            expect((await next).response?.status).toBe(503)
+            await new Promise<void>((resolve) => setImmediate(resolve))
+            expect(drained).toBe(false)
+            if (outcome === 'reject') cancel.reject(new Error('ignored body cancellation failure'))
+            else cancel.resolve()
+            await shutdown
+            expect(drained).toBe(true)
+            expect(cancellations).toBe(slots)
+        } finally {
+            cancel.resolve()
+            for (const response of responses) response.resolve(new Response(null))
+            await runtime.shutdown()
+        }
+    },
+)

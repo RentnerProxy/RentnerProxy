@@ -1,6 +1,8 @@
 import { drizzle } from 'drizzle-orm/bun-sql'
 import { SQL } from 'bun'
+import { sql } from 'drizzle-orm'
 import { DATABASE_CONNECTION_BUDGET } from '../config/database.config.ts'
+import { BACKGROUND_DATABASE_POLICY } from '../config/background-resources.config.ts'
 import { validateDatabaseEnvironment } from '../server/env.server.ts'
 import { admitDatabaseTransaction } from './background-admission.ts'
 import * as schema from './schema.ts'
@@ -32,7 +34,18 @@ export const db = new Proxy(database, {
         return <T>(
             operation: Parameters<typeof database.transaction<T>>[0],
             options?: Parameters<typeof database.transaction<T>>[1],
-        ): Promise<T> => admitDatabaseTransaction(() => target.transaction(operation, options))
+        ): Promise<T> =>
+            admitDatabaseTransaction((resource) =>
+                target.transaction(async (transaction) => {
+                    if (resource) {
+                        const timeout = `${BACKGROUND_DATABASE_POLICY.classes[resource].transactionMs}ms`
+                        await transaction.execute(
+                            sql`select set_config('statement_timeout', ${timeout}, true), set_config('lock_timeout', ${timeout}, true), set_config('transaction_timeout', ${timeout}, true)`,
+                        )
+                    }
+                    return operation(transaction)
+                }, options),
+            )
     },
 })
 

@@ -16,12 +16,15 @@ export function createHostMonitoringWorker<Claim>(
     let started = false
     let stopped = false
     let nextPruneAt = 0
+    let pollDelayMs: number = HOST_MONITORING_LIMITS.pollIntervalMs
+    let wakeRevision = 0
+    let unsubscribe: (() => void) | undefined
     let cleanupFailure: { reason: unknown } | undefined
     const failedClaims = new Map<Claim, { reason: unknown }>()
     let recoveryAt = 0
     let recoveryDelay = 1_000
     const running = new Set<Promise<void>>()
-    const unavailable = new Set<'claim' | 'probe' | 'prune'>()
+    const unavailable = new Set<'claim' | 'due' | 'probe' | 'prune'>()
     const now = dependencies.now ?? Date.now
     const recoveryNow = dependencies.now ?? performance.now.bind(performance)
     const setTimer =
@@ -61,7 +64,7 @@ export function createHostMonitoringWorker<Claim>(
     }
 
     /** Deduplicates sanitized availability warnings until the failing subsystem recovers. */
-    function warn(source: 'claim' | 'probe' | 'prune', signal: AbortSignal) {
+    function warn(source: 'claim' | 'due' | 'probe' | 'prune', signal: AbortSignal) {
         if (signal.aborted || unavailable.has(source)) return
         const notify = unavailable.size === 0
         unavailable.add(source)
@@ -112,7 +115,7 @@ export function createHostMonitoringWorker<Claim>(
             cancelTimer = null
             schedule()
             void runOnce()
-        }, HOST_MONITORING_LIMITS.pollIntervalMs)
+        }, pollDelayMs)
     }
 
     /** Coalesces admission ticks and reserves free slots before each storage claim batch. */
@@ -122,9 +125,11 @@ export function createHostMonitoringWorker<Claim>(
         prune(signal)
         if (admission) return admission
         admission = (async () => {
+            const revision = wakeRevision
+            pollDelayMs = HOST_MONITORING_LIMITS.pollIntervalMs
             if (failedClaims.size > 0) {
                 if (recoveryNow() < recoveryAt) return
-                // One coalesced bounded wave, using the same eight-at-a-time SQL adapter.
+                // One coalesced bounded wave, using the same class-admitted batch release adapter.
                 await releaseClaims([...failedClaims.keys()])
                 if (failedClaims.size > 0) {
                     recoveryDelay = Math.min(recoveryDelay * 2, 30_000)
@@ -166,13 +171,46 @@ export function createHostMonitoringWorker<Claim>(
                         return
                     }
                     remaining -= limit
-                    if (claims.length < limit) return
+                    if (claims.length < limit) {
+                        if (
+                            claims.length === 0 &&
+                            running.size === 0 &&
+                            dependencies.nextAdmissionAt
+                        ) {
+                            try {
+                                // eslint-disable-next-line no-await-in-loop -- Read durable due time only after an empty claim batch.
+                                const due = await dependencies.nextAdmissionAt()
+                                unavailable.delete('due')
+                                if (
+                                    !signal.aborted &&
+                                    failedClaims.size === 0 &&
+                                    running.size === 0 &&
+                                    revision === wakeRevision
+                                )
+                                    pollDelayMs = Math.max(
+                                        HOST_MONITORING_LIMITS.pollIntervalMs,
+                                        Math.min(
+                                            HOST_MONITORING_LIMITS.idlePollMaximumMs,
+                                            due === null
+                                                ? HOST_MONITORING_LIMITS.idlePollMaximumMs
+                                                : due - now(),
+                                        ),
+                                    )
+                            } catch {
+                                warn('due', signal)
+                            }
+                        }
+                        return
+                    }
                 }
             } catch {
                 warn('claim', signal)
             }
         })().finally(() => {
             admission = null
+            cancelTimer?.()
+            cancelTimer = null
+            schedule()
         })
         return admission
     }
@@ -185,6 +223,14 @@ export function createHostMonitoringWorker<Claim>(
             if (stopped) controller = new AbortController()
             started = true
             stopped = false
+            unsubscribe = dependencies.subscribe?.(() => {
+                wakeRevision++
+                if (pollDelayMs === HOST_MONITORING_LIMITS.pollIntervalMs) return
+                pollDelayMs = HOST_MONITORING_LIMITS.pollIntervalMs
+                cancelTimer?.()
+                cancelTimer = null
+                schedule()
+            })
             schedule()
             void runOnce()
         },
@@ -195,6 +241,8 @@ export function createHostMonitoringWorker<Claim>(
             started = false
             cancelTimer?.()
             cancelTimer = null
+            unsubscribe?.()
+            unsubscribe = undefined
             controller.abort()
             stopping = (async () => {
                 await drainWorker(

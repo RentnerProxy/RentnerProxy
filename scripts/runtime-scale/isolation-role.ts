@@ -6,12 +6,50 @@ import {
     isolationDiagnosticResult,
 } from './isolation.ts'
 import { isolationContract } from './isolation.config.ts'
+import { isolationPoolFaultBudget } from './isolation-faults.ts'
 import type { IsolationRoleMetrics } from './Types/isolation.types.ts'
 import type {
     HostMonitoringClaim,
     HostMonitoringCompletion,
 } from '../../web/src/server/HostMonitoring/Types/host-monitoring.repository.types.ts'
 import type { HostMonitoringProbeContext } from '../../web/src/server/HostMonitoring/Types/host-monitoring-probe.types.ts'
+import { BACKGROUND_DATABASE_POLICY } from '../../web/src/config/background-resources.config.ts'
+import { withBackgroundDatabaseContext } from '../../web/src/db/background-admission.ts'
+import { createHostMonitoringBatcher } from '../../web/src/server/HostMonitoring/host-monitoring.batch.ts'
+import { HostMonitoringCleanupError } from '../../web/src/server/HostMonitoring/Types/host-monitoring-worker.types.ts'
+
+/** Bound the owned 64-claim cleanup to the class's running slots, preserving each original token and drain failure. */
+export function createIsolationClaimRelease(
+    release: (claim: HostMonitoringClaim) => Promise<boolean>,
+) {
+    const batch = createHostMonitoringBatcher<HostMonitoringClaim, boolean>({
+        size: BACKGROUND_DATABASE_POLICY.classes.monitoring.running,
+        delayMs: 0,
+        run: (claims) =>
+            Promise.allSettled(
+                claims.map((claim) =>
+                    withBackgroundDatabaseContext(() => release(claim), null, 'monitoring'),
+                ),
+            ),
+    })
+    return (claim: HostMonitoringClaim) =>
+        batch(claim).catch((cause: unknown) => {
+            throw new HostMonitoringCleanupError(cause)
+        })
+}
+
+/** Await every fixed pool query and expose failures as failed evidence; shutdown never admits another pool read. */
+export async function readIsolationPoolSaturation(
+    query: () => Promise<unknown>,
+    stopping: boolean,
+) {
+    if (stopping) return Response.json({ requested: 0, succeeded: 0, failed: 0 }, { status: 503 })
+    const requested = isolationContract.workerConnections
+    const results = await Promise.allSettled(Array.from({ length: requested }, async () => query()))
+    const succeeded = results.filter((result) => result.status === 'fulfilled').length
+    const failed = requested - succeeded
+    return Response.json({ requested, succeeded, failed }, { status: failed ? 503 : 200 })
+}
 
 /** Validate the unprivileged fixture identity before imports, then own role-local workers, metrics, and the loopback control server. */
 export async function runIsolationRole(
@@ -34,7 +72,6 @@ export async function runIsolationRole(
         { createProxyReconciler },
         { createHostMonitoringWorker },
         { createHostMonitoringProbe },
-        { createHostMonitoringBatcher },
         repository,
     ] = await Promise.all([
         import('drizzle-orm'),
@@ -45,7 +82,6 @@ export async function runIsolationRole(
         import('../../web/src/server/ProxyRuntime/proxy-reconcile.ts'),
         import('../../web/src/server/HostMonitoring/host-monitoring.worker.ts'),
         import('../../web/src/server/HostMonitoring/host-monitoring.probe.ts'),
-        import('../../web/src/server/HostMonitoring/host-monitoring.batch.ts'),
         import('../../web/src/server/HostMonitoring/host-monitoring.repository.ts'),
     ])
     let committed = 0,
@@ -91,6 +127,7 @@ export async function runIsolationRole(
             return results
         },
     })
+    const release = createIsolationClaimRelease(repository.releaseHostMonitoringClaim)
     const execute = createHostMonitoringProbe({
         readContext,
         inspect: async (input, signal) => {
@@ -105,13 +142,13 @@ export async function runIsolationRole(
             return isolationDiagnosticResult(input, performance.now() - start)
         },
         complete: (claim, outcome, before, signal) => complete({ claim, outcome, before, signal }),
-        release: repository.releaseHostMonitoringClaim,
+        release,
     })
     const worker = createHostMonitoringWorker({
         claim: repository.claimDueHostMonitoringPolicies,
         runClaim: execute,
         releaseCancelled: async (claim) => {
-            await repository.releaseHostMonitoringClaim(claim)
+            await release(claim)
         },
         prune: repository.pruneHostMonitoringHistory,
         unavailable: () => {
@@ -175,7 +212,7 @@ export async function runIsolationRole(
         port: 0,
         maxRequestBodySize: 1024,
         /** Serve bounded SSR rows for foreground roles and fixture-marked controls; reject new writes as soon as shutdown starts. */
-        async fetch(request) {
+        async fetch(request, httpServer) {
             const path = new URL(request.url).pathname
             if (path === '/ssr' && role !== 'background' && request.method === 'GET') {
                 const rows = await db
@@ -232,12 +269,11 @@ export async function runIsolationRole(
                 return new Response(null, { status: 204 })
             }
             if (path === '/pool' && request.method === 'POST') {
-                const results = await Promise.allSettled(
-                    Array.from({ length: isolationContract.workerConnections }, () =>
-                        db.execute('select pg_sleep(1)'),
-                    ),
+                httpServer.timeout(request, isolationPoolFaultBudget.poolServerSeconds)
+                return readIsolationPoolSaturation(
+                    () => db.execute('select pg_advisory_xact_lock(1380864088)'),
+                    stopping !== null,
                 )
-                return Response.json({ settled: results.length })
             }
             if (path === '/stop' && request.method === 'POST') {
                 try {

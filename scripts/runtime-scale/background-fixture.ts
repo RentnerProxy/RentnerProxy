@@ -23,6 +23,7 @@ import { backgroundPolicies } from './background.ts'
 import { withInFlightBackgroundHead } from './background-network.ts'
 import { backgroundSnapshotSchema } from './background.validation.ts'
 import { backgroundRecoveryFixture } from './background-recovery.ts'
+import { backgroundContentionFixture } from './background-contention-fixture.ts'
 import { runBackgroundDiscovery } from './background-discovery.ts'
 import { runBackgroundNotifications } from './background-notifications.ts'
 import type { BackgroundOptions } from './Types/background.types.ts'
@@ -470,6 +471,13 @@ export async function prepareBackgroundInventory(
 /** Dispatch validated background fixture phases; use the existing fixture executor for phases outside this workload. */
 async function execute(context: FixtureContext): Promise<Record<string, unknown>> {
     if (!context.command.phase.startsWith('background-')) return executeFixture(context)
+    if (context.command.phase.startsWith('background-contention-')) {
+        const detail = await backgroundContentionFixture(context)
+        return {
+            contention: detail,
+            desiredRevision: (await context.runtime.getProxyRuntimeSnapshotService()).revision,
+        }
+    }
     const inventory = backgroundPolicies(options(context))
     if (context.command.phase === 'background-prepare') {
         await prepareBackgroundInventory(context)
@@ -512,7 +520,18 @@ async function execute(context: FixtureContext): Promise<Record<string, unknown>
               ? { notifications: await runBackgroundNotifications(context) }
               : { background: await snapshot(context) }
     const desired = await context.runtime.getProxyRuntimeSnapshotService()
-    return { ...detail, desiredRevision: desired.revision }
+    return {
+        ...detail,
+        ...(context.command.contention && context.command.phase === 'background-read'
+            ? {
+                  contention: await backgroundContentionFixture({
+                      ...context,
+                      command: { ...context.command, phase: 'background-contention-read' },
+                  }),
+              }
+            : {}),
+        desiredRevision: desired.revision,
+    }
 }
 
 if (import.meta.main) await runFixture(execute)

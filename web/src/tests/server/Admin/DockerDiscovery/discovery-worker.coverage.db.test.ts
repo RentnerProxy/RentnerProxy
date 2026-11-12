@@ -1,7 +1,7 @@
 // oxlint-disable no-await-in-loop -- Settle each virtual timer turn before advancing the next interval.
 import { afterAll, afterEach, beforeAll, beforeEach, expect, jest, mock, spyOn } from 'bun:test'
 import { and, eq, inArray } from 'drizzle-orm'
-import { DATABASE_CONNECTION_BUDGET } from '@/config/database.config.ts'
+import { BACKGROUND_DATABASE_POLICY } from '@/config/background-resources.config.ts'
 import {
     admitDatabaseTransaction,
     withBackgroundDatabaseContext,
@@ -378,27 +378,43 @@ integrationTest.each(['waiting', 'deadline', 'busy', 'superseded', 'exhausted'] 
         })
         try {
             await Promise.race([applyEntered.promise, expired])
-            held = Array.from({ length: DATABASE_CONNECTION_BUDGET.backgroundTransactions }, () =>
-                withBackgroundDatabaseContext(() =>
-                    admitDatabaseTransaction(async () => {
-                        if (++occupied === DATABASE_CONNECTION_BUDGET.backgroundTransactions)
-                            budgetReady.resolve()
-                        await releaseBudget.promise
-                    }),
-                ),
+            held = Array.from(
+                { length: BACKGROUND_DATABASE_POLICY.classes.discovery.running },
+                () =>
+                    withBackgroundDatabaseContext(
+                        () =>
+                            admitDatabaseTransaction(async () => {
+                                if (
+                                    ++occupied ===
+                                    BACKGROUND_DATABASE_POLICY.classes.discovery.running
+                                )
+                                    budgetReady.resolve()
+                                await releaseBudget.promise
+                            }),
+                        undefined,
+                        'discovery',
+                    ),
             )
             await Promise.race([budgetReady.promise, expired])
             if (admission === 'busy') {
-                for (let index = 0; index < DATABASE_CONNECTION_BUDGET.backgroundPending; index++) {
-                    const pending = withBackgroundDatabaseContext(() =>
-                        admitDatabaseTransaction(async () => undefined),
+                for (
+                    let index = 0;
+                    index < BACKGROUND_DATABASE_POLICY.classes.discovery.pending;
+                    index++
+                ) {
+                    const pending = withBackgroundDatabaseContext(
+                        () => admitDatabaseTransaction(async () => undefined),
+                        undefined,
+                        'discovery',
                     )
                     void pending.catch(() => undefined)
                     queued.push(pending)
                 }
                 await expect(
-                    withBackgroundDatabaseContext(() =>
-                        admitDatabaseTransaction(async () => undefined),
+                    withBackgroundDatabaseContext(
+                        () => admitDatabaseTransaction(async () => undefined),
+                        undefined,
+                        'discovery',
                     ),
                 ).rejects.toMatchObject({ reason: 'busy' })
             }
@@ -432,7 +448,7 @@ integrationTest.each(['waiting', 'deadline', 'busy', 'superseded', 'exhausted'] 
                 return
             }
             if (admission !== 'waiting')
-                await Bun.sleep(DATABASE_CONNECTION_BUDGET.backgroundWaitMs + 100)
+                await Bun.sleep(BACKGROUND_DATABASE_POLICY.classes.discovery.waitMs + 100)
             expect(receiptStarted).toBe(false)
             expect(drained).toBe(false)
             if (admission === 'superseded')
