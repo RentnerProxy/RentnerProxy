@@ -3,6 +3,7 @@ import { expect, test } from 'bun:test'
 import { randomBytes } from 'node:crypto'
 import { readFile, readdir, rm } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 import {
     readBoundedBackgroundCapture,
     readLeasedBackgroundCapture,
@@ -15,6 +16,35 @@ const enabled =
     process.platform === 'linux' && process.getuid?.() === 0 && Bun.which('gosu') !== null
 const linuxTest = enabled ? test : test.skip
 const root = fileURLToPath(new URL('../../../../../', import.meta.url))
+
+/** Foreign-UID runtime fixtures cannot use the root collector's private manifest/cache; parent and ordinary root children stay instrumented. */
+function foreignUidEnvironment() {
+    const environment = { ...process.env }
+    delete environment.RENTNERPROXY_COVERAGE_MANIFEST
+    if (environment.BUN_OPTIONS === '--preload=' + join(root, 'scripts/coverage/child-preload.ts')) delete environment.BUN_OPTIONS
+    return environment
+}
+
+test('foreign-UID fixture environment removes only root-private coverage state and preserves parent and unrelated options', () => {
+    const manifest = process.env.RENTNERPROXY_COVERAGE_MANIFEST
+    const options = process.env.BUN_OPTIONS
+    try {
+        process.env.RENTNERPROXY_COVERAGE_MANIFEST = '/root-private/manifest.json'
+        process.env.BUN_OPTIONS = '--preload=' + join(root, 'scripts/coverage/child-preload.ts')
+        const environment = foreignUidEnvironment()
+        expect(environment.RENTNERPROXY_COVERAGE_MANIFEST).toBeUndefined()
+        expect(environment.BUN_OPTIONS).toBeUndefined()
+        expect(process.env.RENTNERPROXY_COVERAGE_MANIFEST).toBe('/root-private/manifest.json')
+        expect(process.env.BUN_OPTIONS).toBe('--preload=' + join(root, 'scripts/coverage/child-preload.ts'))
+        process.env.BUN_OPTIONS = '--smol'
+        expect(foreignUidEnvironment().BUN_OPTIONS).toBe('--smol')
+    } finally {
+        if (manifest === undefined) delete process.env.RENTNERPROXY_COVERAGE_MANIFEST
+        else process.env.RENTNERPROXY_COVERAGE_MANIFEST = manifest
+        if (options === undefined) delete process.env.BUN_OPTIONS
+        else process.env.BUN_OPTIONS = options
+    }
+})
 
 const writerSource = `
 import { createInterface } from 'node:readline'
@@ -70,17 +100,35 @@ async function fixture(asWeb = true, cleanupFails = true) {
             runId,
             cleanupFails ? 'remove-fails' : 'remove-ok',
         ],
-        { cwd: root, stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' },
+        { cwd: root, stdin: 'pipe', stdout: 'pipe', stderr: 'pipe', ...(asWeb ? { env: foreignUidEnvironment() } : {}) },
     )
     const stream = child.stdout.getReader()
-    const errors = new Response(child.stderr).text()
+    const errors = (async () => {
+        const reader = child.stderr.getReader()
+        const decoder = new TextDecoder()
+        let text = ''
+        let retainedBytes = 0
+        let truncated = false
+        for (;;) {
+            const chunk = await reader.read()
+            if (chunk.done) break
+            const remaining = 8192 - retainedBytes
+            if (chunk.value.length > remaining) truncated = true
+            if (remaining > 0) {
+                const retained = chunk.value.subarray(0, remaining)
+                retainedBytes += retained.byteLength
+                text += decoder.decode(retained)
+            }
+        }
+        return { text, truncated }
+    })()
     let buffered = ''
     async function line() {
         const deadline = setTimeout(() => child.kill('SIGKILL'), 2000)
         try {
             while (!buffered.includes('\n')) {
                 const chunk = await stream.read()
-                if (chunk.done) throw new Error('Capture writer exited before its acknowledgement')
+                if (chunk.done) throw new Error('Capture writer exited before its acknowledgement: ' + JSON.stringify({ exitCode: await child.exited, stderr: await errors }))
                 buffered += new TextDecoder().decode(chunk.value)
             }
             const end = buffered.indexOf('\n'),
@@ -146,7 +194,7 @@ async function readAsWeb(f: Awaited<ReturnType<typeof fixture>>, path?: string) 
     const child = Bun.spawn(remote, {
         cwd: root,
         env: {
-            ...process.env,
+            ...foreignUidEnvironment(),
             DATABASE_URL: '',
             DATABASE_URL_FILE: '',
             RENTNERPROXY_BACKGROUND_CAPTURE_RUN: f.runId,
