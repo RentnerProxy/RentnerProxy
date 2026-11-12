@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import { useEffect, useRef, useState } from 'react'
 import { toast } from '@rentnerkev/toasts'
 
@@ -15,6 +16,7 @@ import type {
 export default function useRuntimeSupportDownloadLogic({
     permissions,
 }: RuntimeSupportDownloadProps): RuntimeSupportDownloadLogic {
+    const runAction = useAsyncAction()
     const canExport = canExportRuntimeSupportReport(permissions)
     const { t } = useTranslationStore()
     const exporting = useRef(false)
@@ -79,7 +81,7 @@ export default function useRuntimeSupportDownloadLogic({
         state: { canExport, isExporting },
         handler: {
             handleDownload: () => {
-                void downloadReport()
+                runAction(() => downloadReport())
             },
         },
     }

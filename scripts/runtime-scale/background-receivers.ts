@@ -102,7 +102,10 @@ export async function startBackgroundNotificationReceivers(
                             if (messageId) record(messageId, 'email')
                             socket.write('250 accepted\r\n')
                         }
-                    })()
+                    })().catch(() => {
+                        if (!socket.destroyed) socket.destroy()
+                        console.error('[notifications] SMTP fixture delivery failed')
+                    })
                     continue
                 }
                 if (/^EHLO|^HELO/iu.test(line)) socket.write('250-fixture\r\n250 AUTH PLAIN\r\n')
@@ -138,7 +141,7 @@ export async function startBackgroundNotificationReceivers(
         address = smtp.address()
         assert.ok(address && typeof address === 'object')
     } catch (error) {
-        webhook.stop(true)
+        await webhook.stop(true)
         if (smtp.listening) await new Promise<void>((resolve) => smtp.close(() => resolve()))
         throw error
     }
@@ -184,7 +187,7 @@ export async function startBackgroundNotificationReceivers(
         },
         /** Stop webhook admission, destroy active SMTP sockets, and await SMTP listener closure. */
         async close() {
-            webhook.stop(true)
+            await webhook.stop(true)
             for (const socket of sockets) socket.destroy()
             await new Promise<void>((resolve) => smtp.close(() => resolve()))
         },

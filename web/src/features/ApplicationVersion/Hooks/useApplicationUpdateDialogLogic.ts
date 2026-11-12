@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import { useEffect, useRef } from 'react'
 import { toast } from '@rentnerkev/toasts'
 import useTranslationStore from '@/shared/Language/Hooks/useTranslationStore.ts'
@@ -12,6 +13,7 @@ export default function useApplicationUpdateDialogLogic(
     data: ApplicationUpdateDialogProps['data'],
     open: boolean,
 ): ApplicationUpdateDialogLogicResult {
+    const runAction = useAsyncAction()
     const { t } = useTranslationStore()
     const reference =
         data?.latest?.image.status === 'verified' &&
@@ -54,7 +56,7 @@ export default function useApplicationUpdateDialogLogic(
         },
         handler: {
             handleCopy: () => {
-                void copyReference()
+                runAction(() => copyReference())
             },
         },
     }

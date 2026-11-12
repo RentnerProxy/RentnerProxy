@@ -30,7 +30,7 @@ const origin = 'https://proxy.example.test'
 let currentCookie: string | null = null
 
 // Only the HTTP cookie accessor is replaced; sessions, authorization, settings and audit use PostgreSQL.
-mock.module('@/server/Auth/Access/cookies.server.ts', () => ({
+await mock.module('@/server/Auth/Access/cookies.server.ts', () => ({
     getSessionCookie: () => currentCookie,
 }))
 const { createSessionService, getSessionByTokenService } =

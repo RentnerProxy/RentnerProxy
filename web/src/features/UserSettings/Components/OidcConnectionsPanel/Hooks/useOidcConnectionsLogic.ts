@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import { useEffect, useEffectEvent, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useRouter, useSearch } from '@tanstack/react-router'
@@ -16,6 +17,7 @@ export default function useOidcConnectionsLogic(
     userId: string,
     canUpdate: boolean,
 ): OidcConnectionsLogicResult {
+    const runAction = useAsyncAction()
     const { t } = useTranslationStore()
     const queryClient = useQueryClient()
     const navigate = useNavigate()
@@ -62,9 +64,11 @@ export default function useOidcConnectionsLogic(
         nativeNavigation.current = null
         setIsNavigating(false)
         setAction(null)
-        void queryClient.invalidateQueries({
-            queryKey: ['auth', 'account', 'oidc-connections', userId],
-        })
+        runAction(() =>
+            queryClient.invalidateQueries({
+                queryKey: ['auth', 'account', 'oidc-connections', userId],
+            }),
+        )
     })
 
     useEffect(() => {
@@ -85,7 +89,9 @@ export default function useOidcConnectionsLogic(
         toast[linked ? 'success' : 'error'](t(key), {
             title: t(linked ? 'toast.titles.success' : 'toast.titles.error'),
         })
-        void navigate({ to: '/account', search: { section: 'linked-accounts' }, replace: true })
+        runAction(() =>
+            navigate({ to: '/account', search: { section: 'linked-accounts' }, replace: true }),
+        )
     })
 
     const callbackReady =
@@ -129,9 +135,11 @@ export default function useOidcConnectionsLogic(
             query.error.code === 'authentication_required'
         ) {
             queryClient.clear()
-            void router.invalidate().then(() => navigate({ to: '/login', replace: true }))
+            runAction(() =>
+                router.invalidate().then(() => navigate({ to: '/login', replace: true })),
+            )
         }
-    }, [query.error, queryClient, router, navigate])
+    }, [query.error, queryClient, router, navigate, runAction])
 
     function close() {
         if (nativeNavigation.current) return
@@ -155,9 +163,11 @@ export default function useOidcConnectionsLogic(
         setIsNavigating(false)
         const cancelledGeneration = generation.current
         lock.current = true
-        void query.refetch().finally(() => {
-            if (generation.current === cancelledGeneration) lock.current = false
-        })
+        runAction(() =>
+            query.refetch().finally(() => {
+                if (generation.current === cancelledGeneration) lock.current = false
+            }),
+        )
         cancellationLock.current = false
     }
 
@@ -191,7 +201,7 @@ export default function useOidcConnectionsLogic(
         lock.current = true
         const nextAction = { providerId, kind, expectedRevision: data.revision }
         setAction(nextAction)
-        void execute(nextAction)
+        runAction(() => execute(nextAction))
     }
 
     async function execute(pendingAction: OidcConnectionAction) {

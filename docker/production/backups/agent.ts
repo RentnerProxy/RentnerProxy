@@ -710,7 +710,10 @@ export async function startBackupAgent() {
     const shutdown = () => {
         clearInterval(timer)
         stop.abort()
-        void server.stop(true)
+        void server.stop(true).catch(() => {
+            console.error('[backups] Agent listener shutdown failed')
+            process.exitCode = 1
+        })
     }
     process.once('SIGTERM', shutdown)
     process.once('SIGINT', shutdown)

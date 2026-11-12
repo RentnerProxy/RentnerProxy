@@ -7,6 +7,7 @@ import { DEFAULT_SITE_MODES } from '@/config/default-site.config.ts'
 import { getDefaultSiteHandler, saveDefaultSiteHandler } from '@/features/DefaultSite/middleware.ts'
 import { defaultSiteSettingsSchema } from '@/lib/DefaultSite/defaultSite.ts'
 import useTranslationStore from '@/shared/Language/Hooks/useTranslationStore.ts'
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import type {
     DefaultSiteEditorData,
     DefaultSiteSettings,
@@ -17,6 +18,7 @@ import type {
 } from '../Types/default-site-panel.types.ts'
 
 export function useDefaultSitePanelLogic(canUpdate: boolean) {
+    const runAction = useAsyncAction()
     const { t } = useTranslationStore()
     const [baseline, setBaseline] = useState<DefaultSiteEditorData | null>(null)
     const saveInFlight = useRef(false)
@@ -82,7 +84,9 @@ export function useDefaultSitePanelLogic(canUpdate: boolean) {
                 const result = await mutation.mutateAsync(settings.data)
                 if (!result.success) {
                     if (result.message === 'defaultSite.errors.conflict')
-                        void queryClient.invalidateQueries({ queryKey: ['default-site'] })
+                        runAction(() =>
+                            queryClient.invalidateQueries({ queryKey: ['default-site'] }),
+                        )
                     if (currentGeneration !== saveGeneration.current || !canEdit.current) return
                     toast.error(t(result.message), { title: t('toast.titles.error') })
                     return
@@ -116,7 +120,7 @@ export function useDefaultSitePanelLogic(canUpdate: boolean) {
                     })
                 }
             } catch {
-                void queryClient.invalidateQueries({ queryKey: ['default-site'] })
+                runAction(() => queryClient.invalidateQueries({ queryKey: ['default-site'] }))
                 if (currentGeneration !== saveGeneration.current || !canEdit.current) return
                 toast.error(t('defaultSite.errors.saveFailed'), { title: t('toast.titles.error') })
             } finally {
@@ -169,7 +173,7 @@ export function useDefaultSitePanelLogic(canUpdate: boolean) {
         handler: {
             handleSubmit: (event) => {
                 event.preventDefault()
-                void form.handleSubmit()
+                runAction(() => form.handleSubmit())
             },
             handleDiscard: () => {
                 if (!query.data) return

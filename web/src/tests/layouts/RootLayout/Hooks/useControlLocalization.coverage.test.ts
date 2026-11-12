@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'bun:test'
 import { mountHook } from '@/tests/features/UserSettings/hookCoverageSupport.ts'
-mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
+await mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
     default: () => ({
         language: 'en',
         t: (key: string, values?: unknown) => `${key}:${JSON.stringify(values)}`,

@@ -10,7 +10,7 @@ const readFile = mock(async (_encoding: string) => '{"snapshot":"current"}')
 const close = mock(async () => undefined)
 const file = { stat, readFile, close }
 const open = mock(async (_path: string, _flags: number) => file)
-mock.module('node:fs/promises', () => ({ ...fs, open }))
+await mock.module('node:fs/promises', () => ({ ...fs, open }))
 const { readPrivateJson } = await import('../../../../../../docker/production/backups/storage.ts')
 let directory: string | undefined
 const descriptors: nodeFs.FileHandle[] = []

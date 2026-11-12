@@ -50,9 +50,7 @@ export default function OidcProvidersPage() {
                             className={buttonClassName('secondary', 'size-12 px-0')}
                             aria-label={t('oidc.copy')}
                             title={t('oidc.copy')}
-                            onClick={() => {
-                                void handler.handleCopy()
-                            }}
+                            onClick={handler.handleCopy}
                         >
                             <Copy className="size-4" aria-hidden="true" />
                         </button>
@@ -116,7 +114,7 @@ export default function OidcProvidersPage() {
                                 type="button"
                                 className={buttonClassName('secondary')}
                                 onClick={() => {
-                                    void handler.handleTest(provider)
+                                    handler.handleTest(provider)
                                 }}
                                 disabled={state.isPending || !state.isAvailable}
                             >

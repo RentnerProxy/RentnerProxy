@@ -198,7 +198,7 @@ const forwardAuthSummaryMock = mock(async () => {
     }
 })
 
-mock.module('@/features/Admin/CrowdSec/middleware.ts', () => ({
+await mock.module('@/features/Admin/CrowdSec/middleware.ts', () => ({
     getCrowdSecConfigurationHandler: configurationMock,
     getCrowdSecDashboardHandler: dashboardMock,
     getForwardAuthSummaryHandler: forwardAuthSummaryMock,

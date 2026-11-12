@@ -12,7 +12,7 @@ const runService = mock(async () => {
     return { safe: true }
 })
 
-mock.module('@tanstack/react-start', () => ({
+await mock.module('@tanstack/react-start', () => ({
     createServerFn: ({ method }: { method: 'GET' | 'POST' }) => {
         let validate: PersonalNotificationRouteFixture['validate'] = null
         const builder = {
@@ -28,7 +28,7 @@ mock.module('@tanstack/react-start', () => ({
         return builder
     },
 }))
-mock.module('@tanstack/react-start/server', () => ({
+await mock.module('@tanstack/react-start/server', () => ({
     setResponseHeader: (name: string, value: string) => {
         headers.set(name, value)
     },
@@ -38,7 +38,7 @@ mock.module('@tanstack/react-start/server', () => ({
     getRequest: () => new Request('https://example.test'),
     getRequestIP: () => '127.0.0.1',
 }))
-mock.module('@/server/UserSettings/Notifications/notifications.service.ts', () => ({
+await mock.module('@/server/UserSettings/Notifications/notifications.service.ts', () => ({
     getPersonalNotificationSettingsService: runService,
     getPersonalNotificationStatusService: runService,
     updatePersonalNotificationConfigurationService: runService,

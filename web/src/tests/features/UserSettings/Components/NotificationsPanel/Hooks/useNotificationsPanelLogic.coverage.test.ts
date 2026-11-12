@@ -61,7 +61,7 @@ const testChannel = mock(async (_input: unknown) => ({
 }))
 const success = mock(() => {})
 const error = mock(() => {})
-mock.module('@/features/UserSettings/Notifications/middleware.ts', () => ({
+await mock.module('@/features/UserSettings/Notifications/middleware.ts', () => ({
     getPersonalNotificationSettingsHandler: mock(async () => settings),
     getPersonalNotificationStatusHandler: mock(async () => ({
         incidents: [],
@@ -73,10 +73,10 @@ mock.module('@/features/UserSettings/Notifications/middleware.ts', () => ({
     updatePersonalNotificationConfigurationHandler: update,
     testPersonalNotificationChannelHandler: testChannel,
 }))
-mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
+await mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
     default: () => ({ t: (key: string) => key }),
 }))
-mock.module('@rentnerkev/toasts', () => ({ toast: { success, error } }))
+await mock.module('@rentnerkev/toasts', () => ({ toast: { success, error } }))
 const { default: useNotificationsPanelLogic } =
     await import('@/features/UserSettings/Components/NotificationsPanel/Hooks/useNotificationsPanelLogic.ts')
 

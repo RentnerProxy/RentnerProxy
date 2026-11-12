@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import useHostDomainList from '@/shared/HostDomains/Hooks/useHostDomainList.ts'
 import type {
     RedirectHostFormModalHandler,
@@ -32,6 +33,7 @@ export default function useRedirectHostFormModalLogic({
     RedirectHostFormModalProps,
     'canEnable' | 'canDisable' | 'canAssignCertificates' | 'mode' | 'onSuccess' | 'redirectHost'
 >) {
+    const runAction = useAsyncAction()
     const { t } = useTranslationStore()
     const formId = useId()
     const isCreate = mode !== 'edit'
@@ -100,9 +102,9 @@ export default function useRedirectHostFormModalLogic({
         (event) => {
             event.preventDefault()
             event.stopPropagation()
-            void form.handleSubmit()
+            runAction(() => form.handleSubmit())
         },
-        [form],
+        [form, runAction],
     )
     return {
         form,

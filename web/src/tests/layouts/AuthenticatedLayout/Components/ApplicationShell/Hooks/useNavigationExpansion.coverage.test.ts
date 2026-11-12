@@ -1,6 +1,6 @@
 import { expect, mock, spyOn, test } from 'bun:test'
 import { mountHook } from '@/tests/features/UserSettings/hookCoverageSupport.ts'
-mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
+await mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
     default: () => ({ t: (key: string) => key }),
 }))
 const { default: useNavigationExpansion } =

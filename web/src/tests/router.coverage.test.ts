@@ -12,11 +12,13 @@ const router = {
     },
 }
 const create = mock((_options: unknown) => router)
-mock.module('@tanstack/react-router', () => ({ createRouter: create }))
-mock.module('@/routeTree.gen.ts', () => ({ routeTree: 'fixture-routes' }))
-mock.module('@/shared/SystemStatePage/GlobalErrorPage.tsx', () => ({ default: () => null }))
-mock.module('@/shared/SystemStatePage/NotFoundPage.tsx', () => ({ default: () => null }))
-mock.module('@/shared/SystemStatePage/DelayedLoadingPage.tsx', () => ({ default: () => null }))
+await mock.module('@tanstack/react-router', () => ({ createRouter: create }))
+await mock.module('@/routeTree.gen.ts', () => ({ routeTree: 'fixture-routes' }))
+await mock.module('@/shared/SystemStatePage/GlobalErrorPage.tsx', () => ({ default: () => null }))
+await mock.module('@/shared/SystemStatePage/NotFoundPage.tsx', () => ({ default: () => null }))
+await mock.module('@/shared/SystemStatePage/DelayedLoadingPage.tsx', () => ({
+    default: () => null,
+}))
 const { getRouter } = await import('@/router.tsx')
 
 test('router propagates only validated CSP nonces into SSR options while preserving existing SSR settings', () => {

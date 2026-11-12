@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import type { FormEvent } from 'react'
 import { useForm } from '@tanstack/react-form'
 import { useId, useState } from 'react'
@@ -12,6 +13,7 @@ export default function useTrustedCaImportLogic({
     onSuccess,
     onOpenChange,
 }: TrustedCaImportModalProps) {
+    const runAction = useAsyncAction()
     const { t } = useTranslationStore()
     const formId = useId()
     const [isPending, setIsPending] = useState(false)
@@ -55,7 +57,7 @@ export default function useTrustedCaImportLogic({
             handleSubmit: (event: FormEvent<HTMLFormElement>) => {
                 event.preventDefault()
                 event.stopPropagation()
-                void form.handleSubmit()
+                runAction(() => form.handleSubmit())
             },
         },
         form,

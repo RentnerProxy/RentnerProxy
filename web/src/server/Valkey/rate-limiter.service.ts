@@ -134,7 +134,7 @@ function parseRateLimitResponse(value: unknown): Readonly<{ count: number; ttlMs
         return null
     }
 
-    const [count, ttlMs] = value
+    const [count, ttlMs]: readonly unknown[] = value
 
     if (
         typeof count !== 'number' ||

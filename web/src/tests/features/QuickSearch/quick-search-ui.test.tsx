@@ -19,14 +19,16 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
 const emptyLookup = async (_input: { data: QuickSearchInput }): Promise<QuickSearchEntity[]> => []
 const lookups = [mock(emptyLookup), mock(emptyLookup), mock(emptyLookup), mock(emptyLookup)]
-for (const [index, [path, name]] of [
-    ['ProxyHostManagement', 'searchProxyHostsHandler'],
-    ['RedirectHostManagement', 'searchRedirectHostsHandler'],
-    ['CertificateManagement', 'searchCertificatesHandler'],
-    ['AccessPolicyManagement', 'searchAccessPoliciesHandler'],
-].entries()) {
-    mock.module(`@/features/Admin/${path}/middleware.ts`, () => ({ [name!]: lookups[index] }))
-}
+await Promise.all(
+    [
+        ['ProxyHostManagement', 'searchProxyHostsHandler'],
+        ['RedirectHostManagement', 'searchRedirectHostsHandler'],
+        ['CertificateManagement', 'searchCertificatesHandler'],
+        ['AccessPolicyManagement', 'searchAccessPoliciesHandler'],
+    ].map(([path, name], index) =>
+        mock.module(`@/features/Admin/${path}/middleware.ts`, () => ({ [name!]: lookups[index] })),
+    ),
+)
 
 const { act, useState } = await import('react')
 const { createRoot } = await import('react-dom/client')

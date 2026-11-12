@@ -17,7 +17,7 @@ import withTestLanguage from '@/tests/Helpers/withTestLanguage.tsx'
 if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register()
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 
-mock.module('@/features/UserSettings/middleware.ts', () => ({
+await mock.module('@/features/UserSettings/middleware.ts', () => ({
     updateCurrentUserNavigationGroupHandler: async ({
         data,
     }: {
@@ -32,10 +32,10 @@ mock.module('@/features/UserSettings/middleware.ts', () => ({
         expanded: data.expanded,
     }),
 }))
-mock.module('@/features/QuickSearch/index.tsx', () => ({
+await mock.module('@/features/QuickSearch/index.tsx', () => ({
     default: () => <button type="button">Search</button>,
 }))
-mock.module('@/features/ApplicationVersion/middleware.ts', () => ({
+await mock.module('@/features/ApplicationVersion/middleware.ts', () => ({
     getApplicationUpdateHandler: async () => ({
         status: 'current',
         checkedAt: null,

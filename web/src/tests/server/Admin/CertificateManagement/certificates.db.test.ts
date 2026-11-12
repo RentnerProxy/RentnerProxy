@@ -394,7 +394,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
     if (verified) {
-        controller?.server.stop(true)
+        await controller?.server.stop(true)
         controller = undefined
         await cleanup()
     }

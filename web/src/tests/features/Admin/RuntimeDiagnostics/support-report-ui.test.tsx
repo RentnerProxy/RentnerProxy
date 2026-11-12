@@ -19,7 +19,7 @@ const { createRoot } = await import('react-dom/client')
 const { ToastProvider, toast } = await import('@rentnerkev/toasts')
 const report = createRuntimeSupportReport(supportReportFixture(), new Date('2026-10-06T10:00:00Z'))
 const exportMock = mock(async () => report)
-mock.module('@/features/Admin/RuntimeDiagnostics/middleware.ts', () => ({
+await mock.module('@/features/Admin/RuntimeDiagnostics/middleware.ts', () => ({
     exportRuntimeSupportReportHandler: exportMock,
 }))
 const { default: RuntimeSupportDownload } =

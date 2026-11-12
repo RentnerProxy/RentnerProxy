@@ -33,7 +33,7 @@ const updateBasicAuthAccountHandlerMock = mock(async (_input: unknown) => ({
     runtimeStatus: 'applied' as const,
 }))
 
-mock.module('@/features/Admin/AccessPolicyManagement/middleware.ts', () => ({
+await mock.module('@/features/Admin/AccessPolicyManagement/middleware.ts', () => ({
     createBasicAuthAccountHandler: createBasicAuthAccountHandlerMock,
     updateBasicAuthAccountHandler: updateBasicAuthAccountHandlerMock,
 }))

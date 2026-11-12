@@ -14,15 +14,15 @@ const update = mock(async (_input: unknown) => ({
 }))
 const invalidate = mock(async () => {})
 const error = mock(() => {})
-mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
+await mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
     default: () => ({ language, setLanguage, t: (key: string) => key }),
     loadLanguageBootstrap: load,
 }))
-mock.module('@/features/UserSettings/middleware.ts', () => ({
+await mock.module('@/features/UserSettings/middleware.ts', () => ({
     updateCurrentUserLanguageHandler: update,
 }))
-mock.module('@tanstack/react-router', () => ({ useRouter: () => ({ invalidate }) }))
-mock.module('@rentnerkev/toasts', () => ({ toast: { success: mock(() => {}), error } }))
+await mock.module('@tanstack/react-router', () => ({ useRouter: () => ({ invalidate }) }))
+await mock.module('@rentnerkev/toasts', () => ({ toast: { success: mock(() => {}), error } }))
 const { default: useLanguageSettingsLogic } =
     await import('@/features/UserSettings/Components/LanguageSettingsPanel/Hooks/useLanguageSettingsLogic.ts')
 

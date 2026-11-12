@@ -1,6 +1,6 @@
 use super::cancellation::{delegated_cancellation_pending, settle_delegated_cancellation};
 use super::operations;
-use super::persistence::persist_index;
+use super::persistence::{persist_index, report_recovery_result};
 use super::scheduling::{
     max_retry_deadline, max_retry_deadline_string, next_retry_delay, retry_deadline,
 };
@@ -34,9 +34,10 @@ impl CertificateStore {
             return Err(CertificateError::InvalidCertificate);
         }
         let mut updated = previous;
-        updated.next_attempt_at =
-            max_retry_deadline_string(updated.next_attempt_at.as_deref(), &deadline)
-                .or(Some(deadline));
+        updated.next_attempt_at = Some(max_retry_deadline_string(
+            updated.next_attempt_at.as_deref(),
+            &deadline,
+        ));
         if let Ok(now) = utc_now() {
             updated.metadata.updated_at = now;
         }
@@ -55,7 +56,7 @@ impl CertificateStore {
             .map_err(|_| CertificateError::StoreUnavailable)?;
         let mut index = self.index.lock().await;
         let current = index.acme_retry_until.get(&environment).map(String::as_str);
-        let updated = max_retry_deadline_string(current, &deadline).unwrap_or(deadline);
+        let updated = max_retry_deadline_string(current, &deadline);
         index.acme_retry_until.insert(environment, updated);
         self.certificates_dir()
             .and_then(|directory| persist_index(&directory, &index))
@@ -119,7 +120,7 @@ impl CertificateStore {
                 }
             }
             let now = utc_now().ok();
-            if let Some(now) = now.clone() {
+            if let Some(now) = now {
                 if entry.metadata.last_attempt_at.is_none()
                     && entry.metadata.source == CertificateSource::Acme
                 {
@@ -148,7 +149,7 @@ impl CertificateStore {
                 } else {
                     CertificateOperationStage::Failed
                 };
-                event_recorded = operations::append_event(
+                let event = operations::append_event(
                     &mut index,
                     &operation_id,
                     id,
@@ -163,16 +164,20 @@ impl CertificateStore {
                         CertificateOperationStage::Failed
                     },
                     Some(error.code().to_owned()),
-                )
-                .is_ok();
+                );
+                event_recorded = event.is_ok();
+                report_recovery_result(event, "append_failed_event");
                 if retryable {
-                    let _ = operations::append_event(
-                        &mut index,
-                        &operation_id,
-                        id,
-                        CertificateEventKind::RetryScheduled,
-                        stage,
-                        Some(error.code().to_owned()),
+                    report_recovery_result(
+                        operations::append_event(
+                            &mut index,
+                            &operation_id,
+                            id,
+                            CertificateEventKind::RetryScheduled,
+                            stage,
+                            Some(error.code().to_owned()),
+                        ),
+                        "append_retry_event",
                     );
                 }
             }
@@ -182,6 +187,7 @@ impl CertificateStore {
             if cancelled && event_recorded && persisted.is_ok() {
                 outcome = FailedIssueOutcome::Cancelled;
             }
+            report_recovery_result(persisted, "persist_retry_state");
         }
         drop(index);
         self.release_lease(id).await;

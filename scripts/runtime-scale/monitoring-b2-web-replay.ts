@@ -505,13 +505,14 @@ export async function createMonitoringB2WebReplay(
                 running = null
             })
     }, 20)
+    let controlDrain: Promise<void> | undefined
     let localDrain: Promise<void> | null = null,
         maintenanceDrain: Promise<void> | null = null
     /** Stop timers, await the owned pass, close SQLite and write the identity-bound replay drain receipt. */
     function stopLocal(keepControl = false) {
         stopped = true
         clearInterval(timer)
-        if (!keepControl) control.stop(true)
+        if (!keepControl) controlDrain ??= control.stop(true)
         localDrain ??= (async () => {
             await running
             await publish()
@@ -535,7 +536,7 @@ export async function createMonitoringB2WebReplay(
                 { mode: 0o644 },
             )
         })()
-        return localDrain
+        return Promise.all([localDrain, controlDrain]).then(() => undefined)
     }
     process.once('rentnerproxy:shutdown', (pending: Promise<void>[]) => {
         pending.push(stopLocal())

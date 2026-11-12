@@ -101,6 +101,6 @@ test('reconnect-only inventory cannot satisfy the controlled final event on the 
         expect(engine.stats()).toMatchObject({ streams: 4, emitted: 256, inventoryCount: 8 })
     } finally {
         await reader?.cancel()
-        engine.stop()
+        await engine.stop()
     }
 })

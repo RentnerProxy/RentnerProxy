@@ -197,7 +197,7 @@ export async function createHarness(options: ReliabilityOptions, checks: Reliabi
         console.log('PASS ' + label)
     }
     async function cleanup() {
-        dns.stop()
+        await dns.stop()
         const failures: unknown[] = []
         // Backup/restore may leave a one-off helper after its bounded command is interrupted.
         const composeContainers = (

@@ -24,7 +24,7 @@ const updateAccessPolicyHandlerMock = mock(async (_input: unknown) => ({
     runtimeStatus: 'applied',
 }))
 
-mock.module('@/features/Admin/AccessPolicyManagement/middleware.ts', () => ({
+await mock.module('@/features/Admin/AccessPolicyManagement/middleware.ts', () => ({
     createAccessPolicyHandler: createAccessPolicyHandlerMock,
     updateAccessPolicyHandler: updateAccessPolicyHandlerMock,
 }))

@@ -2,8 +2,8 @@ import { beforeEach, describe, expect, test } from 'bun:test'
 import { createMiddlewareHarness } from '@/tests/Helpers/middlewareCoverage.ts'
 import { DockerDiscoveryError } from '@/server/Admin/DockerDiscovery/docker-discovery.errors.ts'
 
-const boundary = createMiddlewareHarness()
-boundary.mockServices('@/server/Admin/DockerDiscovery/discovery-management.service.ts', [
+const boundary = await createMiddlewareHarness()
+await boundary.mockServices('@/server/Admin/DockerDiscovery/discovery-management.service.ts', [
     'getDiscoveryOverviewService',
     'connectDiscoveryService',
     'inspectDiscoveryService',

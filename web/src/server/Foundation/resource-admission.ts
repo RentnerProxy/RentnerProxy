@@ -3,6 +3,7 @@ import type {
     ResourceAdmissionPolicy,
     ResourceWaiter,
 } from './Types/resource-admission.types.ts'
+import { runDetachedTask } from '@/lib/Async/runDetachedTask.ts'
 
 export class ResourceAdmissionError extends Error {
     constructor(readonly reason: 'busy' | 'deadline' | 'cancelled') {
@@ -15,7 +16,11 @@ export function releaseAfterSettled(
     release: (() => void) | undefined,
     work: Iterable<Promise<unknown>>,
 ): void {
-    if (release) void Promise.allSettled(work).then(release)
+    if (release)
+        runDetachedTask(
+            () => Promise.allSettled(work).then(release),
+            () => console.error('[resources] Deferred permit release failed'),
+        )
 }
 
 /** Bounded FIFO permits, acquired before hydration/SQL. Pending jobs remain in their durable owner. */
@@ -56,7 +61,8 @@ export function createResourceAdmission(
             released = true
             running--
             while (pending.length > 0 && running < policy.running) {
-                const waiter = pending[0]!
+                const waiter = pending[0]
+                if (!waiter) break
                 remove(waiter)
                 const reason = waiter.signal?.aborted
                     ? 'cancelled'
@@ -122,14 +128,12 @@ export function createResourceAdmission(
         },
         /** Expose only bounded numeric admission evidence; reading metrics never acquires capacity or changes queue ownership. */
         snapshot() {
+            const oldest = pending[0]
             return {
                 running,
                 pending: pending.length,
-                oldestPendingAgeMs: pending.length
-                    ? Math.min(
-                          Number.MAX_SAFE_INTEGER,
-                          Math.max(0, Math.floor(now() - pending[0]!.at)),
-                      )
+                oldestPendingAgeMs: oldest
+                    ? Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.floor(now() - oldest.at)))
                     : 0,
                 ...counters,
             }

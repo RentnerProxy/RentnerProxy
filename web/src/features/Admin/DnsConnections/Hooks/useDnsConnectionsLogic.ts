@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import { dnsProviderForId, supportsDns01, supportsDdns } from '@/lib/DnsConnections/dnsProviders.ts'
 import type { DnsProviderId } from '@/lib/DnsConnections/Types/dns-provider.types.ts'
 import useQuickAction from '@/shared/QuickActions/Hooks/useQuickActions.ts'
@@ -27,6 +28,7 @@ export default function useDnsConnectionsLogic({
     permissions,
     liveEnabled = true,
 }: DnsConnectionsPageProps) {
+    const runAction = useAsyncAction()
     const { t } = useTranslationStore()
     const queryClient = useQueryClient()
     const formId = useId()
@@ -384,10 +386,10 @@ export default function useDnsConnectionsLogic({
             handleSubmit: (event: FormEvent<HTMLFormElement>) => {
                 event.preventDefault()
                 event.stopPropagation()
-                void form.handleSubmit()
+                runAction(() => form.handleSubmit())
             },
             handleTest: () => {
-                void handleTest()
+                runAction(() => handleTest())
             },
             handleZoneChange,
         },

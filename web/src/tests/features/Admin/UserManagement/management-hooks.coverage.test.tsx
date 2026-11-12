@@ -42,17 +42,17 @@ const disable = mock(async (_input: unknown) => result)
 const enable = mock(async (_input: unknown) => result)
 const removeRole = mock(async (_input: unknown) => result)
 const invalidateRouter = mock(async () => undefined)
-mock.module('@tanstack/react-router', () => ({
+await mock.module('@tanstack/react-router', () => ({
     useRouter: () => ({ invalidate: invalidateRouter }),
 }))
-mock.module('@/features/Admin/UserManagement/middleware.ts', () => ({
+await mock.module('@/features/Admin/UserManagement/middleware.ts', () => ({
     createUserHandler: createUser,
     updateUserHandler: updateUser,
     getUsersHandler: usersRead,
     disableUserHandler: disable,
     enableUserHandler: enable,
 }))
-mock.module('@/features/Admin/RoleManagement/middleware.ts', () => ({
+await mock.module('@/features/Admin/RoleManagement/middleware.ts', () => ({
     createRoleHandler: createRole,
     updateRoleHandler: updateRole,
     getRolesHandler: rolesRead,

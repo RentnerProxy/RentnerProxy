@@ -21,7 +21,7 @@ const publisher = {
     duplicate: mock(async () => connection),
     publish: mock(async (_channel: string, _message: string) => 1),
 }
-mock.module('@/server/Valkey/client.server.ts', () => ({
+await mock.module('@/server/Valkey/client.server.ts', () => ({
     getValkeyClient: () => (available ? publisher : null),
 }))
 const { startRealtimeValkey } = await import('@/server/WebSockets/realtimeValkey.service.ts')
@@ -182,8 +182,8 @@ test('a remote Valkey event pushes a fresh snapshot to an authorized local subsc
             },
             close: mock(() => undefined),
         } as unknown as Bun.ServerWebSocket<LiveSocketData>
-        runtime.websocket.open?.(socket)
-        runtime.websocket.message?.(
+        await runtime.websocket.open?.(socket)
+        await runtime.websocket.message?.(
             socket,
             JSON.stringify({ type: 'subscribe', topic: 'app-events', query: {} }),
         )
@@ -255,8 +255,8 @@ test.each(['terminal-close', 'automatic-reconnect'] as const)(
                 },
                 close: mock(() => undefined),
             } as unknown as Bun.ServerWebSocket<LiveSocketData>
-            runtime.websocket.open?.(socket)
-            runtime.websocket.message?.(
+            await runtime.websocket.open?.(socket)
+            await runtime.websocket.message?.(
                 socket,
                 JSON.stringify({ type: 'subscribe', topic: 'app-events', query: {} }),
             )

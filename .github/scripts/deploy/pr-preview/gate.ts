@@ -91,7 +91,7 @@ async function fetchRequiredChecks(
     const result = [...unique.values()]
     if (
         requiredStatusRuleCount === 0 ||
-        result.filter((check) => !check.context.startsWith(SELF_CHECK_PREFIX)).length === 0
+        result.every((check) => check.context.startsWith(SELF_CHECK_PREFIX))
     ) {
         throw new Error('No non-preview required checks were returned by the active branch rules.')
     }

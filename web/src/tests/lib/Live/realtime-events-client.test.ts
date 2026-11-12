@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from 'bun:test'
+import { afterEach, beforeEach, expect, spyOn, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 
 import { subscribeToRealtimeEvents } from '@/lib/Live/realtimeEventsClient.ts'
@@ -72,6 +72,66 @@ afterEach(() => {
     cleanups = []
     globalThis.WebSocket = originalSocket
     Reflect.deleteProperty(document, 'visibilityState')
+})
+
+test('isolates failed listeners through data delivery, resumption and authorization closure', async () => {
+    const warning = spyOn(console, 'warn').mockImplementation(() => {})
+    const received: unknown[] = []
+    let resumed = 0
+    let unauthorized = 0
+    const failure = new Error('private listener details')
+    const fail = () => {
+        throw failure
+    }
+    try {
+        cleanups.push(
+            subscribeToRealtimeEvents({
+                topic: 'app-events',
+                query: {},
+                onData: () => Promise.reject(new Error('private payload details')),
+                onStatus: fail,
+                onResume: fail,
+                onUnauthorized: fail,
+            }),
+        )
+        cleanups.push(
+            subscribeToRealtimeEvents({
+                topic: 'app-events',
+                query: {},
+                onData: (value) => {
+                    received.push(value)
+                },
+                onResume: () => {
+                    resumed++
+                },
+                onUnauthorized: () => {
+                    unauthorized++
+                },
+            }),
+        )
+        const first = FakeSocket.instances[0]!
+        first.open()
+        first.deliver({ revision: 'one' })
+        await Promise.resolve()
+        expect(received).toEqual([{ revision: 'one' }])
+        Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' })
+        document.dispatchEvent(new Event('visibilitychange'))
+        expect(first.closed).toBe(true)
+        Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
+        document.dispatchEvent(new Event('visibilitychange'))
+        expect(resumed).toBe(1)
+        const second = FakeSocket.instances[1]!
+        second.open()
+        second.deliverUnauthorized()
+        expect(unauthorized).toBe(1)
+        expect(second.closed).toBe(true)
+        expect(warning).toHaveBeenCalled()
+        expect(JSON.stringify(warning.mock.calls)).not.toContain('private')
+    } finally {
+        for (const cleanup of cleanups) cleanup()
+        cleanups = []
+        warning.mockRestore()
+    }
 })
 
 test('shares a topic query and unsubscribes after the last listener leaves', async () => {

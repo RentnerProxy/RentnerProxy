@@ -180,7 +180,7 @@ async function fixture(asWeb = true, cleanupFails = true) {
         owners,
         account,
         async request(command: string) {
-            child.stdin.write(JSON.stringify(command) + '\n')
+            await child.stdin.write(JSON.stringify(command) + '\n')
             await child.stdin.flush()
             return line()
         },

@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import useTranslationStore from '@/shared/Language/Hooks/useTranslationStore.ts'
 import type { LanguageSettingsLogicResult } from '../Types/language-settings-logic.types.ts'
 import { useRef, useState } from 'react'
@@ -12,6 +13,7 @@ import { updateCurrentUserLanguageHandler } from '../../../middleware.ts'
 import { toast } from '@rentnerkev/toasts'
 
 export default function useLanguageSettingsLogic() {
+    const runAction = useAsyncAction()
     const router = useRouter()
     const { language, setLanguage, t } = useTranslationStore()
     const [draftLanguage, setDraftLanguage] = useState<AppLanguage | null>(null)
@@ -39,7 +41,7 @@ export default function useLanguageSettingsLogic() {
             if (result.success) {
                 setDraftLanguage(null)
                 toast.success(t(result.message), { title: t('toast.titles.success') })
-                void router.invalidate()
+                runAction(() => router.invalidate())
             } else {
                 toast.error(t(result.message), { title: t('toast.titles.error') })
             }

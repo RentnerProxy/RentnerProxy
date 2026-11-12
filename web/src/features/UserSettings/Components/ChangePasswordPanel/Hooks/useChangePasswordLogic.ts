@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import { getValidationIssue } from '@/lib/Forms/fieldErrors.ts'
 import { newPasswordSchema } from '@/lib/Auth/validation.ts'
 import type { ChangePasswordLogicResult } from '../Types/change-password-logic.types.ts'
@@ -11,6 +12,7 @@ import { changePasswordFormSchema } from '../../../validation.ts'
 import type { ChangePasswordFormValues } from '../Types/change-password-form.types.ts'
 
 export default function useChangePasswordLogic() {
+    const runAction = useAsyncAction()
     const { t } = useTranslationStore()
     const mutation = useMutation({
         mutationFn: (values: ChangePasswordFormValues) =>
@@ -44,7 +46,7 @@ export default function useChangePasswordLogic() {
             handleSubmit: (event) => {
                 event.preventDefault()
                 event.stopPropagation()
-                void form.handleSubmit()
+                runAction(() => form.handleSubmit())
             },
             validatePassword: ({ value }) => getValidationIssue(newPasswordSchema, value),
             validateConfirmPassword: ({ value }) => {

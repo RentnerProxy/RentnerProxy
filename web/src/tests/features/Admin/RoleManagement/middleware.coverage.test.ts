@@ -2,8 +2,8 @@ import { beforeEach, describe, expect, test } from 'bun:test'
 import { PERMISSIONS } from '@/config/permissions.config.ts'
 import { createMiddlewareHarness } from '@/tests/Helpers/middlewareCoverage.ts'
 
-const boundary = createMiddlewareHarness()
-boundary.mockServices('@/server/Admin/RoleManagement/roles.service.ts', [
+const boundary = await createMiddlewareHarness()
+await boundary.mockServices('@/server/Admin/RoleManagement/roles.service.ts', [
     'createRoleService',
     'deleteRoleService',
     'listRolesService',

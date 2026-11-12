@@ -3,6 +3,7 @@ import { readDeploymentEnvironmentVariable } from '../../web/src/lib/Environment
 import { createLiveWebSocketRuntime } from '../../web/src/server/WebSockets/realtimeWebSocket.ts'
 import type { LiveSocketData } from '../../web/src/server/WebSockets/Types/bun.types.ts'
 import type { Plugin, UserConfig, ViteDevServer } from 'vite'
+import { runDetachedTask } from '../../web/src/lib/Async/runDetachedTask.ts'
 
 const LIVE_PROXY_PATH = '/api/live'
 
@@ -22,17 +23,18 @@ export function createLiveVitePlugin(): Plugin {
     let sidecar: Bun.Server<LiveSocketData> | null = null
     let localOrigin: { value: string } | null = null
     const configuredOrigin = readDeploymentEnvironmentVariable('PUBLIC_ORIGIN')?.trim()
-    let cleaned = false
+    let closing: Promise<void> | undefined
 
-    function cleanup(): void {
-        if (cleaned) return
-        cleaned = true
+    function cleanup(): Promise<void> {
+        if (closing) return closing
         const closingRuntime = runtime
         const closingSidecar = sidecar
         runtime = null
         sidecar = null
-        void closingRuntime?.shutdown()
-        closingSidecar?.stop(true)
+        closing = Promise.all([closingRuntime?.shutdown(), closingSidecar?.stop(true)]).then(
+            () => undefined,
+        )
+        return closing
     }
 
     return {
@@ -96,10 +98,14 @@ export function createLiveVitePlugin(): Plugin {
             }
             if (server.resolvedUrls) updateOrigin()
             else server.httpServer.once('listening', updateOrigin)
-            server.httpServer.once('close', cleanup)
+            server.httpServer.once('close', () => {
+                runDetachedTask(cleanup, () =>
+                    console.error('[live] Development transport shutdown failed'),
+                )
+            })
         },
         closeBundle() {
-            cleanup()
+            return cleanup()
         },
     }
 }

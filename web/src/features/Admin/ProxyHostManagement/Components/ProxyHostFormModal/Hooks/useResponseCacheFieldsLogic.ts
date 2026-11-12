@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import { useStore } from '@tanstack/react-form'
 import { responseCacheSchema } from '@/lib/ResponseCache/responseCache.ts'
 import type {
@@ -8,11 +9,12 @@ import type {
 export default function useResponseCacheFieldsLogic({
     form,
 }: Pick<ProxyHostFormFieldsProps, 'form'>) {
+    const runAction = useAsyncAction()
     const settings = useStore(form.store, (state) => state.values.responseCache)
     const attempts = useStore(form.store, (state) => state.submissionAttempts)
     const handleSettingsChange = (nextSettings: ProxyHostEditorFormValues['responseCache']) => {
         form.setFieldValue('responseCache', nextSettings)
-        if (form.state.submissionAttempts > 0) void form.validate('submit')
+        if (form.state.submissionAttempts > 0) runAction(() => form.validate('submit'))
     }
     return {
         state: {

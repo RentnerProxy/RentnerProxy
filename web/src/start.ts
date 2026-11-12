@@ -1,3 +1,4 @@
+import { runDetachedTask } from '@/lib/Async/runDetachedTask.ts'
 import {
     createCsrfMiddleware,
     createMiddleware,
@@ -33,7 +34,11 @@ const startProxyRuntimeLifecycle = createServerOnlyFn(() =>
     }, 'proxy_reconciliation'),
 )
 
-if (typeof window === 'undefined') void startProxyRuntimeLifecycle()
+if (typeof window === 'undefined')
+    runDetachedTask(
+        () => startProxyRuntimeLifecycle(),
+        () => console.error('[startup] Background operation failed'),
+    )
 
 const startDockerDiscoveryLifecycle = createServerOnlyFn(() =>
     startWorkerLifecycle(async () => {
@@ -42,14 +47,21 @@ const startDockerDiscoveryLifecycle = createServerOnlyFn(() =>
         return {
             // Reconciliation is admitted work, not startup: its SQL/controller budget exceeds startup's deadline.
             start: () => {
-                void dockerDiscoveryWorker.start()
+                runDetachedTask(
+                    () => dockerDiscoveryWorker.start(),
+                    () => console.error('[startup] Background operation failed'),
+                )
             },
             // The worker retains its initial flight, so maintenance still drains every admitted write.
             stop: () => dockerDiscoveryWorker.stop(),
         }
     }, 'docker_discovery'),
 )
-if (typeof window === 'undefined') void startDockerDiscoveryLifecycle()
+if (typeof window === 'undefined')
+    runDetachedTask(
+        () => startDockerDiscoveryLifecycle(),
+        () => console.error('[startup] Background operation failed'),
+    )
 
 const startCrowdSecRuntimeLifecycle = createServerOnlyFn(() =>
     startWorkerLifecycle(async () => {
@@ -59,7 +71,11 @@ const startCrowdSecRuntimeLifecycle = createServerOnlyFn(() =>
     }, 'crowdsec_reconciliation'),
 )
 
-if (typeof window === 'undefined') void startCrowdSecRuntimeLifecycle()
+if (typeof window === 'undefined')
+    runDetachedTask(
+        () => startCrowdSecRuntimeLifecycle(),
+        () => console.error('[startup] Background operation failed'),
+    )
 
 const startCertificateEventsLifecycle = createServerOnlyFn(() =>
     startWorkerLifecycle(async () => {
@@ -72,7 +88,11 @@ const startCertificateEventsLifecycle = createServerOnlyFn(() =>
     }, 'certificate_events'),
 )
 
-if (typeof window === 'undefined') void startCertificateEventsLifecycle()
+if (typeof window === 'undefined')
+    runDetachedTask(
+        () => startCertificateEventsLifecycle(),
+        () => console.error('[startup] Background operation failed'),
+    )
 
 const startCertificateJobsLifecycle = createServerOnlyFn(() =>
     startWorkerLifecycle(async () => {
@@ -82,7 +102,11 @@ const startCertificateJobsLifecycle = createServerOnlyFn(() =>
     }, 'certificate_jobs'),
 )
 
-if (typeof window === 'undefined') void startCertificateJobsLifecycle()
+if (typeof window === 'undefined')
+    runDetachedTask(
+        () => startCertificateJobsLifecycle(),
+        () => console.error('[startup] Background operation failed'),
+    )
 
 const startBackupOutcomesLifecycle = createServerOnlyFn(() =>
     startWorkerLifecycle(async () => {
@@ -91,7 +115,11 @@ const startBackupOutcomesLifecycle = createServerOnlyFn(() =>
         return backupOutcomesWorker
     }, 'backup_outcomes'),
 )
-if (typeof window === 'undefined') void startBackupOutcomesLifecycle()
+if (typeof window === 'undefined')
+    runDetachedTask(
+        () => startBackupOutcomesLifecycle(),
+        () => console.error('[startup] Background operation failed'),
+    )
 
 const startNotificationLifecycle = createServerOnlyFn(() =>
     startWorkerLifecycle(async () => {
@@ -100,7 +128,11 @@ const startNotificationLifecycle = createServerOnlyFn(() =>
         return notificationWorker
     }, 'notifications'),
 )
-if (typeof window === 'undefined') void startNotificationLifecycle()
+if (typeof window === 'undefined')
+    runDetachedTask(
+        () => startNotificationLifecycle(),
+        () => console.error('[startup] Background operation failed'),
+    )
 
 const startHostMonitoringLifecycle = createServerOnlyFn(() =>
     startWorkerLifecycle(async () => {
@@ -109,7 +141,11 @@ const startHostMonitoringLifecycle = createServerOnlyFn(() =>
         return hostMonitoringWorker
     }, 'host_monitoring'),
 )
-if (typeof window === 'undefined') void startHostMonitoringLifecycle()
+if (typeof window === 'undefined')
+    runDetachedTask(
+        () => startHostMonitoringLifecycle(),
+        () => console.error('[startup] Background operation failed'),
+    )
 
 const startNpmImportTempCleanup = createServerOnlyFn(async () => {
     await startWorkerLifecycle(async () => {
@@ -149,7 +185,11 @@ const startNpmImportTempCleanup = createServerOnlyFn(async () => {
         }
     }, 'npm_import_cleanup')
 })
-if (typeof window === 'undefined') void startNpmImportTempCleanup()
+if (typeof window === 'undefined')
+    runDetachedTask(
+        () => startNpmImportTempCleanup(),
+        () => console.error('[startup] Background operation failed'),
+    )
 
 const securityHeadersMiddleware = createMiddleware().server(async ({ next }) => {
     const nonce = createCspNonce()

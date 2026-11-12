@@ -1,3 +1,4 @@
+import { runDetachedTask } from '@/lib/Async/runDetachedTask.ts'
 import { drainWorker, settleWorkerTasks } from '@/server/Foundation/worker-lifecycle.server.ts'
 // oxlint-disable no-await-in-loop -- Durable admission is serialized; transports run outside the claim transaction.
 import { NOTIFICATION_LIMITS as limits } from '@/config/notifications.config.ts'
@@ -39,7 +40,10 @@ export function createNotificationWorker(dependencies: NotificationWorkerDepende
         deliveryScheduledAt = at
         deliveryTimer = setTimeout(() => {
             deliveryTimer = null
-            void dispatch()
+            runDetachedTask(
+                () => dispatch(),
+                () => console.error('[notifications] Background operation failed'),
+            )
         }, delay)
         deliveryTimer.unref()
     }
@@ -87,7 +91,10 @@ export function createNotificationWorker(dependencies: NotificationWorkerDepende
                 if (!started || stopped) return
                 collectionTimer = setTimeout(() => {
                     collectionTimer = null
-                    void collectOnce()
+                    runDetachedTask(
+                        () => collectOnce(),
+                        () => console.error('[notifications] Background operation failed'),
+                    )
                 }, limits.pollIntervalMs)
                 collectionTimer.unref()
             })
@@ -181,8 +188,14 @@ export function createNotificationWorker(dependencies: NotificationWorkerDepende
             stopped = false
             controller = new AbortController()
             unsubscribe = dependencies.subscribe?.(() => scheduleDelivery(0))
-            void collectOnce()
-            void dispatch()
+            runDetachedTask(
+                () => collectOnce(),
+                () => console.error('[notifications] Background operation failed'),
+            )
+            runDetachedTask(
+                () => dispatch(),
+                () => console.error('[notifications] Background operation failed'),
+            )
         },
         /** Fence all timers and admission, then settle late claims, active transports, and durable acknowledgements before confirming quiescence. */
         stop(): Promise<void> {

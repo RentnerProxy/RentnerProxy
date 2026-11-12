@@ -27,7 +27,7 @@ const successToast = spyOn(toast, 'success').mockReturnValue('notification-ui-te
 const { TooltipProvider } = await import('@rentnerkev/tooltips/tooltip')
 const { default: withTestLanguage } = await import('@/tests/Helpers/withTestLanguage.tsx')
 const { AccentContext } = await import('@/shared/Theme/accentContext.ts')
-mock.module('@/server/Auth/Core/database.server.ts', () => ({
+await mock.module('@/server/Auth/Core/database.server.ts', () => ({
     getAuthDatabase: () => {
         throw new Error('Account navigation tests must not access a database.')
     },

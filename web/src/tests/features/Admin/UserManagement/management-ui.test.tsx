@@ -70,14 +70,14 @@ const updateRoleHandlerMock = mock(async (_input: unknown) => ({
     message: 'Role updated.',
 }))
 
-mock.module('@/features/Admin/UserManagement/middleware.ts', () => ({
+await mock.module('@/features/Admin/UserManagement/middleware.ts', () => ({
     createUserHandler: createUserHandlerMock,
     disableUserHandler: disableUserHandlerMock,
     enableUserHandler: enableUserHandlerMock,
     getUsersHandler: getUsersHandlerMock,
     updateUserHandler: updateUserHandlerMock,
 }))
-mock.module('@/features/Admin/RoleManagement/middleware.ts', () => ({
+await mock.module('@/features/Admin/RoleManagement/middleware.ts', () => ({
     createRoleHandler: createRoleHandlerMock,
     getRolesHandler: getRolesHandlerMock,
     updateRoleHandler: updateRoleHandlerMock,

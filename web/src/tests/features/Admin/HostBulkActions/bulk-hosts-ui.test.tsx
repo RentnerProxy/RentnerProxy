@@ -56,18 +56,18 @@ const apply = mock(
         },
     }),
 )
-mock.module('@/features/Admin/HostBulkActions/middleware.ts', () => ({
+await mock.module('@/features/Admin/HostBulkActions/middleware.ts', () => ({
     previewBulkHostsHandler: preview,
     applyBulkHostsHandler: apply,
 }))
-mock.module('@/features/Admin/AccessPolicyManagement/middleware.ts', () => ({
+await mock.module('@/features/Admin/AccessPolicyManagement/middleware.ts', () => ({
     getAssignableAccessPoliciesHandler: async () => [],
 }))
 const certificates = mock(async () => [])
-mock.module('@/features/Admin/CertificateManagement/middleware.ts', () => ({
+await mock.module('@/features/Admin/CertificateManagement/middleware.ts', () => ({
     getAssignableCertificatesHandler: certificates,
 }))
-mock.module('@/features/Admin/HostTags/middleware.ts', () => ({
+await mock.module('@/features/Admin/HostTags/middleware.ts', () => ({
     getHostTagCatalogHandler: async () => ({ revision: 0, tags: [] }),
     mutateHostTagHandler: async () => ({ success: true }),
 }))

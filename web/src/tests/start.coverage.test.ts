@@ -38,7 +38,7 @@ const prune = mock(
             releasePrune = resolve
         }),
 )
-mock.module('@tanstack/react-start', () => ({
+await mock.module('@tanstack/react-start', () => ({
     createServerOnlyFn: (callback: unknown) => callback,
     createMiddleware: () => ({
         server: (callback: (typeof handlers)[number]) => {
@@ -52,18 +52,18 @@ mock.module('@tanstack/react-start', () => ({
     },
     createStart: (factory: () => unknown) => factory(),
 }))
-mock.module('@tanstack/react-start/server', () => ({
+await mock.module('@tanstack/react-start/server', () => ({
     getRequestProtocol: protocol,
     setResponseHeaders: responseHeaders,
 }))
-mock.module('@/server/env.server.ts', () => ({
+await mock.module('@/server/env.server.ts', () => ({
     getTrustProxyHeaders: () => true,
     validateProductionEnvironment: validate,
 }))
-mock.module('@/server/WebSockets/realtimeValkey.service.ts', () => ({
+await mock.module('@/server/WebSockets/realtimeValkey.service.ts', () => ({
     startRealtimeValkey: realtime,
 }))
-mock.module('@/server/Foundation/worker-lifecycle.server.ts', () => ({
+await mock.module('@/server/Foundation/worker-lifecycle.server.ts', () => ({
     startWorkerLifecycle: (loader: () => Promise<unknown>, id: string) => {
         const result = loader().then((worker) => {
             workers.push(worker)
@@ -74,38 +74,38 @@ mock.module('@/server/Foundation/worker-lifecycle.server.ts', () => ({
         return result
     },
 }))
-mock.module('@/server/security-headers.ts', () => ({
+await mock.module('@/server/security-headers.ts', () => ({
     createCspNonce: () => nonce,
     getAdminUiSecurityHeaders: securityHeaders,
     applyAdminUiSecurityHeaders: applyHeaders,
 }))
-mock.module('@/server/ProxyRuntime/proxy-runtime.service.ts', () => ({
+await mock.module('@/server/ProxyRuntime/proxy-runtime.service.ts', () => ({
     reconcileProxyConfigurationService: reconcileProxy,
 }))
-mock.module('@/server/Admin/DockerDiscovery/discovery-worker.ts', () => ({
+await mock.module('@/server/Admin/DockerDiscovery/discovery-worker.ts', () => ({
     dockerDiscoveryWorker: discovery,
 }))
-mock.module('@/server/Admin/CrowdSec/crowdsec.service.ts', () => ({
+await mock.module('@/server/Admin/CrowdSec/crowdsec.service.ts', () => ({
     reconcileCrowdSecConfiguration: reconcileCrowdsec,
 }))
-mock.module('@/server/Admin/CertificateManagement/certificate-events.worker.ts', () => ({
+await mock.module('@/server/Admin/CertificateManagement/certificate-events.worker.ts', () => ({
     startCertificateEventsSynchronization: certificateStart,
     stopCertificateEventsSynchronization: certificateStop,
 }))
-mock.module('@/server/Admin/ProxyHostManagement/certificate-jobs.worker.server.ts', () => ({
+await mock.module('@/server/Admin/ProxyHostManagement/certificate-jobs.worker.server.ts', () => ({
     startCertificateJobWorker: jobsStart,
     stopCertificateJobWorker: jobsStop,
 }))
-mock.module('@/server/Admin/Backups/backup-outcomes.server.ts', () => ({
+await mock.module('@/server/Admin/Backups/backup-outcomes.server.ts', () => ({
     backupOutcomesWorker: backup,
 }))
-mock.module('@/server/Notifications/notification-worker.server.ts', () => ({
+await mock.module('@/server/Notifications/notification-worker.server.ts', () => ({
     notificationWorker: notification,
 }))
-mock.module('@/server/HostMonitoring/host-monitoring.worker.server.ts', () => ({
+await mock.module('@/server/HostMonitoring/host-monitoring.worker.server.ts', () => ({
     hostMonitoringWorker: monitor,
 }))
-mock.module('@/server/Admin/NpmImport/npm-temp.ts', () => ({ pruneStaleNpmImports: prune }))
+await mock.module('@/server/Admin/NpmImport/npm-temp.ts', () => ({ pruneStaleNpmImports: prune }))
 
 test('server bootstrap validates production, binds every worker and coalesces temporary-file pruning with stop cleanup', async () => {
     const previous = process.env.NODE_ENV

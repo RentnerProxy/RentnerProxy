@@ -1,3 +1,4 @@
+import { runDetachedTask } from '@/lib/Async/runDetachedTask.ts'
 import { drainWorker } from '@/server/Foundation/worker-lifecycle.server.ts'
 import { DOCKER_DISCOVERY_WORKER as limits } from '@/config/docker-discovery.config.ts'
 
@@ -31,7 +32,10 @@ export function createDiscoveryWorker(
         queuedAt = at
         queued = setTimeout(() => {
             queued = null
-            void trigger(false)
+            runDetachedTask(
+                () => trigger(false),
+                () => console.error('[docker-discovery] Background operation failed'),
+            )
         }, delay)
         queued.unref?.()
     }
@@ -69,7 +73,10 @@ export function createDiscoveryWorker(
             if (timer || stopped) return flight ?? Promise.resolve()
             unsubscribe = subscribe?.(() => request(true))
             timer = setInterval(() => {
-                void trigger()
+                runDetachedTask(
+                    () => trigger(),
+                    () => console.error('[docker-discovery] Background operation failed'),
+                )
             }, intervalMs)
             timer.unref?.()
             return trigger()

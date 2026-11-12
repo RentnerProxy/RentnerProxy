@@ -11,7 +11,7 @@ const stateFile = '/isolated-root-state/jobs.json'
 const proofFile = join(controlRoot, 'restore-restarted.json')
 const files = new Map<string, unknown>()
 let readError: Error | null = null
-mock.module('../../../../../../docker/production/backups/storage.ts', () => ({
+await mock.module('../../../../../../docker/production/backups/storage.ts', () => ({
     controlRoot,
     stateFile,
     readPrivateJson: async (path: string) => {

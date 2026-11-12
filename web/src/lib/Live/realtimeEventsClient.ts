@@ -5,6 +5,7 @@ import type {
     Subscription,
 } from './Types/realtime-events-client.types.ts'
 import { realtimeEventSchema } from './events.ts'
+import { runDetachedTask } from '@/lib/Async/runDetachedTask.ts'
 import type { LiveTopic, SnapshotEvent } from './Types/events.types.ts'
 
 const MIN_RECONNECT_DELAY_MS = 1000
@@ -30,9 +31,27 @@ function getRealtimeUrl(): URL {
     return url
 }
 
+function notifyListenerStatus(listener: Listener, status: LiveStatus): void {
+    if (!listener.onStatus) return
+    runDetachedTask(
+        () => listener.onStatus?.(status),
+        () => console.warn('[realtime] Status listener failed'),
+    )
+}
+
 function notifyStatus(status: LiveStatus): void {
     connectionStatus = status
-    for (const listener of listeners.values()) listener.onStatus?.(status)
+    for (const listener of listeners.values()) notifyListenerStatus(listener, status)
+}
+
+function notifyLifecycleListeners(event: 'onResume' | 'onUnauthorized'): void {
+    for (const listener of listeners.values()) {
+        if (!listener[event]) continue
+        runDetachedTask(
+            () => listener[event]?.(),
+            () => console.warn('[realtime] Lifecycle listener failed'),
+        )
+    }
 }
 
 function notifyData(event: SnapshotEvent): void {
@@ -40,7 +59,10 @@ function notifyData(event: SnapshotEvent): void {
     for (const subscription of subscriptions.values()) {
         if (subscription.topic !== event.topic || subscription.queryText !== queryText) continue
         for (const listener of subscription.listeners) {
-            void Promise.resolve(listener.onData(event.payload)).catch(() => undefined)
+            runDetachedTask(
+                () => listener.onData(event.payload),
+                () => console.warn('[realtime] Data listener failed'),
+            )
         }
     }
 }
@@ -97,7 +119,7 @@ function scheduleReconnect(): void {
     reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY_MS)
     reconnectTimeout = setTimeout(() => {
         reconnectTimeout = null
-        void connect()
+        connect()
     }, delay)
 }
 
@@ -106,11 +128,11 @@ function handleUnauthorized(): void {
     shouldReconnect = false
     clearReconnectTimeout()
     notifyStatus('disconnected')
-    for (const listener of listeners.values()) listener.onUnauthorized?.()
+    notifyLifecycleListeners('onUnauthorized')
     closeCurrentWebSocket()
 }
 
-async function connect(): Promise<void> {
+function connect(): void {
     if (isConnecting || websocket || !shouldReconnect || isPageSuspended || listeners.size === 0)
         return
     isConnecting = true
@@ -125,7 +147,7 @@ async function connect(): Promise<void> {
             reconnectDelay = MIN_RECONNECT_DELAY_MS
             notifyStatus('connected')
             sendAllSubscriptions()
-            if (resuming) for (const listener of listeners.values()) listener.onResume?.()
+            if (resuming) notifyLifecycleListeners('onResume')
         })
         current.addEventListener('message', (event) => {
             if (websocket !== current) return
@@ -178,9 +200,9 @@ function resume(): void {
     }
     const wasSuspended = isPageSuspended
     isPageSuspended = false
-    if (wasSuspended) for (const listener of listeners.values()) listener.onResume?.()
+    if (wasSuspended) notifyLifecycleListeners('onResume')
     reconnectDelay = MIN_RECONNECT_DELAY_MS
-    if (listeners.size > 0) void connect()
+    if (listeners.size > 0) connect()
 }
 
 function setupLifecycleListeners(): void {
@@ -225,12 +247,12 @@ export function subscribeToRealtimeEvents<T>({
     }
     listeners.set(listener.id, listener)
     subscription.listeners.add(listener)
-    onStatus?.(isPageSuspended ? 'inactive' : connectionStatus)
+    notifyListenerStatus(listener, isPageSuspended ? 'inactive' : connectionStatus)
     shouldReconnect = true
     if (websocket?.readyState === WebSocket.OPEN && subscription.listeners.size === 1) {
         sendSubscription(subscription)
     }
-    if (!isPageSuspended) void connect()
+    if (!isPageSuspended) connect()
     return () => {
         if (!listeners.delete(listener.id)) return
         const current = subscriptions.get(listener.subscriptionKey)

@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import type { FieldErrors } from '../Types/crowd-sec-logic.types.ts'
 import { invalidateCrowdSecConfigurationCache } from '@/lib/Admin/CrowdSec/crowdSecCache.ts'
 import { toast } from '@rentnerkev/toasts'
@@ -48,6 +49,7 @@ function validationErrors(error: {
 }
 
 export default function useCrowdSecLogic({ permissions }: CrowdSecPageProps): CrowdSecPageLogic {
+    const runAction = useAsyncAction()
     const { t } = useTranslationStore()
     const queryClient = useQueryClient()
     const canUpdate = permissions.includes(PERMISSIONS.CROWDSEC_UPDATE)
@@ -192,8 +194,8 @@ export default function useCrowdSecLogic({ permissions }: CrowdSecPageProps): Cr
         onSuccess: (result, { tracksProgress, attemptId }) => {
             // A committed server change must refresh replacement observers too.
             if (result.success) {
-                void invalidateCrowdSecConfigurationCache(queryClient)
-                void queryClient.resetQueries({ queryKey: crowdSecQueryKeys.dashboard })
+                runAction(() => invalidateCrowdSecConfigurationCache(queryClient))
+                runAction(() => queryClient.resetQueries({ queryKey: crowdSecQueryKeys.dashboard }))
             }
             if (saveGeneration.current !== attemptId || !canUpdate) return
             if (!result.success) {
@@ -262,7 +264,7 @@ export default function useCrowdSecLogic({ permissions }: CrowdSecPageProps): Cr
             toast[result.success ? 'success' : 'error'](t(result.message), {
                 title: t(`toast.titles.${result.success ? 'success' : 'error'}`),
             })
-            void invalidateCrowdSecConfigurationCache(queryClient)
+            runAction(() => invalidateCrowdSecConfigurationCache(queryClient))
         },
         onError: () => {
             setEnrollmentKey('')

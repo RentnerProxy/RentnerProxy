@@ -11,7 +11,7 @@ const prefix = join(tmpdir(), 'rentnerproxy-validate-backup-coverage-')
 const directories: string[] = []
 const rows = new Map<string, unknown[]>()
 let closed = 0
-mock.module('rentnerproxy-coverage-sql-fixture', () => ({
+await mock.module('rentnerproxy-coverage-sql-fixture', () => ({
     SQL: function () {
         return Object.assign(
             async (query: TemplateStringsArray) => {

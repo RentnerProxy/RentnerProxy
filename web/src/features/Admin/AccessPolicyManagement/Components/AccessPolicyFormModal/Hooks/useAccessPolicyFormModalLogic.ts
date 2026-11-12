@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import type { ActionResult, FormErrors } from '../Types/access-policy-form-modal-logic.types.ts'
 import {
     accessPolicyManagementQueryKeys,
@@ -93,6 +94,7 @@ export default function useAccessPolicyFormModalLogic({
     onSuccess,
     policy,
 }: Pick<AccessPolicyFormModalProps, 'mode' | 'onSuccess' | 'policy'>) {
+    const runAction = useAsyncAction()
     const { t } = useTranslationStore()
     const formId = useId()
     const isCreate = mode === 'create'
@@ -149,12 +151,12 @@ export default function useAccessPolicyFormModalLogic({
                                     },
                       }
             if (mode === 'create') {
-                return (await createAccessPolicyHandler({ data })) as ActionResult
+                return await createAccessPolicyHandler({ data })
             }
             if (!policy) throw new Error('admin.accessPolicies.errors.policyNotFound')
-            return (await updateAccessPolicyHandler({
+            return await updateAccessPolicyHandler({
                 data: { ...data, accessPolicyId: policy.id },
-            })) as ActionResult
+            })
         },
         onSuccess: async (result) => {
             if (!result.success) {
@@ -446,9 +448,9 @@ export default function useAccessPolicyFormModalLogic({
         (event) => {
             event.preventDefault()
             event.stopPropagation()
-            void submit()
+            runAction(() => submit())
         },
-        [submit],
+        [submit, runAction],
     )
     return {
         state: {

@@ -472,10 +472,7 @@ pub(crate) fn app_with_state(state: AppState) -> Router {
         )
         .route(
             "/.well-known/acme-challenge/{token}",
-            get({
-                let state = state.clone();
-                move |token, headers| challenge_response(token, state.clone(), headers)
-            }),
+            get(move |token, headers| challenge_response(token, state.clone(), headers)),
         )
         .merge(certificates)
         .merge(backups)

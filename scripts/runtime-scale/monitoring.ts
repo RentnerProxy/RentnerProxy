@@ -312,7 +312,9 @@ export async function runMonitoringCapacity(options: MonitoringScaleOptions) {
                 : `Monitoring capacity interrupted by ${reason}`,
         )
         samplerController.abort()
-        void stopWorker()
+        void stopWorker().catch(() => {
+            console.error('[monitoring] Worker shutdown failed')
+        })
     }
     const budgetTimer = setTimeout(() => abortRun('budget'), 240000)
     const interrupt = () => abortRun('SIGINT')

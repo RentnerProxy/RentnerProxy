@@ -30,7 +30,7 @@ const bootstrap = { language: 'en', resources: {} }
 const loadLanguage = mock(async (_language: string) => bootstrap)
 const provider = () => null
 const outlet = () => null
-mock.module('@tanstack/react-router', () => ({
+await mock.module('@tanstack/react-router', () => ({
     createFileRoute: (path: string) => (options: Options) => {
         registry.set(path, options)
         return {
@@ -47,22 +47,22 @@ mock.module('@tanstack/react-router', () => ({
     redirect: (options: { to: string }) => new Error(`redirect:${options.to}`),
     Outlet: outlet,
 }))
-mock.module('@/features/Auth/middleware.ts', () => ({
+await mock.module('@/features/Auth/middleware.ts', () => ({
     getAuthStateHandler: mock(async () => ({ user, setupRequired: false, sessionId: 'session' })),
     logoutHandler: mock(async () => ({ success: true })),
 }))
-mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
+await mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
     AuthenticatedLanguageProvider: provider,
     loadLanguageBootstrap: loadLanguage,
 }))
-mock.module('@/features/UserSettings/Hooks/useUserSettingsRoute.ts', () => ({
+await mock.module('@/features/UserSettings/Hooks/useUserSettingsRoute.ts', () => ({
     default: () => ({ user, activeSection: 'password' }),
 }))
 const ddnsApi = { fixture: 'ddns' }
 const discoveryApi = { fixture: 'discovery' }
-mock.module('@/features/Admin/Ddns/ddns-api.ts', () => ({ ddnsApi }))
-mock.module('@/features/Admin/DockerDiscovery/discovery-api.ts', () => ({ discoveryApi }))
-mock.module('@/styles.css', () => ({}))
+await mock.module('@/features/Admin/Ddns/ddns-api.ts', () => ({ ddnsApi }))
+await mock.module('@/features/Admin/DockerDiscovery/discovery-api.ts', () => ({ discoveryApi }))
+await mock.module('@/styles.css', () => ({}))
 
 const matrix: {
     source: string
@@ -249,19 +249,23 @@ const matrix: {
     },
 ]
 const pages = new Map<string, () => null>()
-for (const { page } of matrix) {
-    const component = mock(() => null)
-    pages.set(page, component)
-    mock.module(`@/features/${page}`, () => ({ default: component }))
-}
+await Promise.all(
+    matrix.map(({ page }) => {
+        const component = mock(() => null)
+        pages.set(page, component)
+        return mock.module(`@/features/${page}`, () => ({ default: component }))
+    }),
+)
 const authenticatedLayout = () => null
 const publicLayout = () => null
 const rootLayout = () => null
 const document = () => null
-mock.module('@/layouts/AuthenticatedLayout/index.tsx', () => ({ default: authenticatedLayout }))
-mock.module('@/layouts/PublicLayout/index.tsx', () => ({ default: publicLayout }))
-mock.module('@/layouts/RootLayout/index.tsx', () => ({ default: rootLayout }))
-mock.module('@/layouts/RootDocument/index.tsx', () => ({ default: document }))
+await mock.module('@/layouts/AuthenticatedLayout/index.tsx', () => ({
+    default: authenticatedLayout,
+}))
+await mock.module('@/layouts/PublicLayout/index.tsx', () => ({ default: publicLayout }))
+await mock.module('@/layouts/RootLayout/index.tsx', () => ({ default: rootLayout }))
+await mock.module('@/layouts/RootDocument/index.tsx', () => ({ default: document }))
 await Promise.all(
     [
         ...matrix.map(({ source }) => source),

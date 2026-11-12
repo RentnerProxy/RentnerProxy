@@ -2,34 +2,36 @@ import { beforeEach, describe, expect, test } from 'bun:test'
 import { PERMISSIONS } from '@/config/permissions.config.ts'
 import { createMiddlewareHarness } from '@/tests/Helpers/middlewareCoverage.ts'
 
-const boundary = createMiddlewareHarness()
-boundary.mockServices('@/server/Auth/Account/account.service.ts', ['changeCurrentPasswordService'])
-boundary.mockServices('@/server/Auth/Account/profile-image.service.ts', [
+const boundary = await createMiddlewareHarness()
+await boundary.mockServices('@/server/Auth/Account/account.service.ts', [
+    'changeCurrentPasswordService',
+])
+await boundary.mockServices('@/server/Auth/Account/profile-image.service.ts', [
     'getProfileImageAssetService',
     'updateCurrentProfileImageService',
 ])
-boundary.mockServices('@/server/Auth/Passkey/passkey.service.ts', [
+await boundary.mockServices('@/server/Auth/Passkey/passkey.service.ts', [
     'beginPasskeyRegistrationService',
     'deletePasskeyService',
     'finishPasskeyRegistrationService',
     'getPasskeysForUserService',
     'renamePasskeyService',
 ])
-boundary.mockServices('@/server/Auth/TwoFactor/two-factor.service.ts', [
+await boundary.mockServices('@/server/Auth/TwoFactor/two-factor.service.ts', [
     'beginTotpSetupService',
     'confirmTotpSetupService',
     'disableTotpService',
     'getTwoFactorStatusService',
     'regenerateRecoveryCodesService',
 ])
-boundary.mockServices('@/server/UserSettings/preferences.service.ts', [
+await boundary.mockServices('@/server/UserSettings/preferences.service.ts', [
     'updateCurrentUserLanguageService',
     'updateCurrentUserThemeModeService',
 ])
-boundary.mockServices('@/server/UserSettings/navigation.service.ts', [
+await boundary.mockServices('@/server/UserSettings/navigation.service.ts', [
     'updateCurrentUserNavigationGroupService',
 ])
-boundary.mockServices('@/server/UserSettings/appearance.service.ts', [
+await boundary.mockServices('@/server/UserSettings/appearance.service.ts', [
     'updateCurrentUserAccentColorService',
 ])
 const handlers = await import('@/features/UserSettings/middleware.ts')

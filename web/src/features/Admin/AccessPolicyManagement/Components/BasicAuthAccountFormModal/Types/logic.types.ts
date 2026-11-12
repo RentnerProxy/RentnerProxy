@@ -11,9 +11,11 @@ export interface BasicAuthAccountFormLogicResult {
         readonly values: BasicAuthAccountFormValues
     }
     readonly handler: {
+        readonly handleSubmit: (event: FormEvent<HTMLFormElement>) => void
         readonly handleOpenChange: (open: boolean) => void
         readonly setPassword: (password: string) => void
         readonly setUsername: (username: string) => void
         readonly submit: () => Promise<void>
     }
 }
+import type { FormEvent } from 'react'

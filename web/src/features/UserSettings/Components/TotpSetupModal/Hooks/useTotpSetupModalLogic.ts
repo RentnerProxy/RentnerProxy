@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import type {
     TotpSetupStep,
     UseTotpSetupModalLogicOptions,
@@ -15,6 +16,7 @@ export default function useTotpSetupModalLogic({
     onClose,
     onConfirm,
 }: UseTotpSetupModalLogicOptions) {
+    const runAction = useAsyncAction()
     const [step, setStep] = useState<TotpSetupStep>('scan')
     const defaultValues: TotpSetupFormValues = { code: '' }
     const form = useForm({
@@ -38,7 +40,7 @@ export default function useTotpSetupModalLogic({
             handleSubmit: (event) => {
                 event.preventDefault()
                 event.stopPropagation()
-                void form.handleSubmit()
+                runAction(() => form.handleSubmit())
             },
             handleOpenChange: (open) => {
                 if (!open && !isPending) close()

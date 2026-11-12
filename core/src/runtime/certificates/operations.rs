@@ -107,12 +107,7 @@ pub(crate) fn new_uuid_v7() -> Result<String, CertificateError> {
     SystemRandom::new()
         .fill(&mut bytes)
         .map_err(|_| CertificateError::StoreUnavailable)?;
-    bytes[0] = (millis >> 40) as u8;
-    bytes[1] = (millis >> 32) as u8;
-    bytes[2] = (millis >> 24) as u8;
-    bytes[3] = (millis >> 16) as u8;
-    bytes[4] = (millis >> 8) as u8;
-    bytes[5] = millis as u8;
+    bytes[..6].copy_from_slice(&millis.to_be_bytes()[2..]);
     bytes[6] = (bytes[6] & 0x0f) | 0x70;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     Ok(format_uuid(bytes))
@@ -340,7 +335,7 @@ pub(crate) fn events_page(
     index: &CertificateIndex,
     after: Option<&str>,
     limit: usize,
-) -> Result<CertificateEventPage, CertificateError> {
+) -> CertificateEventPage {
     let limit = limit.min(MAX_EVENT_PAGE);
     let first_sequence = index
         .event_sequence
@@ -358,7 +353,8 @@ pub(crate) fn events_page(
             }
         },
     };
-    let start = start_sequence.saturating_sub(first_sequence) as usize;
+    let start = usize::try_from(start_sequence.saturating_sub(first_sequence))
+        .unwrap_or(index.events.len());
     let events = index
         .events
         .iter()
@@ -369,12 +365,12 @@ pub(crate) fn events_page(
     let next_sequence = start_sequence.saturating_add(events.len() as u64);
     let has_more = next_sequence < index.event_sequence;
     let next_cursor = Some(encode_cursor(&index.store_id, next_sequence));
-    Ok(CertificateEventPage {
+    CertificateEventPage {
         events,
         next_cursor,
         has_more,
         reset_required,
-    })
+    }
 }
 
 pub(crate) fn encode_cursor(store_id: &str, sequence: u64) -> String {

@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import { useForm } from '@tanstack/react-form'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useId, useState } from 'react'
@@ -13,6 +14,7 @@ import type { HostKind, HostTag, HostTagMutation } from '@/lib/HostTags/Types/ho
 import { getHostTagCatalogHandler, mutateHostTagHandler } from '../middleware.ts'
 
 export default function useHostTagManagerLogic(kind: HostKind) {
+    const runAction = useAsyncAction()
     const { language, t } = useTranslationStore()
     const formId = useId()
     const [open, setOpen] = useState(false)
@@ -120,7 +122,7 @@ export default function useHostTagManagerLogic(kind: HostKind) {
             submit: (event: FormEvent<HTMLFormElement>) => {
                 event.preventDefault()
                 event.stopPropagation()
-                void form.handleSubmit()
+                runAction(() => form.handleSubmit())
             },
             rename: (tag: HostTag) => {
                 if (!query.data) return

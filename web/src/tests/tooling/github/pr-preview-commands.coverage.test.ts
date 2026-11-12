@@ -58,13 +58,13 @@ const hasArtifact = mock(async (_api: GitHubApi, _id: number) => eligible)
 let lifecycle = 'open'
 const gate = mock(async () => lifecycle)
 const verify = mock(async (..._arguments: unknown[]) => undefined)
-mock.module('../../../../../.github/scripts/deploy/pr-preview/workflow.ts', () => ({
+await mock.module('../../../../../.github/scripts/deploy/pr-preview/workflow.ts', () => ({
     eligiblePreviewTriggerRun: trigger,
     eligiblePreviewBuildRun: build,
     resolvePreviewSource: source,
     previewBuildHasArtifact: hasArtifact,
 }))
-mock.module('../../../../../.github/scripts/deploy/pr-preview/gate.ts', () => ({
+await mock.module('../../../../../.github/scripts/deploy/pr-preview/gate.ts', () => ({
     previewGateLifecycle: gate,
     verifyGate: verify,
 }))

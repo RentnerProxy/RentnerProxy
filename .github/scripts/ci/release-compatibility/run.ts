@@ -963,6 +963,6 @@ try {
         ).catch(() => undefined)
         await rm(temporaryRoot, { recursive: true, force: true })
     }
-    backend?.stop(true)
+    await backend?.stop(true)
     await images.cleanup(command)
 }

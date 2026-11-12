@@ -272,7 +272,7 @@ export async function runBeta2Journeys(input: Beta2JourneyInput) {
             previewToken: reviewed.previewToken,
         }),
     )
-    dockerDiscoveryWorker.start()
+    await dockerDiscoveryWorker.start()
     await waitForBeta2(
         async () => (await hosts()).some((host) => host.domains.includes('discovered.beta2.test')),
         'reviewed Docker host persisted',

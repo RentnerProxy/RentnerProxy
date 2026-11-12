@@ -17,7 +17,7 @@ describe('continuous appliance startup probes', () => {
                 false,
             )
         } finally {
-            server.stop(true)
+            await server.stop(true)
         }
     })
 
@@ -37,7 +37,7 @@ describe('continuous appliance startup probes', () => {
                 (await probeStartupRoute('http', server.port!, 'route.test', 'x'.repeat(8192))).ok,
             ).toBe(false)
         } finally {
-            server.stop(true)
+            await server.stop(true)
         }
     })
 
@@ -56,7 +56,7 @@ describe('continuous appliance startup probes', () => {
             expect(probe.elapsedMs).toBeLessThan(250)
             expect(Object.keys(probe).toSorted()).toEqual(['elapsedMs', 'ok'])
         } finally {
-            server.stop(true)
+            await server.stop(true)
         }
     })
 })

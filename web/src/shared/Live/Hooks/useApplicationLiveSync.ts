@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import type {
     ApplicationLiveSnapshot,
     ApplicationLiveSyncResult,
@@ -84,6 +85,7 @@ async function refreshApplicationQueries(queryClient: QueryClient): Promise<void
 }
 
 export default function useApplicationLiveSync(suspended = false): ApplicationLiveSyncResult {
+    const runAction = useAsyncAction()
     const queryClient = useQueryClient()
     const router = useRouter()
     const syncGeneration = useRef(0)
@@ -140,7 +142,7 @@ export default function useApplicationLiveSync(suspended = false): ApplicationLi
                         if (!identityPending.current) captureScroll()
                         identityPending.current = true
                         setIsIdentityPending(true)
-                        void queryClient.cancelQueries()
+                        runAction(() => queryClient.cancelQueries())
                         queryClient.clear()
                     }
                     if (!scope) {
@@ -172,7 +174,7 @@ export default function useApplicationLiveSync(suspended = false): ApplicationLi
                 if (!initial) await refreshApplicationQueries(queryClient)
             })().catch(() => undefined)
         },
-        [captureScroll, queryClient, router],
+        [captureScroll, queryClient, router, runAction],
     )
 
     useEffect(() => {

@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import { useForm, useStore } from '@tanstack/react-form'
 import { useId, useRef, useState, type FormEvent } from 'react'
 import { toast } from '@rentnerkev/toasts'
@@ -9,6 +10,7 @@ import type {
 } from '../../../Types/discovery-ui.types.ts'
 
 export default function useDiscoveryConnectionLogic(props: DiscoveryConnectionProps) {
+    const runAction = useAsyncAction()
     const { t } = useTranslationStore()
     const formId = useId()
     const testing = useRef(false)
@@ -98,7 +100,7 @@ export default function useDiscoveryConnectionLogic(props: DiscoveryConnectionPr
                 if (!props.pending && !testing.current) props.onClose()
             },
             disconnect: () => {
-                if (!props.pending && !testing.current) void props.onDisconnect()
+                if (!props.pending && !testing.current) runAction(() => props.onDisconnect())
             },
             toggleSynchronization: () => {
                 if (props.pending || testing.current || props.runtime.locked) return
@@ -122,7 +124,7 @@ export default function useDiscoveryConnectionLogic(props: DiscoveryConnectionPr
             },
             submit: (event: FormEvent<HTMLFormElement>) => {
                 event.preventDefault()
-                void form.handleSubmit()
+                runAction(() => form.handleSubmit())
             },
         },
     } satisfies DiscoveryConnectionLogicResult<typeof form>

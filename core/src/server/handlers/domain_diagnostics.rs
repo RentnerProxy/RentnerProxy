@@ -15,9 +15,8 @@ pub(in crate::server) async fn diagnose(
     state: AppState,
     body: std::result::Result<Bytes, BytesRejection>,
 ) -> std::result::Result<Response, ApiError> {
-    let body = match body {
-        Ok(body) => body,
-        Err(_) => return Ok(invalid_input()),
+    let Ok(body) = body else {
+        return Ok(invalid_input());
     };
     if body.len() > 4096 {
         return Ok(invalid_input());

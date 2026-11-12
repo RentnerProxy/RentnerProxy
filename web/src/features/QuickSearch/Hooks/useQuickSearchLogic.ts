@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useQueries } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
@@ -39,6 +40,7 @@ export default function useQuickSearchLogic({
     roles = [],
     onNavigate,
 }: QuickSearchProps): QuickSearchLogicResult {
+    const runAction = useAsyncAction()
     const { t } = useTranslationStore()
     const navigate = useNavigate()
     const actions = useQuickActions()
@@ -171,7 +173,8 @@ export default function useQuickSearchLogic({
             if (attempt.current === selection) {
                 setUnavailableScope(scope)
                 setOpeningScope(null)
-                if (source) void queries[QUICK_SEARCH_CATEGORIES.indexOf(source)]?.refetch()
+                if (source)
+                    runAction(() => queries[QUICK_SEARCH_CATEGORIES.indexOf(source)]?.refetch())
             }
         }
     }
@@ -186,7 +189,7 @@ export default function useQuickSearchLogic({
         onOpen: () => changeOpen(true),
         onMove: move,
         onSelect: () => {
-            if (active) void select(active)
+            if (active) runAction(() => select(active))
         },
     })
 
@@ -236,7 +239,7 @@ export default function useQuickSearchLogic({
             },
             highlight: setHighlightedId,
             select: (result) => {
-                void select(result)
+                runAction(() => select(result))
             },
         },
         refs: { input },

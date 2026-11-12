@@ -130,7 +130,9 @@ export function AuthenticatedLanguageProvider({
     useEffect(() => {
         if (appliedBootstrap.current !== bootstrap) {
             appliedBootstrap.current = bootstrap
-            void store.setLanguage(bootstrap.language, bootstrap)
+            void store.setLanguage(bootstrap.language, bootstrap).catch(() => {
+                console.error('[language] Prepared language could not be applied')
+            })
         }
     }, [bootstrap, store])
 

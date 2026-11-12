@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import type { UseUserFormLogicParams } from '../Types/user-form-modal-logic.types.ts'
 import { useCallback, useId } from 'react'
 import type { UserFormModalHandler, UserFormModalState } from '../Types/user-form-modal.types.ts'
@@ -24,6 +25,7 @@ export default function useUserFormModalLogic({
     roles,
     user,
 }: UseUserFormLogicParams) {
+    const runAction = useAsyncAction()
     const { t } = useTranslationStore()
     const formId = useId()
     const isCreate = mode === 'create'
@@ -104,9 +106,9 @@ export default function useUserFormModalLogic({
         (event) => {
             event.preventDefault()
             event.stopPropagation()
-            void form.handleSubmit()
+            runAction(() => form.handleSubmit())
         },
-        [form],
+        [form, runAction],
     )
 
     return {

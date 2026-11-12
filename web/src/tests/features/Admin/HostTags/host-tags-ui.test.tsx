@@ -45,7 +45,7 @@ const mutate = mock(async ({ data }: { data: unknown }) => {
         return { success: false as const, message: error.message }
     }
 })
-mock.module('@/features/Admin/HostTags/middleware.ts', () => ({
+await mock.module('@/features/Admin/HostTags/middleware.ts', () => ({
     getHostTagCatalogHandler: getCatalog,
     mutateHostTagHandler: mutate,
 }))

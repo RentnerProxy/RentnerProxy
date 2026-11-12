@@ -3,6 +3,7 @@ import '@tanstack/react-start/server-only'
 
 import { db } from '@/db/index.ts'
 import { isRecord } from '@/lib/Records/isRecord.ts'
+import { runDetachedTask } from '@/lib/Async/runDetachedTask.ts'
 import type { ServiceHealth } from '@/lib/FoundationStatus/Types/health.types.ts'
 
 const HEALTH_TIMEOUT_MS = 1_500
@@ -14,7 +15,10 @@ function createProbe(): DatabaseProbe | null {
     return {
         result: query,
         cancel: () => {
-            query.cancel()
+            runDetachedTask(
+                () => query.cancel(),
+                () => console.warn('[database] health check cancellation failed'),
+            )
         },
     }
 }

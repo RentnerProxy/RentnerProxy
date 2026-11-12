@@ -16,15 +16,14 @@ export async function readBoundedStream(
     let size = 0
     let cancellation: Promise<void> | undefined
     /** Reuse the original cancellation promise even after the stream has already become closed. */
-    const cancel = () => {
+    const cancel = (): void => {
         if (!cancellation) {
             cancellation = reader.cancel().catch(() => {})
             trackWork?.(cancellation)
         }
-        return cancellation
     }
     const abort = () => {
-        void cancel()
+        cancel()
     }
     signal?.addEventListener('abort', abort, { once: true })
     try {
@@ -48,7 +47,7 @@ export async function readBoundedStream(
         return result
     } finally {
         signal?.removeEventListener('abort', abort)
-        void cancel()
+        cancel()
         reader.releaseLock()
     }
 }

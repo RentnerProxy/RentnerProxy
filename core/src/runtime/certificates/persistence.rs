@@ -4,6 +4,21 @@ use super::{
     INTERRUPTED_OPERATION_HEADROOM_BYTES, MAX_CERTIFICATE_INDEX_BYTES, SafeDir,
 };
 
+/// Observe failed best-effort recovery without replacing the original failure or logging certificate material.
+pub(super) fn report_recovery_result(
+    result: Result<(), CertificateError>,
+    operation: &'static str,
+) {
+    if let Err(error) = result {
+        tracing::warn!(
+            event = "certificate_recovery_operation_failed",
+            operation,
+            error_code = error.code(),
+            "Certificate recovery operation failed",
+        );
+    }
+}
+
 pub(super) fn persist_index(
     directory: &SafeDir,
     index: &CertificateIndex,
@@ -23,3 +38,7 @@ pub(super) fn persist_index(
     }
     write_private_file(directory, CERTIFICATE_INDEX_FILE, &bytes)
 }
+
+#[cfg(test)]
+#[path = "../../../tests/private/certificate_recovery_logging.rs"]
+mod logging_tests;

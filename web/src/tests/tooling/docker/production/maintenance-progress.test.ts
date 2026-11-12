@@ -6,14 +6,14 @@ import type { ManagedBackupMaintenance } from '@/lib/Backups/Types/backups.types
 import { managedRestoreResultSchema } from '@/lib/Backups/validation.ts'
 
 const publish = mock(async (_path: string, _value: unknown, _permissions: unknown) => undefined)
-mock.module('node:fs/promises', () => ({
+await mock.module('node:fs/promises', () => ({
     ...fs,
     mkdir: async () => undefined,
     lstat: async () => ({ uid: 0, isDirectory: () => true, isSymbolicLink: () => false }),
     chown: async () => undefined,
     chmod: async () => undefined,
 }))
-mock.module('../../../../../../docker/production/backups/storage.ts', () => ({
+await mock.module('../../../../../../docker/production/backups/storage.ts', () => ({
     ...storage,
     writePrivateJson: publish,
 }))

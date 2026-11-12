@@ -1,6 +1,6 @@
 use super::material_files::validate_candidate_material;
 use super::operations;
-use super::persistence::persist_index;
+use super::persistence::{persist_index, report_recovery_result};
 use super::recovery::persist_candidate_manifest;
 use super::scheduling::{candidate_retry_deadline, next_candidate_retry_delay};
 use super::validation::utc_now;
@@ -125,14 +125,13 @@ impl CertificateStore {
         index
             .pending_candidates
             .insert(id.to_owned(), attempted_candidate.clone());
-        let active_before = current_active;
-        let mut active_attempt = active_before.clone();
+        let mut active_attempt = current_active;
         active_attempt.metadata.operation = attempted_candidate.activation_operation;
         active_attempt.metadata.last_error_code = None;
         active_attempt.metadata.updated_at = now_string;
         index.certificates.insert(id.to_owned(), active_attempt);
 
-        let _ = persist_index(&certificates_dir, &index);
+        report_recovery_result(persist_index(&certificates_dir, &index), "persist_index");
         drop(index);
         Ok(Some(StagedCertificate {
             id: id.to_owned(),
@@ -198,26 +197,35 @@ impl CertificateStore {
         }
 
         if let Ok(directory) = self.certificates_dir() {
-            let _ = persist_candidate_manifest(&directory, &staged.id, &candidate);
+            report_recovery_result(
+                persist_candidate_manifest(&directory, &staged.id, &candidate),
+                "persist_candidate_manifest",
+            );
             if let Some(operation) = candidate.staged.metadata.current_operation.as_ref() {
-                let _ = operations::append_event(
-                    &mut index,
-                    &operation.id,
-                    &staged.id,
-                    operations::CertificateEventKind::Failed,
-                    CertificateOperationStage::Failed,
-                    Some(error.code().to_owned()),
+                report_recovery_result(
+                    operations::append_event(
+                        &mut index,
+                        &operation.id,
+                        &staged.id,
+                        operations::CertificateEventKind::Failed,
+                        CertificateOperationStage::Failed,
+                        Some(error.code().to_owned()),
+                    ),
+                    "append_event",
                 );
-                let _ = operations::append_event(
-                    &mut index,
-                    &operation.id,
-                    &staged.id,
-                    operations::CertificateEventKind::RetryScheduled,
-                    CertificateOperationStage::RetryScheduled,
-                    Some(error.code().to_owned()),
+                report_recovery_result(
+                    operations::append_event(
+                        &mut index,
+                        &operation.id,
+                        &staged.id,
+                        operations::CertificateEventKind::RetryScheduled,
+                        CertificateOperationStage::RetryScheduled,
+                        Some(error.code().to_owned()),
+                    ),
+                    "append_event",
                 );
             }
-            let _ = persist_index(&directory, &index);
+            report_recovery_result(persist_index(&directory, &index), "persist_index");
         }
         drop(index);
         self.release_lease(&staged.id).await;
@@ -253,18 +261,24 @@ impl CertificateStore {
                 utc_now().unwrap_or_else(|_| active.metadata.updated_at.clone());
         }
         if let Ok(directory) = self.certificates_dir() {
-            let _ = persist_candidate_manifest(&directory, id, &candidate);
+            report_recovery_result(
+                persist_candidate_manifest(&directory, id, &candidate),
+                "persist_candidate_manifest",
+            );
             if let Some(operation) = candidate_operation {
-                let _ = operations::append_event(
-                    &mut index,
-                    &operation.id,
-                    id,
-                    CertificateEventKind::Failed,
-                    CertificateOperationStage::NeedsAttention,
-                    Some(error.code().to_owned()),
+                report_recovery_result(
+                    operations::append_event(
+                        &mut index,
+                        &operation.id,
+                        id,
+                        CertificateEventKind::Failed,
+                        CertificateOperationStage::NeedsAttention,
+                        Some(error.code().to_owned()),
+                    ),
+                    "append_event",
                 );
             }
-            let _ = persist_index(&directory, &index);
+            report_recovery_result(persist_index(&directory, &index), "persist_index");
         }
         drop(index);
         self.release_lease(id).await;

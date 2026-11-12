@@ -101,7 +101,7 @@ const updateConfigurationMock = mock(
     },
 )
 
-mock.module('@/features/Admin/CrowdSec/middleware.ts', () => ({
+await mock.module('@/features/Admin/CrowdSec/middleware.ts', () => ({
     getCrowdSecConfigurationHandler: getConfigurationMock,
     getCrowdSecDashboardHandler: getDashboardMock,
     enrollCrowdSecConsoleHandler: enrollConsoleMock,

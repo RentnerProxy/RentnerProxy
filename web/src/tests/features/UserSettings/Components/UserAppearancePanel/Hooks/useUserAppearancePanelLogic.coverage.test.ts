@@ -11,20 +11,20 @@ const invalidate = mock(async () => {
 })
 const success = mock(() => {})
 const error = mock(() => {})
-mock.module('@/features/UserSettings/middleware.ts', () => ({
+await mock.module('@/features/UserSettings/middleware.ts', () => ({
     updateCurrentUserAccentColorHandler: update,
 }))
-mock.module('@/shared/Theme/accentContext.ts', () => ({
+await mock.module('@/shared/Theme/accentContext.ts', () => ({
     useAccent: () => ({ accentColor: '#112233' }),
 }))
-mock.module('@tanstack/react-router', () => ({ useRouter: () => ({ invalidate }) }))
-mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
+await mock.module('@tanstack/react-router', () => ({ useRouter: () => ({ invalidate }) }))
+await mock.module('@/shared/Language/Hooks/useTranslationStore.ts', () => ({
     default: () => ({
         language: 'en',
         t: (key: string, values?: unknown) => `${key}:${JSON.stringify(values)}`,
     }),
 }))
-mock.module('@rentnerkev/toasts', () => ({ toast: { success, error } }))
+await mock.module('@rentnerkev/toasts', () => ({ toast: { success, error } }))
 const { useUserAppearancePanelLogic } =
     await import('@/features/UserSettings/Components/UserAppearancePanel/Hooks/useUserAppearancePanelLogic.ts')
 

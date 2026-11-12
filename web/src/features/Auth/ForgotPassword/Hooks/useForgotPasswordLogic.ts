@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import { emailSchema, getValidationMessage } from '@/lib/Auth/validation.ts'
 import type { ForgotPasswordLogicResult } from '../Types/forgot-password-logic.types.ts'
 import { revalidateLogic, useForm } from '@tanstack/react-form'
@@ -10,6 +11,7 @@ import { forgotPasswordInputSchema } from '../validation.ts'
 import type { ForgotPasswordFormValues } from '../Types/forgot-password-form.types.ts'
 
 export default function useForgotPasswordLogic() {
+    const runAction = useAsyncAction()
     const { t } = useTranslationStore()
     const mutation = useMutation({
         mutationFn: (values: ForgotPasswordFormValues) =>
@@ -45,7 +47,7 @@ export default function useForgotPasswordLogic() {
             handleSubmit: (event) => {
                 event.preventDefault()
                 event.stopPropagation()
-                void form.handleSubmit()
+                runAction(() => form.handleSubmit())
             },
             validateEmail: ({ value }) => getValidationMessage(emailSchema, value),
         },

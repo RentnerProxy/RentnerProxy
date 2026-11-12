@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import type { FormEvent } from 'react'
 import { useCallback } from 'react'
 import { useStore } from '@tanstack/react-form'
@@ -8,6 +9,7 @@ import useCertificateRequest from '../../../Hooks/useCertificateRequest.ts'
 import useManualDnsRequestSetup from './useManualDnsRequestSetup.ts'
 
 export default function useCertificateRequestModalLogic(props: CertificateRequestModalProps) {
+    const runAction = useAsyncAction()
     const {
         form,
         formId,
@@ -81,12 +83,14 @@ export default function useCertificateRequestModalLogic(props: CertificateReques
                 event.stopPropagation()
                 if (manualSetupRequired) {
                     if (!manualSetup.hasPrepared) manualSetup.openGuide()
-                    else void manualSetup.submit()
+                    else runAction(() => manualSetup.submit())
                     return
                 }
                 if (!retryableJob) form.setFieldValue('acceptTerms', true)
                 // Revalidate array-level errors after a child domain has been corrected.
-                void Promise.resolve(form.validate('submit')).then(() => form.handleSubmit())
+                runAction(() =>
+                    Promise.resolve(form.validate('submit')).then(() => form.handleSubmit()),
+                )
             },
         },
         form,

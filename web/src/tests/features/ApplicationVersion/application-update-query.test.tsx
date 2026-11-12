@@ -6,7 +6,7 @@ import type { Root } from 'react-dom/client'
 if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register()
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 let fail = false
-mock.module('@/features/ApplicationVersion/middleware.ts', () => ({
+await mock.module('@/features/ApplicationVersion/middleware.ts', () => ({
     getApplicationUpdateHandler: async () => {
         if (fail) throw new Error('offline')
         return { status: 'available', latest: { image: { status: 'verified' } } }

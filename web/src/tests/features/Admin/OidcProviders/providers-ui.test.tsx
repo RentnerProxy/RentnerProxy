@@ -16,7 +16,7 @@ if (!GlobalRegistrator.isRegistered)
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 const userId = '11111111-1111-4111-8111-111111111111'
 let rolesUnavailable = false
-mock.module('@/features/Admin/UserManagement/middleware.ts', () => ({
+await mock.module('@/features/Admin/UserManagement/middleware.ts', () => ({
     getUsersHandler: mock(async () => [
         {
             id: userId,
@@ -27,7 +27,7 @@ mock.module('@/features/Admin/UserManagement/middleware.ts', () => ({
         },
     ]),
 }))
-mock.module('@/features/Admin/RoleManagement/middleware.ts', () => ({
+await mock.module('@/features/Admin/RoleManagement/middleware.ts', () => ({
     getRolesHandler: mock(async () => {
         if (rolesUnavailable) throw new Error('Role catalog unavailable')
         return [
@@ -42,7 +42,7 @@ mock.module('@/features/Admin/RoleManagement/middleware.ts', () => ({
         ]
     }),
 }))
-mock.module('@/features/Auth/middleware.ts', () => ({
+await mock.module('@/features/Auth/middleware.ts', () => ({
     getAuthStateHandler: mock(async () => ({ setupRequired: false, user: null })),
     logoutHandler: mock(async () => {}),
 }))

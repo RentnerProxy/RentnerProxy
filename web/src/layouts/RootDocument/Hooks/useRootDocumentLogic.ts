@@ -1,5 +1,4 @@
 import { useRouterState } from '@tanstack/react-router'
-import type { CSSProperties } from 'react'
 
 import { DEFAULT_ACCENT_COLOR } from '@/config/appearance.config.ts'
 import { getClientCspNonce, isCspNonce, setClientCspNonce } from '@/lib/Security/cspNonce.ts'
@@ -26,7 +25,7 @@ export default function useRootDocumentLogic(): RootDocumentLogicResult {
             language,
             nonce,
             hasCustomAccent: accentColor.toLowerCase() !== DEFAULT_ACCENT_COLOR,
-            accentStyles: accentCssVariables(accentColor) as CSSProperties,
+            accentStyles: accentCssVariables(accentColor),
         },
         accentContext,
     }

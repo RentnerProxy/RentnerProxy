@@ -129,7 +129,9 @@ export async function runMaintenanceProcess(
             void output.cancel().catch(() => undefined)
             void errors.cancel().catch(() => undefined)
             // Observe every pending task, including an input flush blocked by a non-reader.
-            void Promise.allSettled([stdout, stderr, input])
+            void Promise.allSettled([stdout, stderr, input]).catch(() => {
+                console.error('[backup] Process stream cleanup failed')
+            })
             let reapTimer: ReturnType<typeof setTimeout> | undefined
             await Promise.race([
                 exited,

@@ -147,7 +147,7 @@ const normalizeInput = <T extends { destination: string; preserveRequestUri: boo
         })
         return input
     }
-    return { ...input, destination } as T
+    return { ...input, destination }
 }
 
 export const createRedirectHostInputSchema = redirectHostFieldsSchema.transform(normalizeInput)

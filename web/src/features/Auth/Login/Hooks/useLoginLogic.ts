@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import {
     credentialPasswordSchema,
     emailSchema,
@@ -19,6 +20,7 @@ import { getPublicOidcProvidersHandler } from '@/features/Auth/Oidc/middleware.t
 import { oidcFeedbackCodeSchema } from '@/lib/Auth/Oidc/validation.ts'
 /** Coordinates local sign-in and native provider navigation, including restoration after browser Back. */
 export default function useLoginLogic() {
+    const runAction = useAsyncAction()
     const navigate = useNavigate()
     const router = useRouter()
     const { t } = useTranslationStore()
@@ -101,9 +103,7 @@ export default function useLoginLogic() {
             const started = await beginPasskeyLoginHandler({ data: {} })
             if (!started.success || !started.options || !started.challengeId) return started
             const response = await startAuthentication({
-                optionsJSON: started.options as Parameters<
-                    typeof startAuthentication
-                >[0]['optionsJSON'],
+                optionsJSON: started.options,
             })
             return await finishPasskeyLoginHandler({
                 data: { challengeId: started.challengeId, response },
@@ -215,7 +215,7 @@ export default function useLoginLogic() {
         )
             return
         if (id === 'passkey') {
-            void handlePasskeyLogin()
+            runAction(() => handlePasskeyLogin())
             return
         }
         if (providers.isError || !providers.data?.some((provider) => provider.id === id)) return

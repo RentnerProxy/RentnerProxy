@@ -124,12 +124,14 @@ export function startFixtureServers(ports: FixturePorts) {
         secondary,
         auth,
         control,
-        stop() {
-            primary.stop(true)
-            secondary.stop(true)
-            auth.stop(true)
-            control.stop(true)
-            tls?.stop(true)
+        async stop() {
+            await Promise.all([
+                primary.stop(true),
+                secondary.stop(true),
+                auth.stop(true),
+                control.stop(true),
+                tls?.stop(true),
+            ])
         },
     }
 }

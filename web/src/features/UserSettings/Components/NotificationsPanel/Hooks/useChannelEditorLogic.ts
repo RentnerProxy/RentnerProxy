@@ -1,3 +1,4 @@
+import useAsyncAction from '@/shared/Feedback/Hooks/useAsyncAction.ts'
 import { useId, useState, type FormEvent } from 'react'
 import { useForm, useStore } from '@tanstack/react-form'
 import { toast } from '@rentnerkev/toasts'
@@ -10,6 +11,7 @@ import type {
 } from '../Types/notifications-panel.types.ts'
 
 export default function useChannelEditorLogic(props: ChannelEditorProps) {
+    const runAction = useAsyncAction()
     const { t, locale, language } = useTranslationStore()
     const formId = useId()
     const [id] = useState(() => props.editor.channel?.id ?? crypto.randomUUID())
@@ -130,7 +132,7 @@ export default function useChannelEditorLogic(props: ChannelEditorProps) {
         handler: {
             handleSubmit: (event: FormEvent) => {
                 event.preventDefault()
-                void form.handleSubmit()
+                runAction(() => form.handleSubmit())
             },
         },
     }

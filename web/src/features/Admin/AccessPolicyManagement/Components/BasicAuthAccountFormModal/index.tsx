@@ -44,11 +44,7 @@ export default function BasicAuthAccountFormModal(props: BasicAuthAccountFormMod
                 id={state.formId}
                 className="grid gap-4"
                 noValidate
-                onSubmit={(event) => {
-                    event.preventDefault()
-                    event.stopPropagation()
-                    void handler.submit()
-                }}
+                onSubmit={handler.handleSubmit}
             >
                 <BasicAuthAccountFormFields
                     errors={state.errors}

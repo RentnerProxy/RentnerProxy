@@ -31,7 +31,7 @@ const handlers = Object.fromEntries(
         'renamePasskeyHandler',
     ].map((name) => [name, endpoint(name)]),
 )
-mock.module('@/features/UserSettings/middleware.ts', () => ({
+await mock.module('@/features/UserSettings/middleware.ts', () => ({
     ...handlers,
     getSecurityStatusHandler: mock(async () => ({
         passkeys: [],

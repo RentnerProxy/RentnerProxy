@@ -1615,7 +1615,7 @@ describe('RedirectHost management with PostgreSQL', () => {
                     ).toHaveLength(1)
                     expect(controller.applyRevisions).toHaveLength(1)
                 } finally {
-                    controller.server.stop(true)
+                    await controller.server.stop(true)
                 }
             },
         )
@@ -1661,7 +1661,7 @@ describe('RedirectHost management with PostgreSQL', () => {
                     )[0],
                 ).toMatchObject({ certificateId: null, enabled: false })
             } finally {
-                controller.server.stop(true)
+                await controller.server.stop(true)
             }
         },
     )

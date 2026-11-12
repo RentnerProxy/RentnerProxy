@@ -26,16 +26,16 @@ impl Store {
         match provider {
             super::ProviderId::Hetzner => Ok(crate::runtime::dns::DnsProviderConfig::Hetzner {
                 zone_id: zone_id.to_owned(),
-                api_token: access.token.clone(),
+                api_token: access.token,
             }),
             super::ProviderId::Desec => Ok(crate::runtime::dns::DnsProviderConfig::Desec {
                 zone_id: zone_id.to_owned(),
-                api_token: access.token.clone(),
+                api_token: access.token,
             }),
             super::ProviderId::Cloudflare => {
                 Ok(crate::runtime::dns::DnsProviderConfig::Cloudflare {
                     zone_id: zone_id.to_owned(),
-                    api_token: access.token.clone(),
+                    api_token: access.token,
                 })
             }
         }

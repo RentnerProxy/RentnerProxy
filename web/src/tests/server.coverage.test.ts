@@ -10,12 +10,12 @@ const startWatcher = mock(() => {})
 const stream = Symbol('default-stream')
 const createHandler = mock((_stream: unknown) => raw)
 const createEntry = mock((entry: unknown) => entry)
-mock.module('@tanstack/react-start/server', () => ({
+await mock.module('@tanstack/react-start/server', () => ({
     createStartHandler: createHandler,
     defaultStreamHandler: stream,
 }))
-mock.module('@tanstack/react-start/server-entry', () => ({ createServerEntry: createEntry }))
-mock.module('@/server/request-abort.server.ts', () => ({
+await mock.module('@tanstack/react-start/server-entry', () => ({ createServerEntry: createEntry }))
+await mock.module('@/server/request-abort.server.ts', () => ({
     withRequestAbortHandling:
         (fetch: typeof raw) => async (request: Request, options?: unknown) => {
             events.push('abort')
@@ -24,7 +24,7 @@ mock.module('@/server/request-abort.server.ts', () => ({
             return fetch(rewritten, options)
         },
 }))
-mock.module('@/server/Backups/restore-maintenance.server.ts', () => ({
+await mock.module('@/server/Backups/restore-maintenance.server.ts', () => ({
     startRestoreMaintenanceWatcher: startWatcher,
     withRestoreMaintenanceFence: async (_request: Request, next: () => Promise<Response>) => {
         events.push('fence')

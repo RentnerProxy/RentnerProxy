@@ -933,7 +933,7 @@ describe('B2 actual-table authority and Bun state-machine replay', () => {
                 if (child.exitCode === null) child.kill('SIGKILL')
                 await child.exited
                 await new Response(child.stderr).text()
-                controller.stop(true)
+                await controller.stop(true)
             }
         },
         10000,

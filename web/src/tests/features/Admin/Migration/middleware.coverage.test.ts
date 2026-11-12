@@ -9,7 +9,7 @@ import {
     PortableSourceError,
     ZoraxySourceError,
 } from './importBoundaryFixture.ts'
-const boundary = importBoundaryFixture()
+const boundary = await importBoundaryFixture()
 const handlers = await import('@/features/Admin/Migration/middleware.ts')
 beforeEach(() => boundary.reset())
 
