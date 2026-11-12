@@ -169,6 +169,168 @@ afterEach(async () => {
 })
 
 describe('notification repository PostgreSQL durability and concurrency', () => {
+    for (const absent of [false, true])
+        integrationTest(
+            `locking ${absent ? 'absent' : 'existing'} settings waits for and reads the committed configuration and cursor`,
+            async () => {
+                if (absent) await cleanup()
+                const locked = Promise.withResolvers<void>()
+                const release = Promise.withResolvers<void>()
+                const applicationName = `notification-lock-${randomUUID()}`
+                const first = getAuthDatabase().transaction(async (transaction) => {
+                    const current = await lockNotificationConfiguration(transaction)
+                    await writeNotificationConfiguration(transaction, {
+                        ...current,
+                        revision: 2,
+                    })
+                    const runtime = await lockNotificationRuntime(transaction)
+                    await writeNotificationRuntime(transaction, {
+                        ...runtime,
+                        certificateCursor: nextCursor,
+                    })
+                    locked.resolve()
+                    await release.promise
+                })
+                let second: Promise<unknown> | undefined
+                try {
+                    await locked.promise
+                    second = getAuthDatabase().transaction(async (transaction) => {
+                        await transaction.execute(
+                            sql`select set_config('application_name', ${applicationName}, true)`,
+                        )
+                        const current = await lockNotificationConfiguration(transaction)
+                        const runtime = await lockNotificationRuntime(transaction)
+                        expect(current.revision).toBe(2)
+                        expect(runtime.certificateCursor).toBe(nextCursor)
+                    })
+                    const deadline = performance.now() + 5_000
+                    let waiting = false
+                    while (!waiting && performance.now() < deadline) {
+                        // oxlint-disable-next-line no-await-in-loop -- Observe the competing transaction's actual lock wait before releasing its owner.
+                        const [state] = await getAuthDatabase().execute<{ waiting: boolean }>(
+                            sql`select exists(select 1 from pg_stat_activity where application_name = ${applicationName} and wait_event_type = 'Lock') as waiting`,
+                        )
+                        waiting = state?.waiting === true
+                        // oxlint-disable-next-line no-await-in-loop -- This bounded poll waits only for the real PostgreSQL lock barrier.
+                        if (!waiting) await Bun.sleep(10)
+                    }
+                    expect(waiting).toBe(true)
+                } finally {
+                    release.resolve()
+                    await first
+                    await second
+                }
+            },
+            10_000,
+        )
+
+    integrationTest(
+        'initializing both notification rows rolls back with the transaction',
+        async () => {
+            await cleanup()
+            await expect(
+                getAuthDatabase().transaction(async (transaction) => {
+                    await lockNotificationConfiguration(transaction)
+                    const runtime = await lockNotificationRuntime(transaction)
+                    await writeNotificationRuntime(transaction, {
+                        ...runtime,
+                        certificateCursor: nextCursor,
+                    })
+                    throw new Error('Fixture rollback')
+                }),
+            ).rejects.toThrow('Fixture rollback')
+            expect(
+                await getAuthDatabase()
+                    .select({ key: systemSettings.key })
+                    .from(systemSettings)
+                    .where(inArray(systemSettings.key, keys)),
+            ).toHaveLength(0)
+        },
+    )
+
+    integrationTest(
+        'a waiting initializer replaces rolled-back defaults without retaining their cursor',
+        async () => {
+            await cleanup()
+            const locked = Promise.withResolvers<void>()
+            const release = Promise.withResolvers<void>()
+            const applicationName = `notification-rollback-${randomUUID()}`
+            const rollback = new Error('Fixture initializer rollback')
+            const first = getAuthDatabase()
+                .transaction(async (transaction) => {
+                    await lockNotificationConfiguration(transaction)
+                    const runtime = await lockNotificationRuntime(transaction)
+                    await writeNotificationRuntime(transaction, {
+                        ...runtime,
+                        certificateCursor: nextCursor,
+                    })
+                    locked.resolve()
+                    await release.promise
+                    throw rollback
+                })
+                .catch((error: unknown) => {
+                    expect(error).toBe(rollback)
+                })
+            let second: Promise<unknown> | undefined
+            try {
+                await locked.promise
+                second = getAuthDatabase().transaction(async (transaction) => {
+                    await transaction.execute(
+                        sql`select set_config('application_name', ${applicationName}, true)`,
+                    )
+                    const current = await lockNotificationConfiguration(transaction)
+                    const runtime = await lockNotificationRuntime(transaction)
+                    expect(current.revision).toBe(0)
+                    expect(runtime.certificateCursor).toBeNull()
+                    await writeNotificationRuntime(transaction, {
+                        ...runtime,
+                        certificateCursor: initialCursor,
+                    })
+                })
+                const deadline = performance.now() + 5_000
+                let waiting = false
+                while (!waiting && performance.now() < deadline) {
+                    // oxlint-disable-next-line no-await-in-loop -- Require an observed PostgreSQL wait before rolling back the first initializer.
+                    const [state] = await getAuthDatabase().execute<{ waiting: boolean }>(sql`
+                    select exists(select 1 from pg_stat_activity
+                    where application_name = ${applicationName} and wait_event_type = 'Lock') as waiting
+                `)
+                    waiting = state?.waiting === true
+                    // oxlint-disable-next-line no-await-in-loop -- Bound the real lock barrier without timing the transaction release.
+                    if (!waiting) await Bun.sleep(10)
+                }
+                expect(waiting).toBe(true)
+            } finally {
+                release.resolve()
+                await first
+                await second
+            }
+            expect((await readRuntime()).certificateCursor).toBe(initialCursor)
+        },
+        10_000,
+    )
+
+    integrationTest(
+        'locking malformed existing runtime fails without replacing it with defaults',
+        async () => {
+            await getAuthDatabase()
+                .update(systemSettings)
+                .set({ value: { version: 999 } })
+                .where(eq(systemSettings.key, NOTIFICATION_STATE_KEY))
+            await expect(
+                getAuthDatabase().transaction(async (transaction) => {
+                    await lockNotificationConfiguration(transaction)
+                    await lockNotificationRuntime(transaction)
+                }),
+            ).rejects.toMatchObject({ code: 'configuration_unavailable' })
+            const [row] = await getAuthDatabase()
+                .select({ value: systemSettings.value })
+                .from(systemSettings)
+                .where(eq(systemSettings.key, NOTIFICATION_STATE_KEY))
+            expect(row?.value).toEqual({ version: 999 })
+        },
+    )
+
     integrationTest(
         'real healthy webhooks drain behind stalled SMTP, and stop persists every cancellation before returning',
         async () => {

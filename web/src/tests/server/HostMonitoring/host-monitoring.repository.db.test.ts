@@ -786,6 +786,28 @@ describe('durable scheduled monitoring repository', () => {
         'a final expired-lease fence rolls back observations and incidents atomically',
         async () => {
             const policy = await fixture({ failureThreshold: 1 })
+            const old = new Date(Date.now() - 31 * 86_400_000)
+            const [retainedObservation] = await db
+                .insert(hostCheckObservations)
+                .values({
+                    policyId: policy.id,
+                    policyVersion: policy.version,
+                    checkedAt: old,
+                    status: 'healthy',
+                    code: 'expected_status',
+                })
+                .returning()
+            const [retainedIncident] = await db
+                .insert(hostCheckIncidents)
+                .values({
+                    policyId: policy.id,
+                    startedAt: old,
+                    detectedAt: old,
+                    failureCode: 'upstream_timeout',
+                    closedReason: 'policy_changed',
+                    closedAt: old,
+                })
+                .returning()
             const admitted = await claim(policy)
             const before = await row(policy)
             const completed = await complete(admitted, unhealthy, async (transaction, current) => {
@@ -804,13 +826,13 @@ describe('durable scheduled monitoring repository', () => {
                     .select()
                     .from(hostCheckObservations)
                     .where(eq(hostCheckObservations.policyId, policy.id)),
-            ).toHaveLength(0)
+            ).toEqual([retainedObservation!])
             expect(
                 await db
                     .select()
                     .from(hostCheckIncidents)
                     .where(eq(hostCheckIncidents.policyId, policy.id)),
-            ).toHaveLength(0)
+            ).toEqual([retainedIncident!])
             const after = await row(policy)
             expect(after.leaseToken).toBe(before.leaseToken)
             expect(after.leaseExpiresAt).toEqual(before.leaseExpiresAt)
@@ -1081,6 +1103,85 @@ describe('durable scheduled monitoring repository', () => {
             ).toBe(true)
         },
     )
+
+    integrationTest(
+        'one completion independently caps both retention pages and preserves its open incident',
+        async () => {
+            const policy = await fixture({ sampleLimit: 10, incidentLimit: 1, failureThreshold: 1 })
+            await finish(policy, unhealthy)
+            const count = HOST_MONITORING_LIMITS.retentionDeleteLimit + 4
+            await db.execute(sql`
+                insert into rentnerproxy.host_check_observations
+                    (policy_id, policy_version, checked_at, status, code)
+                select ${policy.id}::uuid, ${policy.version}::uuid,
+                    clock_timestamp() - interval '31 days', 'healthy', 'expected_status'
+                from generate_series(1, ${count})
+            `)
+            await db.execute(sql`
+                insert into rentnerproxy.host_check_incidents
+                    (policy_id, started_at, detected_at, failure_code, closed_reason, closed_at)
+                select ${policy.id}::uuid, clock_timestamp() - interval '31 days',
+                    clock_timestamp() - interval '31 days', 'upstream_timeout', 'policy_changed',
+                    clock_timestamp() - interval '31 days'
+                from generate_series(1, ${count})
+            `)
+            expect(await finish(policy, unknown)).toBe(true)
+            const [remaining] = await db.execute<{
+                oldObservations: number
+                closedIncidents: number
+                openIncidents: number
+            }>(sql`
+                select
+                    (select count(*)::int from rentnerproxy.host_check_observations
+                     where policy_id = ${policy.id}::uuid
+                     and checked_at < clock_timestamp() - interval '30 days') as "oldObservations",
+                    count(*) filter (where closed_reason is not null)::int as "closedIncidents",
+                    count(*) filter (where closed_reason is null)::int as "openIncidents"
+                from rentnerproxy.host_check_incidents where policy_id = ${policy.id}::uuid
+            `)
+            expect(remaining).toEqual({ oldObservations: 4, closedIncidents: 4, openIncidents: 1 })
+        },
+        10_000,
+    )
+
+    for (const table of ['observations', 'incidents'] as const)
+        integrationTest(
+            `completion prunes expired ${table} when the other retention page is empty`,
+            async () => {
+                const policy = await fixture()
+                const old = new Date(Date.now() - 31 * 86_400_000)
+                if (table === 'observations')
+                    await db.insert(hostCheckObservations).values({
+                        policyId: policy.id,
+                        policyVersion: policy.version,
+                        checkedAt: old,
+                        status: 'healthy',
+                        code: 'expected_status',
+                    })
+                else
+                    await db.insert(hostCheckIncidents).values({
+                        policyId: policy.id,
+                        startedAt: old,
+                        detectedAt: old,
+                        failureCode: 'upstream_timeout',
+                        closedReason: 'policy_changed',
+                        closedAt: old,
+                    })
+                expect(await finish(policy, unknown)).toBe(true)
+                const observations = await db
+                    .select()
+                    .from(hostCheckObservations)
+                    .where(eq(hostCheckObservations.policyId, policy.id))
+                expect(observations).toHaveLength(1)
+                expect(observations[0]!.checkedAt > old).toBe(true)
+                expect(
+                    await db
+                        .select()
+                        .from(hostCheckIncidents)
+                        .where(eq(hostCheckIncidents.policyId, policy.id)),
+                ).toHaveLength(0)
+            },
+        )
 
     integrationTest(
         'a long outage remains in history for the retention period after recovery',

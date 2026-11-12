@@ -39,20 +39,23 @@ export async function prunePolicyHistoryInTransaction(
     transaction: AuthTransaction,
     policy: HostMonitoringPolicy,
 ): Promise<void> {
+    // Keep separate capped pages and savepoint rollback in one command.
+    // Incident eligibility reads no observations; the shared command snapshot is intentional.
     await transaction.execute(sql`
-        delete from "rentnerproxy"."host_check_observations" as observation
-        using (
-            select id from "rentnerproxy"."host_check_observations"
-            where policy_id = ${policy.id}::uuid
-                and checked_at < clock_timestamp() - ${policy.retentionDays} * interval '1 day'
-            union
-            (select id from "rentnerproxy"."host_check_observations"
-             where policy_id = ${policy.id}::uuid
-             order by checked_at desc, id desc offset ${policy.sampleLimit})
-            limit ${HOST_MONITORING_LIMITS.retentionDeleteLimit}
-        ) expired where observation.id = expired.id
-    `)
-    await transaction.execute(sql`
+        with pruned_observations as (
+            delete from "rentnerproxy"."host_check_observations" as observation
+            using (
+                select id from "rentnerproxy"."host_check_observations"
+                where policy_id = ${policy.id}::uuid
+                    and checked_at < clock_timestamp() - ${policy.retentionDays} * interval '1 day'
+                union
+                (select id from "rentnerproxy"."host_check_observations"
+                 where policy_id = ${policy.id}::uuid
+                 order by checked_at desc, id desc offset ${policy.sampleLimit})
+                limit ${HOST_MONITORING_LIMITS.retentionDeleteLimit}
+            ) expired where observation.id = expired.id
+            returning observation.id
+        )
         delete from "rentnerproxy"."host_check_incidents" as incident
         using (
             select id from "rentnerproxy"."host_check_incidents"
@@ -68,6 +71,7 @@ export async function prunePolicyHistoryInTransaction(
              ), 0))
             limit ${HOST_MONITORING_LIMITS.retentionDeleteLimit}
         ) expired where incident.id = expired.id
+            and (select count(*) from pruned_observations) >= 0
     `)
 }
 
