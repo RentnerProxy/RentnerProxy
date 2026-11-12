@@ -10,7 +10,10 @@ export const hostMonitoringCaptureSchema = z.strictObject({
     pid: z.number().int().positive(),
     processStartTicks: z.string().regex(/^\d+$/u),
     epoch: z.uuid(),
-    publication: z.strictObject({ generation: z.number().int().nonnegative().safe(), fd: z.number().int().min(3).max(1_048_575).nullable() }),
+    publication: z.strictObject({
+        generation: z.number().int().nonnegative().safe(),
+        fd: z.number().int().min(3).max(1_048_575).nullable(),
+    }),
     createdAt: timestamp,
     expiresAt: timestamp,
     overflowed: z.boolean(),
@@ -85,13 +88,20 @@ export function createHostMonitoringCapture(options: {
         if (expiryTimer) clearTimeout(expiryTimer)
         expiryTimer = undefined
         if (revoke && !alreadyFailed) {
-            try { options.invalidate?.() } catch { /* Linux close retires the descriptor even on late I/O errors; never retry it. */ }
+            try {
+                options.invalidate?.()
+            } catch {
+                /* Linux close retires the descriptor even on late I/O errors; never retry it. */
+            }
         }
     }
-    expiryTimer = setTimeout(() => {
-        capture.expired = true
-        terminate()
-    }, Math.max(1, capture.expiresAt - createdAt))
+    expiryTimer = setTimeout(
+        () => {
+            capture.expired = true
+            terminate()
+        },
+        Math.max(1, capture.expiresAt - createdAt),
+    )
     expiryTimer.unref()
     /** One writer and one dirty bit; disk failure stops capture without affecting worker authority. */
     async function flush(): Promise<void> {
@@ -107,7 +117,17 @@ export function createHostMonitoringCapture(options: {
         const snapshot = structuredClone(capture)
         const writingGeneration = generation
         writing = options
-            .write(snapshot, () => !failed && !dirty && generation === writingGeneration && !capture.expired && !capture.overflowed && !capture.clockRegressed && now() <= capture.expiresAt)
+            .write(
+                snapshot,
+                () =>
+                    !failed &&
+                    !dirty &&
+                    generation === writingGeneration &&
+                    !capture.expired &&
+                    !capture.overflowed &&
+                    !capture.clockRegressed &&
+                    now() <= capture.expiresAt,
+            )
             .catch(() => terminate())
             .finally(() => {
                 writing = undefined
@@ -123,7 +143,12 @@ export function createHostMonitoringCapture(options: {
         generation++
         capture.publication.generation = generation
         if (failed) return
-        try { options.invalidate?.() } catch { terminate(false); return }
+        try {
+            options.invalidate?.()
+        } catch {
+            terminate(false)
+            return
+        }
         if (capture.overflowed || capture.expired) return
         const at = now(),
             monotonicMs = monotonic()

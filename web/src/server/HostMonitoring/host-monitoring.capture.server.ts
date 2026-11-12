@@ -4,11 +4,16 @@ import { createHostMonitoringCapture } from './host-monitoring.capture.ts'
 import type { HostMonitoringCapture } from './host-monitoring.capture.ts'
 
 function writeDescriptor(fd: number, contents: string) {
-    return new Promise<void>((resolve, reject) => writeFile(fd, contents, (error) => error ? reject(error) : resolve()))
+    return new Promise<void>((resolve, reject) =>
+        writeFile(fd, contents, (error) => (error ? reject(error) : resolve())),
+    )
 }
 
 /** Raw descriptors have one closer. Revocation does not depend on a writable directory, unlink, or a successful replacement write. */
-export function createHostMonitoringCapturePublisher(path: string, io: { write?: typeof writeDescriptor; remove?: typeof unlinkSync } = {}) {
+export function createHostMonitoringCapturePublisher(
+    path: string,
+    io: { write?: typeof writeDescriptor; remove?: typeof unlinkSync } = {},
+) {
     let publishedFd: number | undefined
     const invalidate = () => {
         const fd = publishedFd
@@ -18,9 +23,17 @@ export function createHostMonitoringCapturePublisher(path: string, io: { write?:
     const discard = (fd: number, temporary: string) => {
         let closeFailed = false
         let closeError: unknown
-        try { closeSync(fd) } catch (error) { closeFailed = true; closeError = error }
-        try { (io.remove ?? unlinkSync)(temporary) } catch (error) {
-            if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) throw error
+        try {
+            closeSync(fd)
+        } catch (error) {
+            closeFailed = true
+            closeError = error
+        }
+        try {
+            ;(io.remove ?? unlinkSync)(temporary)
+        } catch (error) {
+            if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT'))
+                throw error
         }
         if (closeFailed) throw closeError
     }

@@ -7,7 +7,10 @@ import type { HostMonitoringCapture } from '../../web/src/server/HostMonitoring/
 
 type Owner = { pid: number; startTicks: string; state: string }
 /** Open once without following links or blocking on a FIFO, then bound every byte read from that same regular inode. */
-async function withBoundedBackgroundCapture<T>(path: string, observe: (text: string, identity: BigIntStats) => Promise<T>) {
+async function withBoundedBackgroundCapture<T>(
+    path: string,
+    observe: (text: string, identity: BigIntStats) => Promise<T>,
+) {
     const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
     try {
         const identity = await file.stat({ bigint: true })
@@ -40,7 +43,9 @@ async function ownerHoldsPublication(capture: HostMonitoringCapture, opened: Big
     try {
         const held = await stat('/proc/' + capture.pid + '/fd/' + fd, { bigint: true })
         return held.isFile() && held.dev === opened.dev && held.ino === opened.ino
-    } catch { return false }
+    } catch {
+        return false
+    }
 }
 /** Compare both census brackets; neither PID reuse nor a child-process capture establishes serving-owner evidence. */
 export function backgroundCaptureMatchesOwner(
@@ -67,20 +72,34 @@ export function backgroundCaptureMatchesOwner(
 }
 
 /** Hold the opened artifact through both lease checks; pathname cleanup failure and descriptor reuse cannot revive an obsolete inode. */
-export async function readLeasedBackgroundCapture(path: string, expected: { runId: string; sourceSha: string | undefined }, owners: () => Promise<Owner[]> = async () => (await readRuntimeProcesses()).filter((owner) => owner.role === 'web' && owner.pid !== process.pid), now: () => number = Date.now) {
+export async function readLeasedBackgroundCapture(
+    path: string,
+    expected: { runId: string; sourceSha: string | undefined },
+    owners: () => Promise<Owner[]> = async () =>
+        (await readRuntimeProcesses()).filter(
+            (owner) => owner.role === 'web' && owner.pid !== process.pid,
+        ),
+    now: () => number = Date.now,
+) {
     try {
         const before = await owners()
         const captured = await withBoundedBackgroundCapture(path, async (text, opened) => {
             const capture = hostMonitoringCaptureSchema.parse(JSON.parse(text))
-            if (!await ownerHoldsPublication(capture, opened)) return null
+            if (!(await ownerHoldsPublication(capture, opened))) return null
             const after = await owners()
-            if (!backgroundCaptureMatchesOwner(capture, expected, before, after, now()) || !await ownerHoldsPublication(capture, opened)) return null
+            if (
+                !backgroundCaptureMatchesOwner(capture, expected, before, after, now()) ||
+                !(await ownerHoldsPublication(capture, opened))
+            )
+                return null
             return capture
         })
         if (!captured) return null
         // The held artifact has been closed too. No await may follow this final time qualification.
         const qualifiedAt = now()
-        return qualifiedAt >= captured.createdAt && qualifiedAt <= captured.expiresAt ? captured : null
+        return qualifiedAt >= captured.createdAt && qualifiedAt <= captured.expiresAt
+            ? captured
+            : null
     } catch {
         return null
     }
@@ -89,5 +108,8 @@ export async function readLeasedBackgroundCapture(path: string, expected: { runI
 /** Missing, stale, unleased or mismatched capture is unavailable; no network receipt can substitute for it. */
 export function readBackgroundCapture(runId: string) {
     if (!/^[a-f0-9]{12}$/u.test(runId)) return Promise.resolve(null)
-    return readLeasedBackgroundCapture('/tmp/rentnerproxy-background-capture-' + runId + '.json', { runId, sourceSha: process.env.RENTNERPROXY_BACKGROUND_CAPTURE_SOURCE_SHA })
+    return readLeasedBackgroundCapture('/tmp/rentnerproxy-background-capture-' + runId + '.json', {
+        runId,
+        sourceSha: process.env.RENTNERPROXY_BACKGROUND_CAPTURE_SOURCE_SHA,
+    })
 }

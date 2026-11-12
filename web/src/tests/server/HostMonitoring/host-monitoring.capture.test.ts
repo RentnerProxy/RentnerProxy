@@ -118,9 +118,16 @@ test('single-flight capture retains late cancellation through actual writer sett
 
 test('capture lifetime revokes the published lease even without another record', async () => {
     let held = false
-    const capture = createHostMonitoringCapture({ ...identity, lifetimeMs: 10, now: () => 1000,
-        invalidate: () => { held = false },
-        write: async (_value, isCurrent) => { held = isCurrent() },
+    const capture = createHostMonitoringCapture({
+        ...identity,
+        lifetimeMs: 10,
+        now: () => 1000,
+        invalidate: () => {
+            held = false
+        },
+        write: async (_value, isCurrent) => {
+            held = isCurrent()
+        },
     })
     capture.record('admitted', claim)
     await capture.flush()
@@ -132,8 +139,18 @@ test('capture lifetime revokes the published lease even without another record',
 })
 
 test('throwing record revocation terminally disables telemetry without escaping or retrying close', async () => {
-    let invalidations = 0, writes = 0
-    const capture = createHostMonitoringCapture({ ...identity, invalidate: () => { invalidations++; throw new Error('injected close error') }, write: async () => { writes++ } })
+    let invalidations = 0,
+        writes = 0
+    const capture = createHostMonitoringCapture({
+        ...identity,
+        invalidate: () => {
+            invalidations++
+            throw new Error('injected close error')
+        },
+        write: async () => {
+            writes++
+        },
+    })
     expect(() => capture.record('admitted', claim)).not.toThrow()
     await expect(capture.flush()).resolves.toBeUndefined()
     expect(() => capture.record('started', claim)).not.toThrow()
@@ -142,12 +159,23 @@ test('throwing record revocation terminally disables telemetry without escaping 
 })
 
 test('write failure publishes terminal state before a throwing revocation and never rejects the observer flush', async () => {
-    let invalidations = 0, writes = 0
+    let invalidations = 0,
+        writes = 0
     const guards: (boolean | undefined)[] = []
     let current: (() => boolean) | undefined
-    const capture = createHostMonitoringCapture({ ...identity,
-        invalidate: () => { if (++invalidations > 1) { guards.push(current?.()); throw new Error('injected close error') } },
-        write: async (_value, isCurrent) => { writes++; current = isCurrent; throw new Error('injected write failure') },
+    const capture = createHostMonitoringCapture({
+        ...identity,
+        invalidate: () => {
+            if (++invalidations > 1) {
+                guards.push(current?.())
+                throw new Error('injected close error')
+            }
+        },
+        write: async (_value, isCurrent) => {
+            writes++
+            current = isCurrent
+            throw new Error('injected write failure')
+        },
     })
     capture.record('admitted', claim)
     await expect(capture.flush()).resolves.toBeUndefined()
@@ -162,9 +190,19 @@ test('expiry marks terminal state before a throwing revocation without an uncaug
     let invalidations = 0
     const guards: (boolean | undefined)[] = []
     let current: (() => boolean) | undefined
-    const capture = createHostMonitoringCapture({ ...identity, lifetimeMs: 10, now: () => 1000,
-        invalidate: () => { if (++invalidations > 1) { guards.push(current?.()); throw new Error('injected close error') } },
-        write: async (_value, isCurrent) => { current = isCurrent },
+    const capture = createHostMonitoringCapture({
+        ...identity,
+        lifetimeMs: 10,
+        now: () => 1000,
+        invalidate: () => {
+            if (++invalidations > 1) {
+                guards.push(current?.())
+                throw new Error('injected close error')
+            }
+        },
+        write: async (_value, isCurrent) => {
+            current = isCurrent
+        },
     })
     capture.record('admitted', claim)
     await capture.flush()

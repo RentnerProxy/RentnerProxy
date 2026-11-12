@@ -323,7 +323,8 @@ export function backgroundMonitoringReport(
         !!expectedCapture &&
         capture.runId === expectedCapture.runId &&
         capture.sourceSha === expectedCapture.sourceSha &&
-        capture.publication.fd !== null && capture.publication.generation > 0 &&
+        capture.publication.fd !== null &&
+        capture.publication.generation > 0 &&
         !capture.overflowed &&
         !capture.expired &&
         !capture.clockRegressed
