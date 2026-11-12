@@ -28,6 +28,9 @@ import type {
     MonitoringApplianceWindow,
     MonitoringAppliancePairInput,
     MonitoringApplianceContinuityDependencies,
+    MonitoringApplianceContinuityCapture,
+    MonitoringApplianceReport,
+    MonitoringApplianceStoppedIdentity,
     MonitoringApplianceFaultSession,
     MonitoringApplianceFaultRecord,
 } from './Types/monitoring-whole-appliance.types.ts'
@@ -302,37 +305,158 @@ export function validateMonitoringApplianceNativeManifest(
     return manifest
 }
 
-/** A frozen Bun, actual fresh admissions and durable native starts are separate observations. */
-export async function proveMonitoringApplianceContinuity(
+/** Collect one uninterrupted local STOP interval; never resume a reused or vanished PID. */
+export async function collectMonitoringApplianceContinuity(
     dependencies: MonitoringApplianceContinuityDependencies,
-) {
-    const before = monitoringApplianceReportSchema.parse(await dependencies.report())
-    let stopped: Awaited<ReturnType<MonitoringApplianceContinuityDependencies['signal']>>
-    const failures: string[] = []
-    let after: ReturnType<typeof monitoringApplianceReportSchema.parse> | undefined
-    let confirmed:
-        Awaited<ReturnType<MonitoringApplianceContinuityDependencies['signal']>> | undefined
-    try {
-        stopped = await dependencies.signal('SIGSTOP')
-        if (stopped.state !== 'T' && stopped.state !== 't')
-            throw new Error('B2 web STOP was not confirmed')
-        await dependencies.sleep(contract.confirmedBunStopMs)
-        confirmed = await dependencies.signal('CHECK')
-        after = monitoringApplianceReportSchema.parse(await dependencies.report())
-    } finally {
-        await dependencies.signal('SIGCONT')
+    stopMs: number,
+): Promise<MonitoringApplianceContinuityCapture> {
+    if (!Number.isFinite(stopMs) || stopMs < 0) throw new Error('Invalid B2 STOP interval')
+    const same = (value: MonitoringApplianceStoppedIdentity | null) =>
+        value?.pid === dependencies.owner.pid && value.startTicks === dependencies.owner.startTicks
+    const read = async () => {
+        const value = await dependencies.readOwner()
+        if (!value || !same(value)) throw new Error('B2 continuity web identity changed')
+        return value
     }
+    const before = await dependencies.report()
+    await read()
+    let stopped!: MonitoringApplianceStoppedIdentity
+    let confirmed!: MonitoringApplianceStoppedIdentity
+    let afterReport!: MonitoringApplianceStoppedIdentity
+    let after!: MonitoringApplianceReport
+    let stoppedMonotonicMs = 0,
+        confirmedMonotonicMs = 0,
+        afterReportMonotonicMs = 0
+    let resumed!: MonitoringApplianceContinuityCapture['resumed']
+    const resume = async (): Promise<MonitoringApplianceContinuityCapture['resumed']> => {
+        const beforeResume = await read()
+        // A failed STOP acknowledgement may still have delivered STOP. Always try
+        // CONT for this exact owner; disappearance before delivery is an error.
+        await dependencies.signal('SIGCONT')
+        const deadline = dependencies.monotonic() + 3000
+        let observed = await dependencies.readOwner()
+        while (
+            same(observed) &&
+            observed &&
+            ['T', 't'].includes(observed.state) &&
+            dependencies.monotonic() < deadline
+        ) {
+            await dependencies.sleep(5)
+            observed = await dependencies.readOwner()
+        }
+        if (same(observed) && observed && ['T', 't'].includes(observed.state))
+            throw new Error('B2 web CONT was not confirmed')
+        return {
+            delivered: true,
+            before: beforeResume,
+            after: observed,
+            outcome: same(observed) && observed?.state !== 'Z' ? 'resumed' : 'exited',
+        }
+    }
+    try {
+        await dependencies.signal('SIGSTOP')
+        const stopDeadline = dependencies.monotonic() + 3000
+        for (;;) {
+            stopped = await read()
+            if (['T', 't'].includes(stopped.state)) break
+            if (dependencies.monotonic() >= stopDeadline)
+                throw new Error('B2 web STOP was not confirmed')
+            await dependencies.sleep(5)
+        }
+        stoppedMonotonicMs = dependencies.monotonic()
+        const end = stoppedMonotonicMs + stopMs
+        while (dependencies.monotonic() < end)
+            await dependencies.sleep(end - dependencies.monotonic())
+        confirmed = await read()
+        confirmedMonotonicMs = dependencies.monotonic()
+        if (!['T', 't'].includes(confirmed.state)) throw new Error('B2 web did not remain stopped')
+        after = await dependencies.report()
+        afterReport = await read()
+        afterReportMonotonicMs = dependencies.monotonic()
+        if (!['T', 't'].includes(afterReport.state))
+            throw new Error('B2 stopped report lacks a halted owner')
+    } finally {
+        resumed = await resume()
+    }
+    return {
+        before,
+        after,
+        stopped,
+        confirmed,
+        afterReport,
+        stoppedMonotonicMs,
+        confirmedMonotonicMs,
+        afterReportMonotonicMs,
+        resumed,
+    }
+}
+
+/** Validate local evidence on the host without weakening fresh-admission or identity gates. */
+export function proveMonitoringApplianceContinuity(value: unknown) {
+    const identity = z.strictObject({
+        pid: z.number().int().positive(),
+        startTicks: z.string().regex(/^\d+$/u),
+        state: z.string().min(1),
+        atMs: z.number().int().nonnegative(),
+    })
+    const capture = z
+        .strictObject({
+            before: monitoringApplianceReportSchema,
+            after: monitoringApplianceReportSchema,
+            stopped: identity,
+            confirmed: identity,
+            afterReport: identity,
+            stoppedMonotonicMs: z.number().finite().nonnegative(),
+            confirmedMonotonicMs: z.number().finite().nonnegative(),
+            afterReportMonotonicMs: z.number().finite().nonnegative(),
+            resumed: z.strictObject({
+                delivered: z.literal(true),
+                before: identity,
+                after: identity.nullable(),
+                outcome: z.enum(['resumed', 'exited']),
+            }),
+        })
+        .parse(value)
+    const { before, after, stopped, confirmed, afterReport, resumed } = capture
+    const failures: string[] = []
+    const same = (owner: { pid: number; startTicks: string }) =>
+        owner.pid === stopped.pid && owner.startTicks === stopped.startTicks
     if (
-        confirmed.pid !== stopped.pid ||
-        confirmed.startTicks !== stopped.startTicks ||
-        !['T', 't'].includes(confirmed.state) ||
-        confirmed.atMs - stopped.atMs < contract.confirmedBunStopMs
+        ![confirmed, afterReport, resumed.before].every(
+            (owner) => same(owner) && ['T', 't'].includes(owner.state),
+        ) ||
+        !['T', 't'].includes(stopped.state) ||
+        confirmed.atMs - stopped.atMs < contract.confirmedBunStopMs ||
+        capture.confirmedMonotonicMs - capture.stoppedMonotonicMs < contract.confirmedBunStopMs ||
+        capture.afterReportMonotonicMs < capture.confirmedMonotonicMs ||
+        after.endMs < confirmed.atMs ||
+        after.endMs > afterReport.atMs ||
+        before.endMs > stopped.atMs ||
+        afterReport.atMs > resumed.before.atMs ||
+        (resumed.outcome === 'resumed' &&
+            (!resumed.after ||
+                !same(resumed.after) ||
+                ['T', 't', 'Z'].includes(resumed.after.state))) ||
+        (resumed.outcome === 'exited' &&
+            resumed.after &&
+            same(resumed.after) &&
+            resumed.after.state !== 'Z')
     )
         failures.push('bun-stop-duration-or-identity-unproven')
     if (
         before.design !== 'B2' ||
         after.design !== 'B2' ||
         before.originMs !== after.originMs ||
+        before.windowId !== after.windowId ||
+        !before.wakeProof ||
+        !after.wakeProof ||
+        before.wakeProof.runId !== after.wakeProof.runId ||
+        before.wakeProof.windowId !== before.windowId ||
+        after.wakeProof.windowId !== after.windowId ||
+        before.wakeProof.originMs !== before.originMs ||
+        after.wakeProof.originMs !== after.originMs ||
+        !same(before.wakeProof.webIdentity) ||
+        !same(after.wakeProof.webIdentity) ||
         !before.nativeIdentity ||
         !after.nativeIdentity ||
         before.nativeIdentity.pid !== after.nativeIdentity.pid ||
@@ -381,20 +505,22 @@ export async function proveMonitoringApplianceContinuity(
         retainedNativeIdentity: !failures.includes('native-controller-or-window-identity-changed'),
         stopped,
         confirmed,
+        afterReport,
+        resumed,
         before,
         after,
     }
 }
 
-/** Build an identity-checked, bounded stop/resume observer for one existing fixture web process. */
-function monitoringApplianceSignalProbe(
-    pid: number,
-    startTicks: string,
-    signal: 'SIGSTOP' | 'SIGCONT' | 'CHECK',
-) {
-    if (!Number.isSafeInteger(pid) || pid < 2 || !/^\d+$/u.test(startTicks))
+/** Serialize the pure collector into one root container process; the capability never leaves it. */
+export function monitoringApplianceContinuityProbe(owner: { pid: number; startTicks: string }) {
+    if (!Number.isSafeInteger(owner.pid) || owner.pid < 2 || !/^\d+$/u.test(owner.startTicks))
         throw new Error('Invalid B2 web identity')
-    return `const pid=${pid},expected=${JSON.stringify(startTicks)},signal=${JSON.stringify(signal)};const read=async()=>{const v=await Bun.file('/proc/'+pid+'/stat').text();const f=v.slice(v.lastIndexOf(')')+2).trim().split(/\\s+/);if(f[19]!==expected)throw new Error('B2 web identity changed');return f[0]};await read();if(signal!=='CHECK')process.kill(pid,signal);const end=Date.now()+3000;let state;do{state=await read();if(signal==='CHECK'||(signal==='SIGSTOP'?['T','t'].includes(state):!['T','t'].includes(state)))break;await Bun.sleep(5)}while(Date.now()<end);process.stdout.write(JSON.stringify({pid,startTicks:expected,state,atMs:Date.now()}));`
+    return `const owner=${JSON.stringify({ pid: owner.pid, startTicks: owner.startTicks })};const capability=await (${readMonitoringApplianceControlCapability.toString()})();
+const readOwner=async()=>{try{const stat=await Bun.file('/proc/'+owner.pid+'/stat').text();const fields=stat.slice(stat.lastIndexOf(')')+2).trim().split(/\\s+/);return {pid:owner.pid,startTicks:fields[19],state:fields[0],atMs:Date.now()}}catch(error){if(error.code==='ENOENT'||error.code==='ESRCH')return null;throw new Error('B2 web identity read failed')}};
+const report=async()=>{const response=await fetch('http://127.0.0.1:9020/report',{headers:{authorization:'Bearer '+capability},signal:AbortSignal.timeout(30000)});if(!response.ok)throw new Error('B2 continuity report unavailable');return await response.json()};
+const signal=async signal=>{const value=await readOwner();if(!value||value.startTicks!==owner.startTicks)throw new Error('B2 continuity web identity changed');process.kill(owner.pid,signal)};
+const result=await (${collectMonitoringApplianceContinuity.toString()})({owner,readOwner,report,signal,sleep:Bun.sleep,monotonic:()=>performance.now()},${contract.confirmedBunStopMs});process.stdout.write(JSON.stringify(result));`
 }
 
 /** Run source-matched internal-network fixtures; incomplete topology, fault or resource proof fails closed. */
@@ -614,38 +740,91 @@ export async function runMonitoringAppliance(options: MonitoringApplianceOptions
                     if (!owners || owners.length !== 1)
                         throw new Error('B2 STOP requires one original web owner')
                     const owner = owners[0]!
-                    return proveMonitoringApplianceContinuity({
-                        report: async () =>
-                            monitoringApplianceReportSchema.parse(await request('/report')),
-                        signal: async (signal) =>
-                            z
-                                .object({
-                                    pid: z.number().int(),
-                                    startTicks: z.string(),
-                                    state: z.string(),
-                                    atMs: z.number().int(),
-                                })
-                                .parse(
-                                    JSON.parse(
-                                        await current.docker(
-                                            [
-                                                'exec',
-                                                current.container,
-                                                'bun',
-                                                '--no-env-file',
-                                                '-e',
-                                                monitoringApplianceSignalProbe(
-                                                    owner.pid,
-                                                    owner.startTicks,
-                                                    signal,
-                                                ),
-                                            ],
-                                            { timeoutMs: 5000 },
-                                        ),
-                                    ),
-                                ),
-                        sleep: Bun.sleep,
-                    })
+                    const captured = JSON.parse(
+                        await current.docker(
+                            [
+                                'exec',
+                                current.container,
+                                'bun',
+                                '--no-env-file',
+                                '-e',
+                                monitoringApplianceContinuityProbe(owner),
+                            ],
+                            { timeoutMs: contract.confirmedBunStopMs + 75000 },
+                        ),
+                    )
+                    const continuity = proveMonitoringApplianceContinuity(captured)
+                    // Readiness must follow the real supervisor outcome, never an
+                    // invented live old PID after successful CONT with pending TERM.
+                    let recovered: Awaited<ReturnType<ComponentRecoveryDependencies['snapshot']>>
+                    const controls = runtime()
+                    await current.waitFor(
+                        async () => {
+                            const candidate = await controls.snapshot()
+                            if (!candidate) return false
+                            if (!candidate.running || candidate.startedAt !== snapshot!.startedAt)
+                                throw new Error('B2 STOP changed appliance ownership')
+                            for (const role of ['controller', 'caddy'] as const) {
+                                const expected = snapshot!.processes.filter(
+                                    (process) => process.role === role,
+                                )
+                                const actual = candidate.processes.filter(
+                                    (process) => process.role === role,
+                                )
+                                if (
+                                    expected.length !== 1 ||
+                                    actual.length !== 1 ||
+                                    actual.at(0)!.pid !== expected.at(0)!.pid ||
+                                    actual.at(0)!.startTicks !== expected.at(0)!.startTicks
+                                )
+                                    throw new Error('B2 STOP changed native supervisor ownership')
+                            }
+                            const web = candidate.processes.filter(
+                                (process) => process.role === 'web',
+                            )
+                            if (web.length > 1)
+                                throw new Error('B2 STOP retained parallel web writers')
+                            if (
+                                web.length !== 1 ||
+                                ['T', 't', 'Z'].includes(web[0]!.state) ||
+                                !(await controls.ready())
+                            )
+                                return false
+                            const confirmed = await controls.snapshot()
+                            const writers = confirmed?.processes.filter(
+                                (process) => process.role === 'web',
+                            )
+                            if (writers && writers.length > 1)
+                                throw new Error('B2 STOP retained parallel web writers')
+                            if (
+                                !confirmed?.running ||
+                                confirmed.startedAt !== candidate.startedAt ||
+                                writers?.length !== 1 ||
+                                writers[0]!.pid !== web[0]!.pid ||
+                                writers[0]!.startTicks !== web[0]!.startTicks
+                            )
+                                return false
+                            for (const role of ['controller', 'caddy'] as const) {
+                                const expected = candidate.processes.filter(
+                                    (process) => process.role === role,
+                                )
+                                const actual = confirmed.processes.filter(
+                                    (process) => process.role === role,
+                                )
+                                if (
+                                    actual.length !== 1 ||
+                                    actual.at(0)!.pid !== expected.at(0)!.pid ||
+                                    actual.at(0)!.startTicks !== expected.at(0)!.startTicks
+                                )
+                                    throw new Error('B2 STOP readiness changed native ownership')
+                            }
+                            recovered = confirmed
+                            return true
+                        },
+                        'B2 STOP supervisor recovery and single-writer readiness',
+                        60000,
+                    )
+                    return { ...continuity, webRecovery: recovered }
                 },
             }
             result = await runMonitoringApplianceFaultCase(session, name)

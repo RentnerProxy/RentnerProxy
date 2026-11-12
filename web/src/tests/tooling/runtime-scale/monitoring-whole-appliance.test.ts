@@ -21,6 +21,7 @@ import {
     parseMonitoringApplianceOptions,
     monitoringApplianceTrafficProbe,
     proveMonitoringApplianceContinuity,
+    collectMonitoringApplianceContinuity,
     monitoringApplianceOverlay,
     validateMonitoringApplianceNativeManifest,
     runMonitoringAppliance,
@@ -145,6 +146,78 @@ function resources(): MonitoringApplianceResource[] {
             deleted: index,
         },
     }))
+}
+
+/** Model a supervisor deadline and process identity without real sleeps or subprocesses. */
+function continuityFixture() {
+    const original = progress(),
+        after = progress(),
+        signals: string[] = []
+    let now = original.originMs,
+        monotonic = 0,
+        state = 'S',
+        ticks = '124',
+        alive = true,
+        reads = 0
+    let failReport = false,
+        reuseAfterReport = false,
+        exitOnContinue = false
+    original.endMs = now
+    original.starts = []
+    original.heads = []
+    const dependencies = {
+        owner: { pid: 300, startTicks: '124' },
+        report: () => {
+            if (reads++ === 0) return Promise.resolve(original)
+            if (failReport) return Promise.reject(new Error('stopped report failed'))
+            after.endMs = now
+            if (reuseAfterReport) ticks = 'reused'
+            return Promise.resolve(after)
+        },
+        readOwner: () =>
+            Promise.resolve(alive ? { pid: 300, startTicks: ticks, state, atMs: now } : null),
+        signal: (signal: 'SIGSTOP' | 'SIGCONT') => {
+            signals.push(signal)
+            state = signal === 'SIGSTOP' ? 'T' : 'S'
+            if (signal === 'SIGSTOP') {
+                const shift = now - after.originMs
+                for (const start of after.starts) {
+                    start.atMs += shift
+                    start.admittedAtMs += shift
+                    start.durableAtMs += shift
+                }
+                for (const head of after.heads) head.atMs += shift
+            }
+            if (signal === 'SIGCONT' && exitOnContinue) alive = false
+            return Promise.resolve()
+        },
+        sleep: (milliseconds: number) => {
+            now += milliseconds
+            monotonic += milliseconds
+            return Promise.resolve()
+        },
+        monotonic: () => monotonic,
+    }
+    return {
+        dependencies,
+        original,
+        after,
+        signals,
+        advance: (ms: number) => {
+            now += ms
+            monotonic += ms
+            if (state === 'T' && monotonic >= 33000) alive = false
+        },
+        failReport: () => {
+            failReport = true
+        },
+        reuseAfterReport: () => {
+            reuseAfterReport = true
+        },
+        exitOnContinue: () => {
+            exitOnContinue = true
+        },
+    }
 }
 
 describe('whole-appliance monitoring reference evidence', () => {
@@ -491,69 +564,97 @@ describe('whole-appliance monitoring reference evidence', () => {
             'invalid-or-missing-resource-evidence',
         )
     })
-    test('requires fresh post-STOP admissions, durable starts and actual native HEADs while preserving native identity', async () => {
-        const original = progress(),
-            after = progress(),
-            signals: string[] = []
-        original.starts = []
-        original.heads = []
-        let reads = 0,
-            now = after.originMs
-        after.endMs = now + 25000
-        const result = await proveMonitoringApplianceContinuity({
-            report: () => Promise.resolve(reads++ === 0 ? original : after),
-            signal: (signal) => {
-                signals.push(signal)
-                return Promise.resolve({
-                    pid: 99,
-                    startTicks: '999',
-                    state: signal === 'SIGCONT' ? 'S' : 'T',
-                    atMs: now,
-                })
-            },
-            sleep: (milliseconds) => {
-                now += milliseconds
-                return Promise.resolve()
-            },
-        })
+    test('keeps host latency outside the halted interval and preserves every fresh-start gate', async () => {
+        const fixture = continuityFixture()
+        // Docker starts once before STOP; its return happens after local CONT.
+        fixture.advance(3100)
+        const capture = await collectMonitoringApplianceContinuity(
+            fixture.dependencies,
+            contract.confirmedBunStopMs,
+        )
+        fixture.advance(3100)
+        const result = proveMonitoringApplianceContinuity(capture)
         expect(result.failures).toEqual([])
         expect(result.confirmedBunStopMs).toBe(25000)
         expect(result.distinctDurableStartsAfterStop).toBe(1000)
         expect(result.actualNativeHeads).toBe(1000)
-        expect(signals).toEqual(['SIGSTOP', 'CHECK', 'SIGCONT'])
-        for (const start of after.starts) start.admittedAtMs = after.originMs - 1
-        reads = 0
-        now = after.originMs
-        const stale = await proveMonitoringApplianceContinuity({
-            report: () => Promise.resolve(reads++ === 0 ? original : after),
-            signal: () => Promise.resolve({ pid: 99, startTicks: '999', state: 'T', atMs: now }),
-            sleep: (milliseconds) => {
-                now += milliseconds
-                return Promise.resolve()
-            },
-        })
-        expect(stale.distinctDurableStartsAfterStop).toBe(0)
-        expect(stale.failures).toContain('fresh-admission-and-durable-native-start-threshold')
+        expect(fixture.signals).toEqual(['SIGSTOP', 'SIGCONT'])
+        expect(capture.resumed.outcome).toBe('resumed')
+        for (const start of capture.after.starts) start.admittedAtMs = capture.stopped.atMs - 1
+        expect(proveMonitoringApplianceContinuity(capture).failures).toContain(
+            'fresh-admission-and-durable-native-start-threshold',
+        )
     })
-    test('always attempts CONT when STOP acknowledgement or a stopped observation fails', async () => {
-        const signals: string[] = []
+    test('always delivers CONT to the same owner when the stopped report fails', async () => {
+        const fixture = continuityFixture()
+        fixture.failReport()
         await expect(
-            proveMonitoringApplianceContinuity({
-                report: () => Promise.resolve(progress()),
-                signal: (signal) => {
-                    signals.push(signal)
-                    if (signal === 'SIGSTOP') return Promise.reject(new Error('lost STOP response'))
-                    return Promise.resolve({
-                        pid: 99,
-                        startTicks: '999',
-                        state: 'S',
-                        atMs: 1000000,
-                    })
-                },
-                sleep: () => Promise.resolve(),
-            }),
+            collectMonitoringApplianceContinuity(fixture.dependencies, 25000),
+        ).rejects.toThrow('stopped report failed')
+        expect(fixture.signals).toEqual(['SIGSTOP', 'SIGCONT'])
+    })
+    test('still resumes the exact owner after a lost STOP acknowledgement', async () => {
+        const fixture = continuityFixture()
+        const signal = fixture.dependencies.signal
+        fixture.dependencies.signal = async (value) => {
+            await signal(value)
+            if (value === 'SIGSTOP') throw new Error('lost STOP response')
+        }
+        await expect(
+            collectMonitoringApplianceContinuity(fixture.dependencies, 25000),
         ).rejects.toThrow('lost STOP response')
-        expect(signals).toEqual(['SIGSTOP', 'SIGCONT'])
+        expect(fixture.signals).toEqual(['SIGSTOP', 'SIGCONT'])
+    })
+    test('never signals a reused PID and never presents a vanished owner as resumed', async () => {
+        const reused = continuityFixture()
+        reused.reuseAfterReport()
+        await expect(
+            collectMonitoringApplianceContinuity(reused.dependencies, 25000),
+        ).rejects.toThrow('B2 continuity web identity changed')
+        expect(reused.signals).toEqual(['SIGSTOP'])
+        const exited = continuityFixture()
+        exited.exitOnContinue()
+        const capture = await collectMonitoringApplianceContinuity(exited.dependencies, 25000)
+        expect(capture.resumed.delivered).toBe(true)
+        expect(capture.resumed.outcome).toBe('exited')
+        expect(capture.resumed.after).toBeNull()
+        expect(proveMonitoringApplianceContinuity(capture).failures).toEqual([])
+    })
+    test('host rejects absent, short or unhalted report evidence and changed window identity', async () => {
+        const fixture = continuityFixture()
+        const capture = await collectMonitoringApplianceContinuity(fixture.dependencies, 25000)
+        expect(() =>
+            proveMonitoringApplianceContinuity({ ...capture, resumed: undefined }),
+        ).toThrow()
+        const short = await collectMonitoringApplianceContinuity(
+            continuityFixture().dependencies,
+            24999,
+        )
+        expect(proveMonitoringApplianceContinuity(short).failures).toContain(
+            'bun-stop-duration-or-identity-unproven',
+        )
+        expect(
+            proveMonitoringApplianceContinuity({ ...capture, confirmedMonotonicMs: 24999 })
+                .failures,
+        ).toContain('bun-stop-duration-or-identity-unproven')
+        expect(
+            proveMonitoringApplianceContinuity({
+                ...capture,
+                afterReport: { ...capture.afterReport, state: 'S' },
+            }).failures,
+        ).toContain('bun-stop-duration-or-identity-unproven')
+        expect(
+            proveMonitoringApplianceContinuity({
+                ...capture,
+                after: { ...capture.after, windowId: 'other' },
+            }).failures,
+        ).toContain('native-controller-or-window-identity-changed')
+        expect(
+            proveMonitoringApplianceContinuity({
+                ...capture,
+                after: { ...capture.after, endMs: capture.afterReport.atMs + 1 },
+            }).failures,
+        ).toContain('bun-stop-duration-or-identity-unproven')
     })
     test('requires an explicit measurement window and refuses workload or duration overrides', () => {
         const args = [

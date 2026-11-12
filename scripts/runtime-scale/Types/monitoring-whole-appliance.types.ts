@@ -143,10 +143,38 @@ export interface MonitoringAppliancePairInput extends MonitoringApplianceWindow 
     failures: readonly string[]
 }
 
+/** Exact process identity and state observed inside the appliance. */
+export interface MonitoringApplianceStoppedIdentity {
+    pid: number
+    startTicks: string
+    state: string
+    atMs: number
+}
+
+/** One local STOP interval, its two reports and the actual same-owner resume outcome. */
+export interface MonitoringApplianceContinuityCapture {
+    before: MonitoringApplianceReport
+    after: MonitoringApplianceReport
+    stopped: MonitoringApplianceStoppedIdentity
+    confirmed: MonitoringApplianceStoppedIdentity
+    afterReport: MonitoringApplianceStoppedIdentity
+    stoppedMonotonicMs: number
+    confirmedMonotonicMs: number
+    afterReportMonotonicMs: number
+    resumed: {
+        delivered: true
+        before: MonitoringApplianceStoppedIdentity
+        after: MonitoringApplianceStoppedIdentity | null
+        outcome: 'resumed' | 'exited'
+    }
+}
+
+/** Local collector I/O; host transport must not occur while the owner is stopped. */
 export interface MonitoringApplianceContinuityDependencies {
+    owner: { pid: number; startTicks: string }
     report: () => Promise<MonitoringApplianceReport>
-    signal: (
-        signal: 'SIGSTOP' | 'SIGCONT' | 'CHECK',
-    ) => Promise<{ pid: number; startTicks: string; state: string; atMs: number }>
+    readOwner: () => Promise<MonitoringApplianceStoppedIdentity | null>
+    signal: (signal: 'SIGSTOP' | 'SIGCONT') => Promise<void>
     sleep: (milliseconds: number) => Promise<unknown>
+    monotonic: () => number
 }
