@@ -9,6 +9,7 @@ import { summarizeMonitoringApplianceResources } from '../../../../../scripts/ru
 import {
     createMonitoringB2WindowCap,
     monitoringB2WindowPolicyHash,
+    waitForMonitoringB2WindowBackendExit,
 } from '../../../../../scripts/runtime-scale/monitoring-b2-window-cap.ts'
 import type { MonitoringApplianceResource } from '../../../../../scripts/runtime-scale/Types/monitoring-whole-appliance.types.ts'
 
@@ -63,6 +64,28 @@ function resources(): MonitoringApplianceResource[] {
 }
 
 describe('absolute appliance measurement window', () => {
+    test('waits for asynchronous backend exit instead of rejecting the first retained activity row', async () => {
+        const timer = clockFixture()
+        let polls = 0
+        await waitForMonitoringB2WindowBackendExit({
+            present: () => Promise.resolve(++polls <= 2),
+            monotonic: timer.monotonic,
+            sleep: timer.sleep,
+        })
+        expect(polls).toBe(3)
+        expect(timer.monotonic()).toBe(20)
+    })
+    test('rejects a genuinely retained backend within the fixed two-second deadline', async () => {
+        const timer = clockFixture()
+        await expect(
+            waitForMonitoringB2WindowBackendExit({
+                present: () => Promise.resolve(true),
+                monotonic: timer.monotonic,
+                sleep: timer.sleep,
+            }),
+        ).rejects.toThrow('B2 readiness observer backend retained')
+        expect(timer.monotonic()).toBe(2000)
+    })
     test('does not dispatch visibility after a final five-second request tail reaches the end', async () => {
         const timer = clockFixture(),
             clock = {

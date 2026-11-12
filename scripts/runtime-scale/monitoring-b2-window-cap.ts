@@ -6,6 +6,7 @@ import { monitoringB2DatabaseUrl } from './monitoring-b2-isolation.ts'
 import type {
     MonitoringB2WindowCapScope,
     MonitoringB2WindowCapProof,
+    MonitoringB2WindowBackendExitDependencies,
 } from './Types/monitoring-b2-window-cap.types.ts'
 
 const selectors = z
@@ -13,14 +14,34 @@ const selectors = z
     .length(1000)
     .refine((ids) => new Set(ids).size === 1000)
 
-/** Join the private observer and reject a retained PostgreSQL backend. */
+/** Allow PostgreSQL to finish socket termination, but reject a backend retained for two seconds. */
+export async function waitForMonitoringB2WindowBackendExit(
+    dependencies: MonitoringB2WindowBackendExitDependencies,
+) {
+    const deadline = dependencies.monotonic() + 2000
+    // oxlint-disable no-await-in-loop -- Backend exit is asynchronous and must be observed before qualification succeeds.
+    while (await dependencies.present()) {
+        if (dependencies.monotonic() >= deadline)
+            throw new Error('B2 readiness observer backend retained')
+        await dependencies.sleep(10)
+    }
+    // oxlint-enable no-await-in-loop
+}
+
+/** Close the private observer and prove its PostgreSQL backend exits before measurement. */
 async function closeWindowObserver(observer: SQL, database: SQL, observerPid: number | undefined) {
     await observer.close()
     if (observerPid !== undefined) {
-        const rows = await database.unsafe('SELECT pid FROM pg_stat_activity WHERE pid=$1', [
-            observerPid,
-        ])
-        if (rows.length !== 0) throw new Error('B2 readiness observer backend retained')
+        await waitForMonitoringB2WindowBackendExit({
+            present: async () =>
+                (
+                    await database.unsafe('SELECT pid FROM pg_stat_activity WHERE pid=$1', [
+                        observerPid,
+                    ])
+                ).length !== 0,
+            monotonic: () => performance.now(),
+            sleep: Bun.sleep,
+        })
     }
 }
 

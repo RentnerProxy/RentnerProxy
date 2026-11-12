@@ -6,6 +6,7 @@ import {
     createMonitoringB2WindowCap,
     writeMonitoringB2WindowSeal,
     qualifyMonitoringB2WindowSession,
+    waitForMonitoringB2WindowBackendExit,
 } from '../../../../../scripts/runtime-scale/monitoring-b2-window-cap.ts'
 import { assertIsolatedMonitoringDatabase } from '../../../../../scripts/runtime-scale/monitoring.ts'
 let isolated = false
@@ -22,6 +23,44 @@ try {
     /* Ordinary unit runs never open a database. */
 }
 const integration = isolated ? test : test.skip
+
+/** Attempt every ordered fixture cleanup and retain all failures instead of leaving later owners behind. */
+async function cleanupWindowTest(actions: readonly (() => unknown)[]) {
+    const failures: unknown[] = []
+    for (const action of actions) {
+        try {
+            await action()
+        } catch (error) {
+            failures.push(error)
+        }
+    }
+    if (failures.length) throw new AggregateError(failures, 'B2 window test cleanup failed')
+}
+
+test('a failed cap cleanup cannot skip later owners and every cleanup error is retained', async () => {
+    const attempted: string[] = [],
+        first = new Error('injected cap drop failure'),
+        second = new Error('injected file cleanup failure')
+    const error = await cleanupWindowTest([
+        () => {
+            attempted.push('cap')
+            throw first
+        },
+        () => {
+            attempted.push('database')
+        },
+        () => {
+            attempted.push('files')
+            throw second
+        },
+        () => {
+            attempted.push('environment')
+        },
+    ]).catch((failure: unknown) => failure)
+    expect(error).toBeInstanceOf(AggregateError)
+    expect((error as AggregateError).errors).toEqual([first, second])
+    expect(attempted).toEqual(['cap', 'database', 'files', 'environment'])
+})
 
 integration(
     'restricted LOGIN observer sees its native session and physically closes before measurement',
@@ -93,14 +132,27 @@ integration(
             })
             await native.close()
             native = undefined
+            await waitForMonitoringB2WindowBackendExit({
+                present: async () =>
+                    (
+                        await app!.unsafe('SELECT pid FROM pg_stat_activity WHERE usename=$1', [
+                            nativeRole,
+                        ])
+                    ).length !== 0,
+                monotonic: () => performance.now(),
+                sleep: Bun.sleep,
+            })
             expect(
                 await app.unsafe('SELECT pid FROM pg_stat_activity WHERE usename=$1', [nativeRole]),
             ).toHaveLength(0)
         } finally {
-            await app?.close()
-            await native?.close()
-            await admin.unsafe(`DROP ROLE IF EXISTS ${appRole}; DROP ROLE IF EXISTS ${nativeRole}`)
-            await admin.close()
+            await cleanupWindowTest([
+                () => app?.close(),
+                () => native?.close(),
+                () => admin.unsafe(`DROP ROLE IF EXISTS ${appRole}`),
+                () => admin.unsafe(`DROP ROLE IF EXISTS ${nativeRole}`),
+                () => admin.close(),
+            ])
         }
     },
 )
@@ -254,20 +306,32 @@ integration(
             )
             expect(uncapped!.due).toBe(end)
         } finally {
-            await cap?.drop()
-            await database.unsafe('DELETE FROM rentnerproxy.proxy_hosts WHERE id=ANY($1::uuid[])', [
-                hosts,
-            ])
-            await database.close()
-            if (sealCreated) {
-                await rm('/tmp/monitoring-b2/measurement.json', { force: true })
-                await rm('/tmp/monitoring-b2/mode.json')
-                await rmdir('/tmp/monitoring-b2')
+            try {
+                await cleanupWindowTest([
+                    () => cap?.drop(),
+                    () =>
+                        database.unsafe(
+                            'DELETE FROM rentnerproxy.proxy_hosts WHERE id=ANY($1::uuid[])',
+                            [hosts],
+                        ),
+                    () => database.close(),
+                    async () => {
+                        if (sealCreated)
+                            await rm('/tmp/monitoring-b2/measurement.json', { force: true })
+                    },
+                    async () => {
+                        if (sealCreated) await rm('/tmp/monitoring-b2/mode.json')
+                    },
+                    async () => {
+                        if (sealCreated) await rmdir('/tmp/monitoring-b2')
+                    },
+                ])
+            } finally {
+                if (previousRun === undefined) delete process.env.RENTNERPROXY_RELIABILITY_ISOLATED
+                else process.env.RENTNERPROXY_RELIABILITY_ISOLATED = previousRun
+                if (previousFixture === undefined) delete process.env.B2_APPLIANCE_FIXTURE
+                else process.env.B2_APPLIANCE_FIXTURE = previousFixture
             }
-            if (previousRun === undefined) delete process.env.RENTNERPROXY_RELIABILITY_ISOLATED
-            else process.env.RENTNERPROXY_RELIABILITY_ISOLATED = previousRun
-            if (previousFixture === undefined) delete process.env.B2_APPLIANCE_FIXTURE
-            else process.env.B2_APPLIANCE_FIXTURE = previousFixture
         }
     },
     30000,
