@@ -134,21 +134,29 @@ backup_stop_consumer_phase() {
 }
 
 backup_status_has_consumer_identity() {
-    local status_file=$1 field real effective saved filesystem remainder
-    while read -r field real effective saved filesystem remainder; do
-        if [[ $field == State: && ( $real == Z || $real == X ) ]]; then return 1; fi
-        [[ $field == Uid: ]] || continue
-        case " $real $effective $saved $filesystem " in
-            *' 10001 '*|*' 10003 '*) return 0 ;;
-            *' 10002 '*) [[ ${2:-} != preserve-web ]]; return ;;
-            *) return 1 ;;
-        esac
-    done < "$status_file"
-    return 1
+    local status_file=$1 field real effective saved filesystem remainder attempt
+    # Return 0 for a consumer, 1 for proven safe/gone, and 2 for unknown identity.
+    # Reopen transient proc entries; waiting alone never proves quiescence.
+    for ((attempt=1; attempt<=3; attempt++)); do
+        while read -r field real effective saved filesystem remainder; do
+            if [[ $field == State: && ( $real == Z || $real == X ) ]]; then return 1; fi
+            [[ $field == Uid: ]] || continue
+            [[ $real =~ ^[0-9]+$ && $effective =~ ^[0-9]+$ && $saved =~ ^[0-9]+$ \
+                && $filesystem =~ ^[0-9]+$ && -z $remainder ]] || break
+            case " $real $effective $saved $filesystem " in
+                *' 10001 '*|*' 10003 '*) return 0 ;;
+                *' 10002 '*) [[ ${2:-} != preserve-web ]]; return ;;
+                *) return 1 ;;
+            esac
+        done 2>/dev/null < "$status_file" || :
+        [[ ! -d ${status_file%/*} ]] && return 1
+        if ((attempt < 3)); then sleep 0.1; fi
+    done
+    return 2
 }
 
 backup_assert_consumers_stopped() {
-    local index valkey_pid='' status_file pid
+    local index valkey_pid='' status_file pid identity_status
     [[ -r /proc/self/status ]] || fatal 'backup maintenance requires process identity visibility'
     for index in "${!child_pids[@]}"; do
         if [[ ${child_names[$index]} == valkey ]]; then valkey_pid=${child_pids[$index]}; fi
@@ -160,7 +168,6 @@ backup_assert_consumers_stopped() {
         pid=${status_file#/proc/}
         pid=${pid%/status}
         [[ $pid != "$valkey_pid" ]] || continue
-        [[ -r $status_file ]] || continue
         if [[ $pid == "${backup_caddy_pid:-}" ]]; then
             bun --no-env-file "$backup_exporter" --assert-retained-caddy "$backup_maintenance_id" "$pid" \
                 || fatal 'retained Caddy ownership changed during maintenance'
@@ -168,6 +175,10 @@ backup_assert_consumers_stopped() {
         fi
         if backup_status_has_consumer_identity "$status_file" "${1:-}" 2>/dev/null; then
             fatal 'an application or CrowdSec process survived backup quiescing'
+        else
+            identity_status=$?
+            [[ $identity_status == 1 ]] \
+                || fatal 'backup maintenance cannot inspect a surviving process identity'
         fi
     done
     backup_assert_state_children_running
