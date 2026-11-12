@@ -145,7 +145,11 @@ export function createSubscriptionManager(options: SubscriptionManagerOptions) {
     function requestSample(subscription: LiveTopicSubscription): void {
         runDetachedTask(
             () => sample(subscription),
-            () => options.closeUnavailable(subscription.connection, 503),
+            () => {
+                const { connection } = subscription
+                if (!subscription.active || connection.closed) return
+                options.closeUnavailable(connection, 503)
+            },
         )
     }
 
