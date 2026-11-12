@@ -40,6 +40,133 @@ test_identity() (
     printf 'PASS: surviving consumer identities are detected in every UID field\n'
 )
 
+test_identity_visibility() (
+    local scratch variant result
+    scratch=$(mktemp -d "${TMPDIR:-/tmp}/rentnerproxy-backup-visibility.XXXXXX")
+    trap 'rm -rf -- "$scratch"' EXIT
+    load_function "$backup_supervisor" backup_status_has_consumer_identity
+    mkdir "$scratch/present"
+    sleep() { [[ $1 == 0.1 ]] || fail 'unexpected identity retry delay'; }
+    for variant in empty missing truncated malformed extra unreadable; do
+        case $variant in
+            empty) : > "$scratch/present/status" ;;
+            missing) printf 'Name:\tfixture\nState:\tS (sleeping)\n' > "$scratch/present/status" ;;
+            truncated) printf 'Uid:\t0\t0\t0\n' > "$scratch/present/status" ;;
+            malformed) printf 'Uid:\t0\tunknown\t0\t0\n' > "$scratch/present/status" ;;
+            extra) printf 'Uid:\t0\t0\t0\t0\t10002\n' > "$scratch/present/status" ;;
+            unreadable) rm "$scratch/present/status"; mkdir "$scratch/present/status" ;;
+        esac
+        result=0
+        backup_status_has_consumer_identity "$scratch/present/status" || result=$?
+        [[ $result == 2 ]] || fail "$variant identity was accepted as a non-consumer"
+    done
+    rmdir "$scratch/present/status"
+    result=0
+    backup_status_has_consumer_identity "$scratch/present/status" || result=$?
+    [[ $result == 2 ]] || fail 'missing status of an existing process was accepted'
+    rmdir "$scratch/present"
+    result=0
+    backup_status_has_consumer_identity "$scratch/present/status" || result=$?
+    [[ $result == 1 ]] || fail 'vanished process was rejected'
+    printf 'PASS: unknown existing process identities remain distinct from safe and vanished processes\n'
+)
+
+test_identity_retry() (
+    local scratch variant result retries
+    scratch=$(mktemp -d "${TMPDIR:-/tmp}/rentnerproxy-backup-retry.XXXXXX")
+    trap 'rm -rf -- "$scratch"' EXIT
+    load_function "$backup_supervisor" backup_status_has_consumer_identity
+    for variant in safe consumer vanished unknown; do
+        mkdir "$scratch/present"
+        : > "$scratch/present/status"
+        retries=0
+        sleep() {
+            [[ $1 == 0.1 ]] || fail 'unexpected identity retry delay'
+            retries=$((retries + 1))
+            case $variant in
+                safe) printf 'Uid:\t0\t0\t0\t0\n' > "$scratch/present/status" ;;
+                consumer) printf 'Uid:\t10001\t0\t0\t0\n' > "$scratch/present/status" ;;
+                vanished) rm "$scratch/present/status"; rmdir "$scratch/present" ;;
+                unknown) : ;;
+            esac
+        }
+        result=0
+        backup_status_has_consumer_identity "$scratch/present/status" || result=$?
+        case $variant in
+            safe|vanished) [[ $result == 1 && $retries == 1 ]] || fail "$variant retry lost fresh evidence" ;;
+            consumer) [[ $result == 0 && $retries == 1 ]] || fail 'retried consumer bypassed the fence' ;;
+            unknown) [[ $result == 2 && $retries == 2 ]] || fail 'unknown identity escaped the bounded retry fence' ;;
+        esac
+        [[ $variant == vanished ]] || { rm "$scratch/present/status"; rmdir "$scratch/present"; }
+    done
+    printf 'PASS: identity retries reopen for fresh evidence and never admit persistent uncertainty\n'
+)
+
+test_identity_exceptions() (
+    local scratch identity field result variant
+    scratch=$(mktemp -d "${TMPDIR:-/tmp}/rentnerproxy-backup-exceptions.XXXXXX")
+    trap 'rm -rf -- "$scratch"' EXIT
+    load_function "$backup_supervisor" backup_status_has_consumer_identity
+    for identity in 10001 10002 10003; do
+        for field in 0 1 2 3; do
+            local -a identities=(10002 10002 10002 10002)
+            identities[$field]=$identity
+            printf 'Uid:\t%s\t%s\t%s\t%s\n' "${identities[@]}" > "$scratch/status"
+            result=0
+            backup_status_has_consumer_identity "$scratch/status" preserve-web || result=$?
+            if [[ $identity == 10002 ]]; then
+                [[ $result == 1 ]] || fail 'restore maintenance web was rejected'
+            else
+                [[ $result == 0 ]] || fail 'preserve-web admitted a mixed consumer credential'
+            fi
+        done
+    done
+    for variant in Z X; do
+        printf 'State:\t%s (exited)\nUid:\t10001\t10001\t10001\t10001\n' "$variant" > "$scratch/status"
+        result=0
+        backup_status_has_consumer_identity "$scratch/status" || result=$?
+        [[ $result == 1 ]] || fail 'exited consumer was rejected'
+    done
+    printf 'PASS: restore web exemption never admits controller or CrowdSec credentials; exited tasks are safe\n'
+)
+
+test_unknown_consumer_scan() (
+    load_function "$backup_supervisor" backup_assert_consumers_stopped
+    declare -a child_pids=(2147483647) child_names=(valkey)
+    backup_assert_state_children_running() { :; }
+    backup_status_has_consumer_identity() { return 2; }
+    local result=0
+    (backup_assert_consumers_stopped) >/dev/null 2>&1 || result=$?
+    [[ $result != 0 ]] || fail 'consumer scan admitted an unknown live identity'
+    printf 'PASS: consumer scan blocks export and recovery on unknown live identity\n'
+)
+
+test_consumer_scan_exceptions() (
+    local scratch backup_caddy_pid=$$ backup_maintenance_id=fixture-operation backup_exporter=fixture-exporter
+    scratch=$(mktemp -d "${TMPDIR:-/tmp}/rentnerproxy-backup-scan.XXXXXX")
+    trap 'rm -rf -- "$scratch"' EXIT
+    load_function "$backup_supervisor" backup_assert_consumers_stopped
+    declare -a child_pids=(2147483647) child_names=(valkey)
+    backup_assert_state_children_running() { :; }
+    backup_status_has_consumer_identity() {
+        [[ $1 != /proc/$backup_caddy_pid/status ]] || fail 'retained Caddy bypassed ownership verification'
+        [[ ${2:-} == preserve-web ]] || fail 'restore web mode was not passed to the identity guard'
+        return 1
+    }
+    bun() {
+        [[ $* == "--no-env-file fixture-exporter --assert-retained-caddy fixture-operation $backup_caddy_pid" ]] \
+            || fail 'retained Caddy was not bound to the exact maintenance operation'
+        printf 'verified\n' >> "$scratch/verified"
+    }
+    backup_assert_consumers_stopped preserve-web
+    [[ $(cat "$scratch/verified") == verified ]] || fail 'retained Caddy was not verified exactly once'
+    bun() { return 1; }
+    local result=0
+    (backup_assert_consumers_stopped preserve-web) >/dev/null 2>&1 || result=$?
+    [[ $result != 0 ]] || fail 'failed retained Caddy ownership check was accepted'
+    printf 'PASS: consumer scan preserves restore mode and requires exact retained Caddy ownership\n'
+)
+
 test_maintenance() (
     local scratch scenario status
     scratch=$(mktemp -d "${TMPDIR:-/tmp}/rentnerproxy-backup-maintenance.XXXXXX")
@@ -494,6 +621,11 @@ if [[ ${1:-} == --linux-processes ]]; then
 fi
 
 test_identity
+test_identity_visibility
+test_identity_retry
+test_identity_exceptions
+test_unknown_consumer_scan
+test_consumer_scan_exceptions
 test_maintenance
 test_drain
 test_export_outcome
