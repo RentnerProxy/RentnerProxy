@@ -20,14 +20,15 @@ const {createHostMonitoringCapture} = await import('./web/src/server/HostMonitor
 const runId = process.argv[1], path = '/tmp/rentnerproxy-background-capture-' + runId + '.json'
 const stat = readFileSync('/proc/self/stat','utf8')
 const owner = {pid:process.pid,startTicks:stat.slice(stat.lastIndexOf(')')+2).trim().split(/\\s+/)[19],state:'S'}
-let mode='normal', candidateFd, flight, entered, release
+let mode='normal', candidateFd, flight, entered, release, writes=0
 const publisher = createHostMonitoringCapturePublisher(path, {
   write: async (fd,text) => {
+    writes++
     if(mode==='fail') throw new Error('injected later write failure')
     await new Promise((resolve,reject)=>writeFile(fd,text,error=>error?reject(error):resolve()))
     if(mode==='pause'){candidateFd=fd;entered.resolve();await release.promise}
   },
-  remove: () => {throw new Error('injected namespace cleanup failure')},
+  ...(process.argv[2]==='remove-fails'?{remove: () => {throw new Error('injected namespace cleanup failure')}}:{}),
 })
 const capture=createHostMonitoringCapture({runId,sourceSha:'a'.repeat(40),pid:process.pid,processStartTicks:owner.startTicks,...publisher})
 const claim=token=>({policy:{id:'00000000-0000-4000-8000-000000000001',version:'00000000-0000-4000-8000-000000000002',nextCheckAt:new Date(1000)},leaseToken:token})
@@ -44,15 +45,15 @@ for await(const line of createInterface({input:process.stdin})){
   if(command==='begin-race'){mode='pause';entered=Promise.withResolvers();release=Promise.withResolvers();pair('second-token');flight=capture.flush();await entered.promise;result={candidateFd}}
   if(command==='more'){capture.record('cancelled',claim('second-token'));result={candidateStillOpen:fstatSync(candidateFd).isFile()}}
   if(command==='release'){mode='normal';release.resolve();await flight;result={capture:current()}}
-  console.log(JSON.stringify(result))
+  console.log(JSON.stringify({...result,writes}))
 }
 `
 
-async function fixture(asWeb = true) {
+async function fixture(asWeb = true, cleanupFails = true) {
     const runId = randomBytes(6).toString('hex')
     const path = '/tmp/rentnerproxy-background-capture-' + runId + '.json'
     const account = (await readFile('/etc/passwd', 'utf8')).includes('rentnerproxy-web:') ? 'rentnerproxy-web' : '10002:10002'
-    const child = Bun.spawn([...(asWeb ? ['gosu', account] : []), process.execPath, '--no-env-file', '-e', writerSource, runId], { cwd: root, stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' })
+    const child = Bun.spawn([...(asWeb ? ['gosu', account] : []), process.execPath, '--no-env-file', '-e', writerSource, runId, cleanupFails ? 'remove-fails' : 'remove-ok'], { cwd: root, stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' })
     const stream = child.stdout.getReader()
     const errors = new Response(child.stderr).text()
     let buffered = ''
@@ -66,7 +67,7 @@ async function fixture(asWeb = true) {
         }
         const end = buffered.indexOf('\n'), text = buffered.slice(0, end)
         buffered = buffered.slice(end + 1)
-        return JSON.parse(text) as { owner: { pid: number; startTicks: string; state: string }; capture: ReturnType<typeof hostMonitoringCaptureSchema.parse>; candidateStillOpen: boolean }
+        return JSON.parse(text) as { owner: { pid: number; startTicks: string; state: string }; capture: ReturnType<typeof hostMonitoringCaptureSchema.parse>; candidateStillOpen: boolean; writes: number }
         } finally { clearTimeout(deadline) }
     }
     async function close() { child.kill('SIGKILL'); await child.exited; await errors; await stream.cancel(); for (const name of await readdir('/tmp')) if (name.startsWith('rentnerproxy-background-capture-' + runId + '.json')) await rm('/tmp/' + name, { force: true }) }
@@ -109,8 +110,8 @@ linuxTest('same-UID capture-only CLI qualifies a live web FD lease and rejects s
     } finally { await f.close() }
 })
 
-linuxTest('new records during async candidate I/O retain its FD until settlement and never grant a stale candidate', async () => {
-    const f = await fixture()
+linuxTest('new records during async candidate I/O retain its FD and publish the current generation only after successful stale cleanup', async () => {
+    const f = await fixture(true, false)
     try {
         const first = (await f.request('first')).capture
         await f.request('begin-race')
@@ -121,9 +122,26 @@ linuxTest('new records during async candidate I/O retain its FD until settlement
         expect(latest.events).toHaveLength(5)
         expect((await readAsWeb(f)).capture?.publication.generation).toBe(5)
         const retiredCandidate = f.path + '.' + first.epoch + '.4.tmp'
+        await expect(readBoundedBackgroundCapture(retiredCandidate)).rejects.toMatchObject({ code: 'ENOENT' })
+    } finally { await f.close() }
+})
+
+linuxTest('failed stale-candidate cleanup disables capture with at most one leftover candidate and no further writes', async () => {
+    const f = await fixture()
+    try {
+        const first = (await f.request('first')).capture
+        await f.request('begin-race')
+        expect((await f.request('more')).candidateStillOpen).toBe(true)
+        const stopped = await f.request('release')
+        expect(stopped.capture.publication.generation).toBe(first.publication.generation)
+        expect(stopped.writes).toBe(2)
+        expect((await readAsWeb(f)).capture).toBeNull()
+        const retiredCandidate = f.path + '.' + first.epoch + '.4.tmp'
         expect(await readBoundedBackgroundCapture(retiredCandidate)).not.toBeNull()
-        // The stale candidate retained after cleanup failure has no matching owner-held inode lease.
         expect((await readAsWeb(f, retiredCandidate)).capture).toBeNull()
+        const retried = await f.request('replace')
+        expect(retried.writes).toBe(2)
+        expect((await readdir('/tmp')).filter((name) => name.startsWith('rentnerproxy-background-capture-' + f.runId + '.json') && name.endsWith('.tmp'))).toHaveLength(1)
     } finally { await f.close() }
 })
 
@@ -141,5 +159,18 @@ linuxTest('holding the old inode across replacement and FD-number reuse cannot m
         // Linux allocates the just-retired low descriptor again, but it now denotes a different inode.
         expect(replacement?.publication.fd).toBe(first.publication.fd)
         expect((await readLeasedBackgroundCapture(f.path, f.expected, f.owners))?.events).toHaveLength(4)
+    } finally { await f.close() }
+})
+
+linuxTest('expiry or backwards time after the final awaited inode checks and close rejects the capture', async () => {
+    const f = await fixture(false)
+    try {
+        const first = (await f.request('first')).capture
+        for (const finalTime of [first.expiresAt + 1, first.createdAt - 1]) {
+            let clocks = 0
+            const result = await readLeasedBackgroundCapture(f.path, f.expected, f.owners, () => ++clocks === 1 ? first.createdAt + 1 : finalTime)
+            expect(result).toBeNull()
+            expect(clocks).toBe(2)
+        }
     } finally { await f.close() }
 })

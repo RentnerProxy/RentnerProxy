@@ -131,6 +131,50 @@ test('capture lifetime revokes the published lease even without another record',
     expect(held).toBe(false)
 })
 
+test('throwing record revocation terminally disables telemetry without escaping or retrying close', async () => {
+    let invalidations = 0, writes = 0
+    const capture = createHostMonitoringCapture({ ...identity, invalidate: () => { invalidations++; throw new Error('injected close error') }, write: async () => { writes++ } })
+    expect(() => capture.record('admitted', claim)).not.toThrow()
+    await expect(capture.flush()).resolves.toBeUndefined()
+    expect(() => capture.record('started', claim)).not.toThrow()
+    expect(invalidations).toBe(1)
+    expect(writes).toBe(0)
+})
+
+test('write failure publishes terminal state before a throwing revocation and never rejects the observer flush', async () => {
+    let invalidations = 0, writes = 0
+    const guards: (boolean | undefined)[] = []
+    let current: (() => boolean) | undefined
+    const capture = createHostMonitoringCapture({ ...identity,
+        invalidate: () => { if (++invalidations > 1) { guards.push(current?.()); throw new Error('injected close error') } },
+        write: async (_value, isCurrent) => { writes++; current = isCurrent; throw new Error('injected write failure') },
+    })
+    capture.record('admitted', claim)
+    await expect(capture.flush()).resolves.toBeUndefined()
+    capture.record('started', claim)
+    await capture.flush()
+    expect(invalidations).toBe(2)
+    expect(writes).toBe(1)
+    expect(guards).toEqual([false])
+})
+
+test('expiry marks terminal state before a throwing revocation without an uncaught timer error or another close', async () => {
+    let invalidations = 0
+    const guards: (boolean | undefined)[] = []
+    let current: (() => boolean) | undefined
+    const capture = createHostMonitoringCapture({ ...identity, lifetimeMs: 10, now: () => 1000,
+        invalidate: () => { if (++invalidations > 1) { guards.push(current?.()); throw new Error('injected close error') } },
+        write: async (_value, isCurrent) => { current = isCurrent },
+    })
+    capture.record('admitted', claim)
+    await capture.flush()
+    await Bun.sleep(30)
+    capture.record('started', claim)
+    await expect(capture.flush()).resolves.toBeUndefined()
+    expect(invalidations).toBe(2)
+    expect(guards).toEqual([false])
+})
+
 test('production adapter observes returned claims before starts and flushes after actual worker stop', async () => {
     const output = await runBunScript(
         `

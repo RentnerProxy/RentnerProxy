@@ -70,13 +70,17 @@ export function backgroundCaptureMatchesOwner(
 export async function readLeasedBackgroundCapture(path: string, expected: { runId: string; sourceSha: string | undefined }, owners: () => Promise<Owner[]> = async () => (await readRuntimeProcesses()).filter((owner) => owner.role === 'web' && owner.pid !== process.pid), now: () => number = Date.now) {
     try {
         const before = await owners()
-        return await withBoundedBackgroundCapture(path, async (text, opened) => {
+        const captured = await withBoundedBackgroundCapture(path, async (text, opened) => {
             const capture = hostMonitoringCaptureSchema.parse(JSON.parse(text))
             if (!await ownerHoldsPublication(capture, opened)) return null
             const after = await owners()
             if (!backgroundCaptureMatchesOwner(capture, expected, before, after, now()) || !await ownerHoldsPublication(capture, opened)) return null
             return capture
         })
+        if (!captured) return null
+        // The held artifact has been closed too. No await may follow this final time qualification.
+        const qualifiedAt = now()
+        return qualifiedAt >= captured.createdAt && qualifiedAt <= captured.expiresAt ? captured : null
     } catch {
         return null
     }

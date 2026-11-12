@@ -15,6 +15,15 @@ export function createHostMonitoringCapturePublisher(path: string, io: { write?:
         publishedFd = undefined
         if (fd !== undefined) closeSync(fd)
     }
+    const discard = (fd: number, temporary: string) => {
+        let closeFailed = false
+        let closeError: unknown
+        try { closeSync(fd) } catch (error) { closeFailed = true; closeError = error }
+        try { (io.remove ?? unlinkSync)(temporary) } catch (error) {
+            if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) throw error
+        }
+        if (closeFailed) throw closeError
+    }
     return {
         invalidate,
         async write(value: HostMonitoringCapture, isCurrent: () => boolean) {
@@ -32,8 +41,7 @@ export function createHostMonitoringCapturePublisher(path: string, io: { write?:
                 granted = true
             } finally {
                 // Concurrent record/expiry only revokes publishedFd. Candidate I/O has settled before its sole close.
-                if (!granted) closeSync(fd)
-                try { (io.remove ?? unlinkSync)(temporary) } catch { /* Namespace cleanup cannot grant or preserve authority. */ }
+                if (!granted) discard(fd, temporary)
             }
         },
     }
