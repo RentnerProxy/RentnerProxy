@@ -7,6 +7,7 @@ export async function stageBackgroundFixtureSources(directory: string) {
         [
             'scripts/runtime-scale/background-fixture.ts',
             'scripts/runtime-scale/background-capture.ts',
+            'scripts/runtime-scale/background-capture-read.ts',
             'scripts/runtime-scale/background-notifications.ts',
             'scripts/runtime-scale/background-notification-identities.ts',
             'scripts/runtime-scale/background-receivers.ts',

@@ -265,7 +265,7 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
             body: controllerBodySchema.parse(envelope.body),
         }
     }
-    async function fixture(phase: string, extra: Record<string, unknown> = {}, limits: Pick<CommandOptions, 'timeoutMs'> = {}) {
+    async function fixture(phase: string, extra: Record<string, unknown> = {}) {
         // Fixture mutations also run in recovery finally blocks (for example CrowdSec disable).
         traffic.clearHealthyObservation()
         const output = await docker(
@@ -305,7 +305,7 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
                     authPort: fixtureTransport.authPort,
                     ...extra,
                 }),
-                timeoutMs: Math.min(limits.timeoutMs ?? 90_000, 90_000),
+                timeoutMs: 90_000,
                 acceptableExitCodes: [1],
             },
         )

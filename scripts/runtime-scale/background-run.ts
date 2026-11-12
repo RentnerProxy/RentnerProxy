@@ -28,6 +28,9 @@ import { backgroundPolicies } from './background.ts'
 import { backgroundReceiptsSchema, backgroundSnapshotSchema } from './background.validation.ts'
 import { stageBackgroundFixtureSources } from './background-source.ts'
 import { settleBackgroundCapture } from './background-capture-settlement.ts'
+import { backgroundCaptureReadCommand } from './background-capture-read.ts'
+import { hostMonitoringCaptureSchema } from '../../web/src/server/HostMonitoring/host-monitoring.capture.ts'
+import { z } from 'zod'
 import {
     backgroundSourceManifest,
     backgroundReportBinding,
@@ -108,12 +111,16 @@ async function installFixture(context: ReliabilityContext) {
         probe,
         context.container + ':/opt/rentnerproxy/web/background-contention-web.js',
     ])
+    const captureReader = join(context.temp, 'background-capture-read.js')
+    await context.command([process.execPath, '--no-env-file', 'build', join(source, 'scripts/runtime-scale/background-capture-read.ts'), '--tsconfig-override=' + join(source, 'tsconfig.json'), '--target=bun', '--packages=external', '--outfile=' + captureReader])
+    await context.docker(['cp', captureReader, context.container + ':/opt/rentnerproxy/web/background-capture-read.js'])
     const sourceManifest = await backgroundSourceManifest(source)
     const artifacts = await Promise.all(
         [
             ['reliability-fixture.js', bundle],
             ['background-contention-receiver.js', receiver],
             ['background-contention-web.js', probe],
+            ['background-capture-read.js', captureReader],
         ].map(async ([name, path]) => ({
             name: name!,
             sha256: createHash('sha256')
@@ -128,7 +135,7 @@ async function installFixture(context: ReliabilityContext) {
             'bun',
             '--no-env-file',
             '-e',
-            "const names=['reliability-fixture.js','background-contention-receiver.js','background-contention-web.js'];console.log(JSON.stringify(await Promise.all(names.map(async name=>({name,sha256:new Bun.CryptoHasher('sha256').update(await Bun.file('/opt/rentnerproxy/web/'+name).arrayBuffer()).digest('hex')})))))",
+                "const names=['reliability-fixture.js','background-contention-receiver.js','background-contention-web.js','background-capture-read.js'];console.log(JSON.stringify(await Promise.all(names.map(async name=>({name,sha256:new Bun.CryptoHasher('sha256').update(await Bun.file('/opt/rentnerproxy/web/'+name).arrayBuffer()).digest('hex')})))))",
         ]),
     ) as unknown
     assert.deepEqual(
@@ -438,7 +445,12 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
         enter('capture-settlement')
         const settled = await settleBackgroundCapture(snapshot, { runId: context.runId, sourceSha: harness.targetSha }, {
             signal: abort.signal,
-            read: async (remainingMs) => backgroundSnapshotSchema.parse((await context.fixture('background-read', extra, { timeoutMs: remainingMs })).background),
+            read: async (remainingMs) => {
+                const command = backgroundCaptureReadCommand(context.container, context.runId, remainingMs)
+                const output = await context.docker(command.args, { timeoutMs: command.clientTimeoutMs })
+                const value = z.strictObject({ capture: hostMonitoringCaptureSchema.nullable() }).parse(JSON.parse(output))
+                return { ...snapshot!, schedulerCapture: value.capture }
+            },
         })
         snapshot = settled.snapshot
         captureSettlement = { status: settled.status, reads: settled.reads, budgetMs: settled.budgetMs, elapsedMs: settled.elapsedMs }
@@ -675,6 +687,7 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
             writeCoalesceMs: 25,
             finalCaptureSemantics:
                 'Only persisted matching events qualify; an unflushed or missing last event yields insufficient evidence rather than inferred admission',
+            captureReadOwnership: 'Capture-only remote Bun reader has a separate timeout --signal=KILL configured deadline of at most 1000ms from remote wrapper startup; client waits at most the remaining settlement budget. Client timeout is not remote-drain proof; final container cleanup retains ownership. No SQL/context is created by the reader.',
         },
         monitoring,
         captureSettlement,

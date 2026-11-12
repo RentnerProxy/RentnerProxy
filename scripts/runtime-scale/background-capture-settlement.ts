@@ -16,10 +16,10 @@ function coversObservedAttempts(snapshot: BackgroundSnapshot, expected: { runId:
     })
 }
 
-/** Reread actual persisted capture under a hard caller-enforced command deadline; preserve workload observations and unknown evidence at the bound. */
+/** Reread persisted capture under a bounded client wait; the caller separately bounds remote read-only execution and retains container cleanup ownership. */
 export async function settleBackgroundCapture(initial: BackgroundSnapshot, expected: { runId: string; sourceSha: string }, dependencies: {
     signal: AbortSignal
-    /** Must stop and drain its fixture subprocess within remainingMs, not merely abandon a promise. */
+    /** Bound the client wait by remainingMs; a separate remote timeout and final container cleanup must own remote work after transport loss. */
     read: (remainingMs: number) => Promise<BackgroundSnapshot>
     now?: () => number
     sleep?: (milliseconds: number) => Promise<unknown>
@@ -38,7 +38,7 @@ export async function settleBackgroundCapture(initial: BackgroundSnapshot, expec
     while (!coversObservedAttempts(snapshot, expected)) {
         checkBackgroundCancellation(dependencies.signal)
         const remainingMs = deadline - now()
-        if (remainingMs <= 0) return result('deadline')
+        if (remainingMs <= 250) return result('deadline')
         try {
             reads++
             const observed = await dependencies.read(remainingMs)

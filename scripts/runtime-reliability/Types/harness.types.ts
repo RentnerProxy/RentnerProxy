@@ -23,7 +23,7 @@ type BackendBody = z.output<typeof backendBodySchema>
 export type ReliabilityContext = {
     command: (args: string[], options?: CommandOptions) => Promise<string>
     docker: (args: string[], options?: CommandOptions) => Promise<string>
-    fixture: (phase: string, extra?: Record<string, unknown>, limits?: Pick<CommandOptions, 'timeoutMs'>) => Promise<FixtureResult>
+    fixture: (phase: string, extra?: Record<string, unknown>) => Promise<FixtureResult>
     controller: (path: string, body?: unknown) => Promise<{ status: number; body: ControllerBody }>
     waitFor: (predicate: () => Promise<boolean>, label: string, timeoutMs?: number) => Promise<void>
     check: (name: ReliabilityCheck['name'], label: string) => void
