@@ -197,24 +197,33 @@ impl CertificateStore {
         }
 
         if let Ok(directory) = self.certificates_dir() {
-            report_recovery_result(persist_candidate_manifest(&directory, &staged.id, &candidate), "persist_candidate_manifest");
+            report_recovery_result(
+                persist_candidate_manifest(&directory, &staged.id, &candidate),
+                "persist_candidate_manifest",
+            );
             if let Some(operation) = candidate.staged.metadata.current_operation.as_ref() {
-                report_recovery_result(operations::append_event(
-                    &mut index,
-                    &operation.id,
-                    &staged.id,
-                    operations::CertificateEventKind::Failed,
-                    CertificateOperationStage::Failed,
-                    Some(error.code().to_owned()),
-                ), "append_event");
-                report_recovery_result(operations::append_event(
-                    &mut index,
-                    &operation.id,
-                    &staged.id,
-                    operations::CertificateEventKind::RetryScheduled,
-                    CertificateOperationStage::RetryScheduled,
-                    Some(error.code().to_owned()),
-                ), "append_event");
+                report_recovery_result(
+                    operations::append_event(
+                        &mut index,
+                        &operation.id,
+                        &staged.id,
+                        operations::CertificateEventKind::Failed,
+                        CertificateOperationStage::Failed,
+                        Some(error.code().to_owned()),
+                    ),
+                    "append_event",
+                );
+                report_recovery_result(
+                    operations::append_event(
+                        &mut index,
+                        &operation.id,
+                        &staged.id,
+                        operations::CertificateEventKind::RetryScheduled,
+                        CertificateOperationStage::RetryScheduled,
+                        Some(error.code().to_owned()),
+                    ),
+                    "append_event",
+                );
             }
             report_recovery_result(persist_index(&directory, &index), "persist_index");
         }
@@ -252,16 +261,22 @@ impl CertificateStore {
                 utc_now().unwrap_or_else(|_| active.metadata.updated_at.clone());
         }
         if let Ok(directory) = self.certificates_dir() {
-            report_recovery_result(persist_candidate_manifest(&directory, id, &candidate), "persist_candidate_manifest");
+            report_recovery_result(
+                persist_candidate_manifest(&directory, id, &candidate),
+                "persist_candidate_manifest",
+            );
             if let Some(operation) = candidate_operation {
-                report_recovery_result(operations::append_event(
-                    &mut index,
-                    &operation.id,
-                    id,
-                    CertificateEventKind::Failed,
-                    CertificateOperationStage::NeedsAttention,
-                    Some(error.code().to_owned()),
-                ), "append_event");
+                report_recovery_result(
+                    operations::append_event(
+                        &mut index,
+                        &operation.id,
+                        id,
+                        CertificateEventKind::Failed,
+                        CertificateOperationStage::NeedsAttention,
+                        Some(error.code().to_owned()),
+                    ),
+                    "append_event",
+                );
             }
             report_recovery_result(persist_index(&directory, &index), "persist_index");
         }

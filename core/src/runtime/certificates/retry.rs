@@ -168,14 +168,17 @@ impl CertificateStore {
                 event_recorded = event.is_ok();
                 report_recovery_result(event, "append_failed_event");
                 if retryable {
-                    report_recovery_result(operations::append_event(
-                        &mut index,
-                        &operation_id,
-                        id,
-                        CertificateEventKind::RetryScheduled,
-                        stage,
-                        Some(error.code().to_owned()),
-                    ), "append_retry_event");
+                    report_recovery_result(
+                        operations::append_event(
+                            &mut index,
+                            &operation_id,
+                            id,
+                            CertificateEventKind::RetryScheduled,
+                            stage,
+                            Some(error.code().to_owned()),
+                        ),
+                        "append_retry_event",
+                    );
                 }
             }
             let persisted = self

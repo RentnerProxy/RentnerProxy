@@ -439,7 +439,9 @@ fn configuration_authority(revision: &str) -> String {
 }
 
 fn is_readable_system_ca_bundle(path: &Path) -> bool {
-    let Ok(mut file) = open_absolute_regular_file(path) else { return false };
+    let Ok(mut file) = open_absolute_regular_file(path) else {
+        return false;
+    };
     let mut byte = [0u8; 1];
     file.read(&mut byte).is_ok_and(|read| read > 0)
 }

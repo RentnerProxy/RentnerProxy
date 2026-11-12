@@ -244,9 +244,9 @@ impl DnsProvider {
         let mut failed = false;
         for intent in intents {
             let Ok(records) = self.find_owned_records(intent).await else {
-                    failed = true;
-                    continue;
-                };
+                failed = true;
+                continue;
+            };
             for record in records {
                 if !deleted_ids.insert(record.id.clone()) {
                     continue;

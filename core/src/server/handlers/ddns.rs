@@ -171,7 +171,9 @@ pub(in crate::server) async fn events(
     state: AppState,
     query: Result<Query<EventsQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Response {
-    let Ok(Query(query)) = query else { return error(AutomationError::InvalidInput) };
+    let Ok(Query(query)) = query else {
+        return error(AutomationError::InvalidInput);
+    };
     let limit = query.limit.unwrap_or(64);
     if !(1..=64).contains(&limit) {
         return error(AutomationError::InvalidInput);

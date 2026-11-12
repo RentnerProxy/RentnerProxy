@@ -190,22 +190,28 @@ impl CertificateStore {
             )?;
         }
         for (operation_id, certificate_id, error_code) in recovery_events {
-            report_recovery_result(operations::append_event(
-                &mut index,
-                &operation_id,
-                &certificate_id,
-                CertificateEventKind::Failed,
-                CertificateOperationStage::Failed,
-                error_code.clone(),
-            ), "append_event");
-            report_recovery_result(operations::append_event(
-                &mut index,
-                &operation_id,
-                &certificate_id,
-                CertificateEventKind::RetryScheduled,
-                CertificateOperationStage::RetryScheduled,
-                error_code,
-            ), "append_event");
+            report_recovery_result(
+                operations::append_event(
+                    &mut index,
+                    &operation_id,
+                    &certificate_id,
+                    CertificateEventKind::Failed,
+                    CertificateOperationStage::Failed,
+                    error_code.clone(),
+                ),
+                "append_event",
+            );
+            report_recovery_result(
+                operations::append_event(
+                    &mut index,
+                    &operation_id,
+                    &certificate_id,
+                    CertificateEventKind::RetryScheduled,
+                    CertificateOperationStage::RetryScheduled,
+                    error_code,
+                ),
+                "append_event",
+            );
         }
         if generated_store_id || recovered_interrupted_operation || recovered_candidate_state {
             persist_index(&certificates_dir, &index)?;
@@ -347,9 +353,7 @@ impl CertificateStore {
         if let Some(candidate) = index.pending_candidates.get(id)
             && let Err(error) = persist_candidate_manifest(&certificates_dir, id, candidate)
         {
-            index
-                .certificates
-                .insert(id.to_owned(), previous_active);
+            index.certificates.insert(id.to_owned(), previous_active);
             if let Some(previous_candidate) = previous_candidate.as_ref() {
                 index
                     .pending_candidates
@@ -365,7 +369,10 @@ impl CertificateStore {
                 index
                     .pending_candidates
                     .insert(id.to_owned(), previous_candidate.clone());
-                report_recovery_result(persist_candidate_manifest(&certificates_dir, id, previous_candidate), "persist_candidate_manifest");
+                report_recovery_result(
+                    persist_candidate_manifest(&certificates_dir, id, previous_candidate),
+                    "persist_candidate_manifest",
+                );
             }
             index.events = previous_events;
             index.event_sequence = previous_sequence;

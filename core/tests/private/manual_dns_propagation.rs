@@ -242,12 +242,7 @@ fn groups_apex_wildcard_and_rejects_untrusted_owner_or_excessive_records() {
 #[test]
 fn test_override_is_staging_loopback_only_and_requires_valid_acme_fixture() {
     let check = |environment, address: &str, directory: &str, root: &str| {
-        configured_test_address(
-            environment,
-            Some(address),
-            Some(directory),
-            Some(root),
-        )
+        configured_test_address(environment, Some(address), Some(directory), Some(root))
     };
     let root = std::env::temp_dir()
         .join("fixture-root.pem")

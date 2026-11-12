@@ -1,5 +1,5 @@
-use super::scheduling::next_renewal_at;
 use super::persistence::report_recovery_result;
+use super::scheduling::next_renewal_at;
 use super::validation::{
     format_timestamp, is_certificate_domain, read_regular_private_file, truncate,
     write_private_file,

@@ -264,9 +264,9 @@ impl ProxyRuntime {
             return self.initialize_with_restart_budget(true).await;
         }
         let Ok(running) = timeout(self.settings.lock_wait, engine.is_running()).await else {
-                self.recovery_health.open_circuit();
-                return Err(RuntimeError::Unavailable);
-            };
+            self.recovery_health.open_circuit();
+            return Err(RuntimeError::Unavailable);
+        };
         if !running {
             self.recovery_health.fault();
             self.mark_unavailable().await;
@@ -326,9 +326,9 @@ impl ProxyRuntime {
             return Err(RuntimeError::Unavailable);
         }
         let Ok(running) = timeout(self.settings.lock_wait, engine.is_running()).await else {
-                self.recovery_health.open_circuit();
-                return Err(RuntimeError::Unavailable);
-            };
+            self.recovery_health.open_circuit();
+            return Err(RuntimeError::Unavailable);
+        };
         if running && available {
             return Ok(());
         }

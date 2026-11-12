@@ -80,23 +80,35 @@ test('isolates failed listeners through data delivery, resumption and authorizat
     let resumed = 0
     let unauthorized = 0
     const failure = new Error('private listener details')
-    const fail = () => { throw failure }
+    const fail = () => {
+        throw failure
+    }
     try {
-        cleanups.push(subscribeToRealtimeEvents({
-            topic: 'app-events',
-            query: {},
-            onData: () => Promise.reject(new Error('private payload details')),
-            onStatus: fail,
-            onResume: fail,
-            onUnauthorized: fail,
-        }))
-        cleanups.push(subscribeToRealtimeEvents({
-            topic: 'app-events',
-            query: {},
-            onData: (value) => { received.push(value) },
-            onResume: () => { resumed++ },
-            onUnauthorized: () => { unauthorized++ },
-        }))
+        cleanups.push(
+            subscribeToRealtimeEvents({
+                topic: 'app-events',
+                query: {},
+                onData: () => Promise.reject(new Error('private payload details')),
+                onStatus: fail,
+                onResume: fail,
+                onUnauthorized: fail,
+            }),
+        )
+        cleanups.push(
+            subscribeToRealtimeEvents({
+                topic: 'app-events',
+                query: {},
+                onData: (value) => {
+                    received.push(value)
+                },
+                onResume: () => {
+                    resumed++
+                },
+                onUnauthorized: () => {
+                    unauthorized++
+                },
+            }),
+        )
         const first = FakeSocket.instances[0]!
         first.open()
         first.deliver({ revision: 'one' })

@@ -156,11 +156,11 @@ pub(super) async fn probe(
         );
     }
     let Ok(roots) = trust(host, cas, system_ca) else {
-            return (
-                Stage::skipped(),
-                Stage::new(Status::Failed, Code::TlsFailed).elapsed(start),
-            );
-        };
+        return (
+            Stage::skipped(),
+            Stage::new(Status::Failed, Code::TlsFailed).elapsed(start),
+        );
+    };
     crate::runtime::tls::ensure_crypto_provider();
     let server = host
         .upstream_tls
@@ -191,11 +191,11 @@ pub(super) async fn probe(
         "{}://{}:{}/",
         host.forward_scheme, authority, host.forward_port
     )) else {
-            return (
-                Stage::new(Status::Failed, Code::UpstreamUnreachable).elapsed(start),
-                initial_tls,
-            );
-        };
+        return (
+            Stage::new(Status::Failed, Code::UpstreamUnreachable).elapsed(start),
+            initial_tls,
+        );
+    };
     let mut last = Stage::new(Status::Failed, Code::UpstreamUnreachable);
     let mut tls = initial_tls;
     for ip in addresses.iter().take(8) {
@@ -219,11 +219,11 @@ pub(super) async fn probe(
             builder = builder.tls_danger_accept_invalid_certs(true);
         }
         let Ok(client) = builder.build() else {
-                return (
-                    Stage::new(Status::Failed, Code::UpstreamUnreachable).elapsed(start),
-                    tls,
-                );
-            };
+            return (
+                Stage::new(Status::Failed, Code::UpstreamUnreachable).elapsed(start),
+                tls,
+            );
+        };
         let response = timeout_at(
             deadline,
             client

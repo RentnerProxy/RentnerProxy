@@ -142,7 +142,10 @@ impl CertificateStore {
             let metadata = public_metadata_with_candidate(&committed, None);
             drop(index);
             if let Ok(directory) = self.certificates_dir() {
-                report_recovery_result(remove_candidate_manifest(&directory, &staged.id), "remove_candidate_manifest");
+                report_recovery_result(
+                    remove_candidate_manifest(&directory, &staged.id),
+                    "remove_candidate_manifest",
+                );
             }
             self.release_lease(&staged.id).await;
             return Ok(metadata);
@@ -302,14 +305,17 @@ impl CertificateStore {
                 .and_then(|entry| entry.metadata.current_operation.as_ref())
                 .map(|operation| operation.id.clone());
             if let Some(operation_id) = operation_id {
-                report_recovery_result(operations::append_event(
-                    &mut index,
-                    &operation_id,
-                    &staged.id,
-                    operations::CertificateEventKind::Failed,
-                    CertificateOperationStage::Failed,
-                    Some(CertificateError::RuntimeApplyFailed.code().to_owned()),
-                ), "append_event");
+                report_recovery_result(
+                    operations::append_event(
+                        &mut index,
+                        &operation_id,
+                        &staged.id,
+                        operations::CertificateEventKind::Failed,
+                        CertificateOperationStage::Failed,
+                        Some(CertificateError::RuntimeApplyFailed.code().to_owned()),
+                    ),
+                    "append_event",
+                );
             }
             if let Ok(directory) = self.certificates_dir() {
                 report_recovery_result(persist_index(&directory, &index), "persist_index");
