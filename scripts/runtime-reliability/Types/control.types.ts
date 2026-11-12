@@ -7,6 +7,7 @@ export type ReliabilityOptions = {
     seed: number
     image?: string
     reportPath?: string
+    internalNetwork?: boolean
     backgroundContention?: true
 }
 

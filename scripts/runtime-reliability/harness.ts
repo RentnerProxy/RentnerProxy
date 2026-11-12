@@ -47,6 +47,11 @@ const pebbleImage =
 const healthcheck = '/opt/rentnerproxy/web/docker/web/healthcheck.ts'
 const repositoryRoot = resolve(import.meta.dir, '../..')
 
+/** Preserve ordinary harness networking unless the caller explicitly requests an egress-isolated fixture. */
+export function reliabilityNetworkArguments(network: string, internalNetwork = false): string[] {
+    return ['network', 'create', ...(internalNetwork ? ['--internal'] : []), network]
+}
+
 /** Only the two controlled boundary inventory SANs may join this owned fixture's DNS. */
 export function createFixtureDnsAddressUpdater(domain: string, addresses: Map<string, string>) {
     assert.match(
@@ -796,7 +801,12 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
                     'Current prebuilt image must identify the exact target revision',
                 )
         }
-        await docker(['network', 'create', network])
+        await docker(reliabilityNetworkArguments(network, options.internalNetwork))
+        if (
+            options.internalNetwork &&
+            (await docker(['network', 'inspect', '--format', '{{.Internal}}', network])) !== 'true'
+        )
+            throw new ReliabilityError('assertion', 'Internal fixture network isolation not proven')
         await docker(['volume', 'create', volume])
         const transportBundle = join(temp, 'fixture-transport.js')
         await command([
