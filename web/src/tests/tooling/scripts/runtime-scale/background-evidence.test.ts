@@ -1,5 +1,8 @@
 import { expect, test } from 'bun:test'
-import { backgroundRecoveryEvidence, backgroundRecoveryMatrix } from '../../../../../../scripts/runtime-scale/background-evidence.ts'
+import {
+    backgroundRecoveryEvidence,
+    backgroundRecoveryMatrix,
+} from '../../../../../../scripts/runtime-scale/background-evidence.ts'
 import { backgroundReportBinding } from '../../../../../../scripts/runtime-scale/background-provenance.ts'
 import { backgroundFaultSelection } from '../../../../../../scripts/runtime-scale/background.ts'
 
@@ -28,8 +31,12 @@ function fixture(platform: 'linux/amd64' | 'linux/arm64' = 'linux/amd64') {
     }
     const installed = {
         sourceManifest: structuredClone(manifest),
-        artifacts: ['reliability-fixture.js', 'background-contention-receiver.js', 'background-contention-web.js', 'background-capture-read.js']
-            .map(name => ({ name, sha256: 'c'.repeat(64) })),
+        artifacts: [
+            'reliability-fixture.js',
+            'background-contention-receiver.js',
+            'background-contention-web.js',
+            'background-capture-read.js',
+        ].map((name) => ({ name, sha256: 'c'.repeat(64) })),
         installedArtifactsVerified: true,
     }
     const report = {
@@ -45,24 +52,56 @@ function fixture(platform: 'linux/amd64' | 'linux/arm64' = 'linux/amd64') {
         provenance: {
             runId: scenario.runId,
             scenario,
-            bindingSha256: backgroundReportBinding({ targetSha, imageIdentity, imagePlatform: platform, scenario, fixture: installed }),
+            bindingSha256: backgroundReportBinding({
+                targetSha,
+                imageIdentity,
+                imagePlatform: platform,
+                scenario,
+                fixture: installed,
+            }),
             fixture: installed,
             automationSources: structuredClone(manifest),
             automationSourcesUnchanged: true,
-            automationSourceRecheck: { unchanged: true, status: 'matched', sha256: manifest.sha256 },
+            automationSourceRecheck: {
+                unchanged: true,
+                status: 'matched',
+                sha256: manifest.sha256,
+            },
         },
         monitoring: {
-            status: 'met', attempted: 100, schedulerAdmitted: 100, committed: 100, networkAccepted: 100,
+            status: 'met',
+            attempted: 100,
+            schedulerAdmitted: 100,
+            committed: 100,
+            networkAccepted: 100,
             schedulerCapture: {
-                status: 'complete', expectedAttempts: 100, capturedAdmissions: 100, matchedStartedAttempts: 100,
+                status: 'complete',
+                expectedAttempts: 100,
+                capturedAdmissions: 100,
+                matchedStartedAttempts: 100,
                 identity: { runId: scenario.runId, sourceSha: targetSha },
                 flags: { overflowed: false, expired: false, clockRegressed: false },
             },
         },
         notifications: {
             initiallyDeferred: 1,
-            initiallyDeferredIdentities: [{ incidentId: 'incident', channelId: 'channel', channelRevision: 1, type: 'firing' }],
-            deferredAdmissions: [{ incidentId: 'incident', channelId: 'channel', channelRevision: 1, type: 'firing', deliveryId: 'delivery' }],
+            initiallyDeferredIdentities: [
+                {
+                    incidentId: 'incident',
+                    channelId: 'channel',
+                    channelRevision: 1,
+                    type: 'firing',
+                },
+            ],
+            deferredAdmissions: [
+                {
+                    incidentId: 'incident',
+                    channelId: 'channel',
+                    channelRevision: 1,
+                    type: 'firing',
+                    deliveryId: 'delivery',
+                },
+            ],
             admittedIds: ['delivery'],
         },
         extendedRecovery: {
@@ -76,8 +115,12 @@ function fixture(platform: 'linux/amd64' | 'linux/arm64' = 'linux/amd64') {
                 noLateMonitoringWrites: true,
             },
             audit: {
-                status: 'met', finalCursor: 'epoch:10', receiptIds: ['event-10'],
-                auditedEventCount: 1, duplicateAuditEffects: 0, monitoringLeases: 0,
+                status: 'met',
+                finalCursor: 'epoch:10',
+                receiptIds: ['event-10'],
+                auditedEventCount: 1,
+                duplicateAuditEffects: 0,
+                monitoringLeases: 0,
             },
         },
         summary: { passed: true, capacity: 'insufficient' },
@@ -95,10 +138,16 @@ function reseal(report: ReturnType<typeof fixture>) {
 
 test('native recovery evidence requires completed selected faults and keeps delivery and capacity claims separate', () => {
     const amd64 = backgroundRecoveryEvidence(fixture(), expected)
-    const arm64 = backgroundRecoveryEvidence(fixture('linux/arm64'), { ...expected, imagePlatform: 'linux/arm64' })
+    const arm64 = backgroundRecoveryEvidence(fixture('linux/arm64'), {
+        ...expected,
+        imagePlatform: 'linux/arm64',
+    })
     const matrix = backgroundRecoveryMatrix([arm64, amd64])
     expect(matrix.status).toBe('met')
-    expect(matrix.application.map(item => item.imagePlatform)).toEqual(['linux/amd64', 'linux/arm64'])
+    expect(matrix.application.map((item) => item.imagePlatform)).toEqual([
+        'linux/amd64',
+        'linux/arm64',
+    ])
     expect(matrix.application[0]?.faults).toHaveLength(18)
     expect(matrix.capacity).toBe('insufficient')
     expect(matrix.packaging).toContain('separate')
@@ -109,28 +158,138 @@ const invalid: {
     name: string
     mutate: (report: ReturnType<typeof fixture>) => void
 }[] = [
-    { name: 'foreign source', mutate: report => { report.targetSha = '2'.repeat(40) } },
-    { name: 'wrong native platform', mutate: report => { report.imagePlatform = 'linux/arm64' } },
-    { name: 'long workload', mutate: report => { report.provenance.scenario.durationSeconds = 1800 } },
-    { name: 'unselected recovery', mutate: report => { report.extendedRecoverySelected = false } },
-    { name: 'declared faults without extended completion', mutate: report => { report.extendedRecovery.status = 'insufficient' } },
-    { name: 'omitted extended fault selection', mutate: report => { report.provenance.scenario.faults = backgroundFaultSelection(false) } },
-    { name: 'different owner run', mutate: report => { report.provenance.scenario.runId = 'foreign' } },
-    { name: 'different seed', mutate: report => { report.seed = 71 } },
-    { name: 'expired scheduler capture', mutate: report => { report.monitoring.schedulerCapture.flags.expired = true } },
-    { name: 'foreign capture owner', mutate: report => { report.monitoring.schedulerCapture.identity.runId = 'foreign' } },
-    { name: 'lost scheduler start', mutate: report => { report.monitoring.schedulerCapture.matchedStartedAttempts = 99 } },
-    { name: 'missing deferred identities', mutate: report => { report.notifications.initiallyDeferredIdentities = [] } },
-    { name: 'unmatched deferred delivery', mutate: report => { report.notifications.deferredAdmissions[0]!.deliveryId = 'foreign' } },
-    { name: 'unmatched incident identity', mutate: report => { report.notifications.deferredAdmissions[0]!.incidentId = 'foreign' } },
-    { name: 'stale source recheck', mutate: report => { report.provenance.automationSourcesUnchanged = false } },
-    { name: 'incomplete installed bundle verification', mutate: report => { report.provenance.fixture.installedArtifactsVerified = false } },
-    { name: 'changed source manifest', mutate: report => { report.provenance.fixture.sourceManifest.files[0]!.sha256 = 'd'.repeat(64) } },
-    { name: 'missing audit effects', mutate: report => { report.extendedRecovery.audit.auditedEventCount = 0 } },
-    { name: 'duplicate replay effects', mutate: report => { report.extendedRecovery.audit.duplicateAuditEffects = 1 } },
-    { name: 'stranded monitoring lease', mutate: report => { report.extendedRecovery.activeRestore.strandedMonitoringLeases = 1 } },
-    { name: 'late post-restore write', mutate: report => { report.extendedRecovery.activeRestore.noLateMonitoringWrites = false } },
-    { name: 'capacity claim from bounded evidence', mutate: report => { report.summary.capacity = 'met' } },
+    {
+        name: 'foreign source',
+        mutate: (report) => {
+            report.targetSha = '2'.repeat(40)
+        },
+    },
+    {
+        name: 'wrong native platform',
+        mutate: (report) => {
+            report.imagePlatform = 'linux/arm64'
+        },
+    },
+    {
+        name: 'long workload',
+        mutate: (report) => {
+            report.provenance.scenario.durationSeconds = 1800
+        },
+    },
+    {
+        name: 'unselected recovery',
+        mutate: (report) => {
+            report.extendedRecoverySelected = false
+        },
+    },
+    {
+        name: 'declared faults without extended completion',
+        mutate: (report) => {
+            report.extendedRecovery.status = 'insufficient'
+        },
+    },
+    {
+        name: 'omitted extended fault selection',
+        mutate: (report) => {
+            report.provenance.scenario.faults = backgroundFaultSelection(false)
+        },
+    },
+    {
+        name: 'different owner run',
+        mutate: (report) => {
+            report.provenance.scenario.runId = 'foreign'
+        },
+    },
+    {
+        name: 'different seed',
+        mutate: (report) => {
+            report.seed = 71
+        },
+    },
+    {
+        name: 'expired scheduler capture',
+        mutate: (report) => {
+            report.monitoring.schedulerCapture.flags.expired = true
+        },
+    },
+    {
+        name: 'foreign capture owner',
+        mutate: (report) => {
+            report.monitoring.schedulerCapture.identity.runId = 'foreign'
+        },
+    },
+    {
+        name: 'lost scheduler start',
+        mutate: (report) => {
+            report.monitoring.schedulerCapture.matchedStartedAttempts = 99
+        },
+    },
+    {
+        name: 'missing deferred identities',
+        mutate: (report) => {
+            report.notifications.initiallyDeferredIdentities = []
+        },
+    },
+    {
+        name: 'unmatched deferred delivery',
+        mutate: (report) => {
+            report.notifications.deferredAdmissions[0]!.deliveryId = 'foreign'
+        },
+    },
+    {
+        name: 'unmatched incident identity',
+        mutate: (report) => {
+            report.notifications.deferredAdmissions[0]!.incidentId = 'foreign'
+        },
+    },
+    {
+        name: 'stale source recheck',
+        mutate: (report) => {
+            report.provenance.automationSourcesUnchanged = false
+        },
+    },
+    {
+        name: 'incomplete installed bundle verification',
+        mutate: (report) => {
+            report.provenance.fixture.installedArtifactsVerified = false
+        },
+    },
+    {
+        name: 'changed source manifest',
+        mutate: (report) => {
+            report.provenance.fixture.sourceManifest.files[0]!.sha256 = 'd'.repeat(64)
+        },
+    },
+    {
+        name: 'missing audit effects',
+        mutate: (report) => {
+            report.extendedRecovery.audit.auditedEventCount = 0
+        },
+    },
+    {
+        name: 'duplicate replay effects',
+        mutate: (report) => {
+            report.extendedRecovery.audit.duplicateAuditEffects = 1
+        },
+    },
+    {
+        name: 'stranded monitoring lease',
+        mutate: (report) => {
+            report.extendedRecovery.activeRestore.strandedMonitoringLeases = 1
+        },
+    },
+    {
+        name: 'late post-restore write',
+        mutate: (report) => {
+            report.extendedRecovery.activeRestore.noLateMonitoringWrites = false
+        },
+    },
+    {
+        name: 'capacity claim from bounded evidence',
+        mutate: (report) => {
+            report.summary.capacity = 'met'
+        },
+    },
 ]
 test.each(invalid)('rejects $name even when the report digest is recomputed', ({ mutate }) => {
     const report = fixture()

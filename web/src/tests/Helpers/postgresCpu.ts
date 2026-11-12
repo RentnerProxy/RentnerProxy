@@ -8,18 +8,29 @@ export function parsePostgresCpuProcess(
     schedstat: string,
     identity: PostgresCpuIdentity,
 ): PostgresCpuProcess {
-    const fields = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/u)
+    const fields = stat
+        .slice(stat.lastIndexOf(')') + 2)
+        .trim()
+        .split(/\s+/u)
     const startTicks = fields.at(19)
     const counters = schedstat.trim().split(/\s+/u)
     if (
-        !Number.isSafeInteger(identity.pid) || identity.pid <= 0 ||
-        !Number.isFinite(identity.backendStartEpoch) || !Number.isFinite(identity.bootEpoch) ||
-        !Number.isSafeInteger(identity.clockTicks) || identity.clockTicks <= 0 ||
-        !stat.startsWith(String(identity.pid) + ' (') || !stat.includes(') ') ||
-        fields[0] === 'Z' || fields[0] === 'X' ||
-        !startTicks || !/^\d+$/u.test(startTicks) ||
-        counters.length !== 3 || counters.some(value => !/^\d+$/u.test(value))
-    ) throw new Error('PostgreSQL CPU process identity is unavailable')
+        !Number.isSafeInteger(identity.pid) ||
+        identity.pid <= 0 ||
+        !Number.isFinite(identity.backendStartEpoch) ||
+        !Number.isFinite(identity.bootEpoch) ||
+        !Number.isSafeInteger(identity.clockTicks) ||
+        identity.clockTicks <= 0 ||
+        !stat.startsWith(String(identity.pid) + ' (') ||
+        !stat.includes(') ') ||
+        fields[0] === 'Z' ||
+        fields[0] === 'X' ||
+        !startTicks ||
+        !/^\d+$/u.test(startTicks) ||
+        counters.length !== 3 ||
+        counters.some((value) => !/^\d+$/u.test(value))
+    )
+        throw new Error('PostgreSQL CPU process identity is unavailable')
     const started = identity.bootEpoch + Number(startTicks) / identity.clockTicks
     if (!Number.isFinite(started) || Math.abs(started - identity.backendStartEpoch) > 2)
         throw new Error('PostgreSQL CPU process belongs to a different PID namespace or generation')
@@ -40,18 +51,28 @@ export async function readPostgresCpuSnapshot(observer: SQL): Promise<PostgresCp
         select pid, extract(epoch from backend_start)::float8 started from pg_stat_activity
         where datname=current_database() and backend_type='client backend'
             and application_name <> 'worker-profile-observer'`
-    if (rows.length === 0 || rows.length > 64) throw new Error('PostgreSQL CPU backend bound failed')
-    return Promise.all(rows.map(async row => {
-        const path = '/proc/' + row.pid
-        const before = await readFile(path + '/stat', 'utf8')
-        const counters = await readFile(path + '/schedstat', 'utf8')
-        const after = await readFile(path + '/stat', 'utf8')
-        const identity = { pid: row.pid, backendStartEpoch: Number(row.started), bootEpoch, clockTicks }
-        const process = parsePostgresCpuProcess(before, counters, identity)
-        if (parsePostgresCpuProcess(after, counters, identity).startTicks !== process.startTicks)
-            throw new Error('PostgreSQL CPU PID changed while reading')
-        return process
-    }))
+    if (rows.length === 0 || rows.length > 64)
+        throw new Error('PostgreSQL CPU backend bound failed')
+    return Promise.all(
+        rows.map(async (row) => {
+            const path = '/proc/' + row.pid
+            const before = await readFile(path + '/stat', 'utf8')
+            const counters = await readFile(path + '/schedstat', 'utf8')
+            const after = await readFile(path + '/stat', 'utf8')
+            const identity = {
+                pid: row.pid,
+                backendStartEpoch: Number(row.started),
+                bootEpoch,
+                clockTicks,
+            }
+            const process = parsePostgresCpuProcess(before, counters, identity)
+            if (
+                parsePostgresCpuProcess(after, counters, identity).startTicks !== process.startTicks
+            )
+                throw new Error('PostgreSQL CPU PID changed while reading')
+            return process
+        }),
+    )
 }
 
 /** CPU/runqueue deltas are operation-window backend totals, never SQL execution wall time or lock-wait attribution. */
@@ -60,14 +81,19 @@ export function postgresCpuDelta(
     after: readonly PostgresCpuProcess[],
 ) {
     if (!before.length || !after.length) throw new Error('PostgreSQL CPU snapshots are empty')
-    if (new Set(before.map(row => row.pid)).size !== before.length ||
-        new Set(after.map(row => row.pid)).size !== after.length)
+    if (
+        new Set(before.map((row) => row.pid)).size !== before.length ||
+        new Set(after.map((row) => row.pid)).size !== after.length
+    )
         throw new Error('PostgreSQL CPU snapshots contain duplicate PIDs')
-    const previous = new Map(before.map(row => [row.pid, row]))
-    let cpu = 0n, runQueue = 0n, started = 0
+    const previous = new Map(before.map((row) => [row.pid, row]))
+    let cpu = 0n,
+        runQueue = 0n,
+        started = 0
     for (const row of after) {
         const old = previous.get(row.pid)
-        if (old && old.startTicks !== row.startTicks) throw new Error('PostgreSQL CPU PID was reused')
+        if (old && old.startTicks !== row.startTicks)
+            throw new Error('PostgreSQL CPU PID was reused')
         const deltaCpu = BigInt(row.cpuNanoseconds) - BigInt(old?.cpuNanoseconds ?? '0')
         const deltaQueue = BigInt(row.runQueueNanoseconds) - BigInt(old?.runQueueNanoseconds ?? '0')
         if (deltaCpu < 0 || deltaQueue < 0) throw new Error('PostgreSQL CPU counters regressed')
@@ -79,7 +105,7 @@ export function postgresCpuDelta(
     if (cpu > BigInt(Number.MAX_SAFE_INTEGER) || runQueue > BigInt(Number.MAX_SAFE_INTEGER))
         throw new Error('PostgreSQL CPU counter window exceeds bound')
     return {
-        status: previous.size === 0 ? 'complete' as const : 'insufficient' as const,
+        status: previous.size === 0 ? ('complete' as const) : ('insufficient' as const),
         processCpuMs: Number(cpu) / 1_000_000,
         runQueueMs: Number(runQueue) / 1_000_000,
         observedBackends: after.length,

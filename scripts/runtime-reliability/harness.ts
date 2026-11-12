@@ -12,7 +12,10 @@ import { waitForSmoke } from '../smoke/wait.ts'
 import type { CommandOptions, FixtureResult, ReliabilityContext } from './Types/harness.types.ts'
 // oxlint-disable no-await-in-loop -- Fault injection, recovery probes and lifecycle changes depend on the preceding step.
 import assert from 'node:assert/strict'
-import { RELIABILITY_FIXTURE_ARCHIVE_PATHS, RELIABILITY_FIXTURE_SOURCE_PATHS } from './fixture-source.config.ts'
+import {
+    RELIABILITY_FIXTURE_ARCHIVE_PATHS,
+    RELIABILITY_FIXTURE_SOURCE_PATHS,
+} from './fixture-source.config.ts'
 import { dockerBuildDiagnostic } from '../smoke/docker-build-diagnostics.ts'
 import { pebbleFailureCategories } from './diagnostics.ts'
 import { randomBytes } from 'node:crypto'

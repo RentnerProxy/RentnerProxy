@@ -19,4 +19,3 @@ export const BACKGROUND_FIXTURE_SOURCE_PATHS = [
     'scripts/runtime-reliability/Types/resource-probe.types.ts',
     'scripts/smoke/appliance-processes.ts',
 ] as const
-

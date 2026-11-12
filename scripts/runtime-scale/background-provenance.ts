@@ -2,7 +2,10 @@ import { createHash } from 'node:crypto'
 import { readFile, readdir, realpath } from 'node:fs/promises'
 import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path'
 import { BACKGROUND_FIXTURE_SOURCE_PATHS } from './background-source.config.ts'
-import { RELIABILITY_FIXTURE_ARCHIVE_PATHS, RELIABILITY_FIXTURE_SOURCE_PATHS } from '../runtime-reliability/fixture-source.config.ts'
+import {
+    RELIABILITY_FIXTURE_ARCHIVE_PATHS,
+    RELIABILITY_FIXTURE_SOURCE_PATHS,
+} from '../runtime-reliability/fixture-source.config.ts'
 
 async function collect(directory: string): Promise<string[]> {
     const entries = await readdir(directory, { withFileTypes: true })
@@ -23,13 +26,15 @@ export async function backgroundSourceManifest(root: string) {
 
 /** Independently rebuild the expected fixture manifest from the checked-out archive inputs and staged source allowlist. */
 export async function backgroundFixtureSourceManifest(root: string) {
-    const paths = await Promise.all(RELIABILITY_FIXTURE_ARCHIVE_PATHS.map(async path =>
-        path === 'web/src' ? collect(join(root, path)) : [join(root, path)],
-    ))
+    const paths = await Promise.all(
+        RELIABILITY_FIXTURE_ARCHIVE_PATHS.map(async (path) =>
+            path === 'web/src' ? collect(join(root, path)) : [join(root, path)],
+        ),
+    )
     return manifestForPaths(root, [
         ...paths.flat(),
-        ...BACKGROUND_FIXTURE_SOURCE_PATHS.map(path => join(root, path)),
-        ...RELIABILITY_FIXTURE_SOURCE_PATHS.map(path => join(root, path)),
+        ...BACKGROUND_FIXTURE_SOURCE_PATHS.map((path) => join(root, path)),
+        ...RELIABILITY_FIXTURE_SOURCE_PATHS.map((path) => join(root, path)),
     ])
 }
 

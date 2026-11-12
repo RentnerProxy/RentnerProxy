@@ -26,7 +26,11 @@ import {
 } from './background-pause.ts'
 import { exerciseExtendedBackgroundRecovery } from './background-extended.ts'
 import { backgroundPolicies } from './background.ts'
-import { backgroundReceiptsSchema, backgroundSnapshotSchema, backgroundExtendedRecoverySchema } from './background.validation.ts'
+import {
+    backgroundReceiptsSchema,
+    backgroundSnapshotSchema,
+    backgroundExtendedRecoverySchema,
+} from './background.validation.ts'
 import { stageBackgroundFixtureSources } from './background-source.ts'
 import { settleBackgroundCapture } from './background-capture-settlement.ts'
 import { backgroundCaptureReadCommand } from './background-capture-read.ts'
@@ -653,7 +657,8 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
     const passed =
         !failure &&
         monitoring?.status === 'met' &&
-        (!options.extendedRecovery || backgroundExtendedRecoverySchema.safeParse(extendedRecovery).success) &&
+        (!options.extendedRecovery ||
+            backgroundExtendedRecoverySchema.safeParse(extendedRecovery).success) &&
         (!options.contention || contention?.status === 'met') &&
         !receiptsOverflowed &&
         resourceEvidence.status !== 'unmet' &&

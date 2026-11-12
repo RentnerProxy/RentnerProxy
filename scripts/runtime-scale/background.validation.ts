@@ -14,8 +14,11 @@ export const backgroundExtendedRecoverySchema = z.object({
     audit: z.object({
         status: z.literal('met'),
         finalCursor: z.string().min(1),
-        receiptIds: z.array(z.string().min(1)).min(1).max(10_000)
-            .refine(ids => new Set(ids).size === ids.length),
+        receiptIds: z
+            .array(z.string().min(1))
+            .min(1)
+            .max(10_000)
+            .refine((ids) => new Set(ids).size === ids.length),
         auditedEventCount: z.number().int().positive(),
         duplicateAuditEffects: z.literal(0),
         monitoringLeases: z.literal(0),

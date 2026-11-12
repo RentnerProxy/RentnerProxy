@@ -37,12 +37,20 @@ async function fixture(root: string) {
 test('expected fixture manifest matches both source staging owners and archive inputs, and excludes unrelated files', async () => {
     const root = await mkdtemp(join(tmpdir(), 'background-fixture-inputs-'))
     try {
-        const paths = [...BACKGROUND_FIXTURE_SOURCE_PATHS, ...RELIABILITY_FIXTURE_SOURCE_PATHS,
-            'web/src/fixture.ts', 'package.json', 'bun.lock', 'tsconfig.json']
-        await Promise.all([...new Set(paths)].map(async path => {
-            await mkdir(dirname(join(root, path)), { recursive: true })
-            await writeFile(join(root, path), path)
-        }))
+        const paths = [
+            ...BACKGROUND_FIXTURE_SOURCE_PATHS,
+            ...RELIABILITY_FIXTURE_SOURCE_PATHS,
+            'web/src/fixture.ts',
+            'package.json',
+            'bun.lock',
+            'tsconfig.json',
+        ]
+        await Promise.all(
+            [...new Set(paths)].map(async (path) => {
+                await mkdir(dirname(join(root, path)), { recursive: true })
+                await writeFile(join(root, path), path)
+            }),
+        )
         const staged = await backgroundSourceManifest(root)
         await writeFile(join(root, 'unrelated.txt'), 'not a fixture input')
         expect(await backgroundFixtureSourceManifest(root)).toEqual(staged)
