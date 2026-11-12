@@ -1,6 +1,27 @@
 import { z } from 'zod'
 import { hostMonitoringCaptureSchema } from '../../web/src/server/HostMonitoring/host-monitoring.capture.ts'
 
+export const backgroundExtendedRecoverySchema = z.object({
+    status: z.literal('met'),
+    elapsedMs: z.number().finite().nonnegative().max(600_000),
+    interruptedCertificateJobs: z.literal(true),
+    activeRestore: z.object({
+        jobId: z.uuid(),
+        finalStage: z.literal('applied'),
+        strandedMonitoringLeases: z.literal(0),
+        noLateMonitoringWrites: z.literal(true),
+    }),
+    audit: z.object({
+        status: z.literal('met'),
+        finalCursor: z.string().min(1),
+        receiptIds: z.array(z.string().min(1)).min(1).max(10_000)
+            .refine(ids => new Set(ids).size === ids.length),
+        auditedEventCount: z.number().int().positive(),
+        duplicateAuditEffects: z.literal(0),
+        monitoringLeases: z.literal(0),
+    }),
+})
+
 export const backgroundSnapshotSchema = z.strictObject({
     origin: z.number().finite().nonnegative(),
     policies: z

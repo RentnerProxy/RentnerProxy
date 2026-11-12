@@ -9,6 +9,7 @@ export const HOST_MONITORING_LIMITS = {
     idlePollMaximumMs: 30_000,
     leaseMs: 45_000,
     transactionTimeoutMs: 2_000,
+    // A global ceiling, not a minimum history promise: 1,000 policies receive at most 100 samples each after fair pruning.
     maxObservations: 100_000,
     maxIncidents: 10_000,
     historyLimit: 100,
@@ -26,6 +27,7 @@ export const HOST_MONITORING_DEFAULTS = {
     expectedStatus: 200,
     failureThreshold: 3,
     recoveryThreshold: 2,
+    // Time/count settings are upper bounds; the global fair-share budget may retain fewer samples.
     retentionDays: 7,
     sampleLimit: 1_440,
     incidentLimit: 100,

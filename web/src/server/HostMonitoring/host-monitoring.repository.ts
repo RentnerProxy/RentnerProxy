@@ -201,6 +201,7 @@ export async function saveHostMonitoringPolicy(
     return policy
 }
 
+/** Live keyset pagination over retained rows, ordered by checkedAt/id descending. Retention can remove older rows between pages; hasMore describes this read, not a frozen snapshot or guaranteed retention duration. */
 export async function readHostMonitoringHistory(
     transaction: AuthTransaction,
     policyId: string,
