@@ -41,7 +41,8 @@ bun --no-env-file run db:migrate > "$reports/migrations-$mode.log" 2>&1
 if [ "$mode" = profile ]; then
     export RENTNERPROXY_POSTGRES_PROFILE=1
     export RENTNERPROXY_POSTGRES_PROFILE_CPU=1
-    export RENTNERPROXY_POSTGRES_CLOCK_TICKS="$(getconf CLK_TCK)"
+    RENTNERPROXY_POSTGRES_CLOCK_TICKS="$(getconf CLK_TCK)"
+    export RENTNERPROXY_POSTGRES_CLOCK_TICKS
     export RENTNERPROXY_POSTGRES_PROFILE_SOURCE="$RENTNERPROXY_EVIDENCE_SOURCE_SHA"
     export RENTNERPROXY_POSTGRES_PROFILE_REPORT="$reports/sql-profile.json"
     bun --no-env-file test --max-concurrency=1 --isolate ./web/src/tests/server/Foundation/worker-postgres-profile.db.test.ts 2>&1 | tee "$reports/profile.log"

@@ -467,6 +467,7 @@ const enabled = process.env.RENTNERPROXY_POSTGRES_PROFILE === '1'
                     lockWaitSamples: 0,
                     connectionSamples: [],
                 }
+                const cpuBefore = cpuProfile ? await readPostgresCpuSnapshot(observer) : null
                 let sampling: Promise<unknown> | undefined
                 let samplingFailed = false
                 const timer = setInterval(() => {
@@ -487,7 +488,6 @@ const enabled = process.env.RENTNERPROXY_POSTGRES_PROFILE === '1'
                             sampling = undefined
                         })
                 }, 5)
-                const cpuBefore = cpuProfile ? await readPostgresCpuSnapshot(observer) : null
                 const start = performance.now(),
                     cpu = process.cpuUsage()
                 active = sample

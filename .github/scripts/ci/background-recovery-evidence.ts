@@ -10,17 +10,24 @@ import {
     backgroundFixtureSourceManifest,
 } from '../../../scripts/runtime-scale/background-provenance.ts'
 
-async function readReport(path: string): Promise<unknown> {
-    const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+export async function readBackgroundReportFile(path: string): Promise<unknown> {
+    const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
     try {
         const before = await file.stat()
         if (!before.isFile() || before.size > 8 * 1024 * 1024)
             throw new Error('Invalid report file')
-        const text = await file.readFile({ encoding: 'utf8' })
+        const bytes = Buffer.alloc(before.size + 1)
+        let count = 0
+        while (count < bytes.length) {
+            // oxlint-disable-next-line no-await-in-loop -- Each bounded read advances this one immutable artifact handle.
+            const result = await file.read(bytes, count, bytes.length - count, count)
+            if (result.bytesRead === 0) break
+            count += result.bytesRead
+        }
         const after = await file.stat()
-        if (before.size !== after.size || before.mtimeMs !== after.mtimeMs)
+        if (count !== before.size || before.size !== after.size || before.mtimeMs !== after.mtimeMs)
             throw new Error('Report changed while reading')
-        return JSON.parse(text) as unknown
+        return JSON.parse(bytes.subarray(0, count).toString('utf8')) as unknown
     } finally {
         await file.close()
     }
@@ -36,8 +43,8 @@ async function main() {
     const [automation, fixture, amd64Report, arm64Report] = await Promise.all([
         backgroundAutomationManifest(root),
         backgroundFixtureSourceManifest(root),
-        readReport(amd64),
-        readReport(arm64),
+        readBackgroundReportFile(amd64),
+        readBackgroundReportFile(arm64),
     ])
     const expected = {
         targetSha: source,
