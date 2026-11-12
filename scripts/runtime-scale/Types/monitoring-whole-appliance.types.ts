@@ -104,6 +104,7 @@ export interface MonitoringApplianceReport {
 export interface MonitoringApplianceResource {
     atMs: number
     monotonicMs: number
+    scheduledAtMs?: number | undefined
     cpuMicroseconds: number
     rssBytes: number
     workingSetBytes: number
@@ -177,4 +178,43 @@ export interface MonitoringApplianceContinuityDependencies {
     signal: (signal: 'SIGSTOP' | 'SIGCONT') => Promise<void>
     sleep: (milliseconds: number) => Promise<unknown>
     monotonic: () => number
+}
+
+/** Common absolute wall/monotonic boundaries minted by the local start handshake. */
+export interface MonitoringApplianceWindowClock {
+    originMs: number
+    endMs: number
+    originMonotonicMs: number
+    endMonotonicMs: number
+}
+
+/** Actual pre-origin arming evidence for a scheduled in-container collector. */
+export interface MonitoringApplianceWindowArming {
+    armedAtMs: number
+    armedMonotonicMs: number
+}
+
+/** Injectable clocks for deterministic scheduling regressions; real collectors use local clocks. */
+export interface MonitoringApplianceWindowTimer {
+    now: () => number
+    monotonic: () => number
+    sleep: (milliseconds: number) => Promise<unknown>
+}
+
+/** Start and settle both collectors before requesting the final unfiltered report. */
+export interface MonitoringApplianceWindowDependencies<Resource, Traffic, Report> {
+    start: () => Promise<{ originMs: number }>
+    resources: (clock: MonitoringApplianceWindowClock) => Promise<Resource>
+    traffic: (clock: MonitoringApplianceWindowClock) => Promise<Traffic>
+    report: () => Promise<Report>
+    now: () => number
+    monotonic: () => number
+}
+
+/** Original traffic requests and cadence, driven by the shared absolute window clock. */
+export interface MonitoringApplianceWindowTrafficDependencies {
+    clock: MonitoringApplianceWindowClock
+    request: (kind: 'ssr' | 'proxy') => Promise<Omit<MonitoringApplianceTraffic, 'kind' | 'atMs'>>
+    visibility: () => Promise<unknown>
+    timer: MonitoringApplianceWindowTimer
 }

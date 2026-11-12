@@ -1,7 +1,22 @@
 // oxlint-disable no-await-in-loop -- Fixture transitions, draining and native activation are ordered proof boundaries.
+import {
+    createMonitoringB2WindowCap,
+    writeMonitoringB2WindowSeal,
+    qualifyMonitoringB2WindowSession,
+} from './monitoring-b2-window-cap.ts'
 import { SQL } from 'bun'
 import { Database } from 'bun:sqlite'
-import { chmod, chown, lstat, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
+import {
+    chmod,
+    chown,
+    lstat,
+    mkdir,
+    readFile,
+    readdir,
+    rename,
+    rm,
+    writeFile,
+} from 'node:fs/promises'
 import { z } from 'zod'
 import { createMonitoringB2Authority } from './monitoring-b2-authority.ts'
 import { monitoringB2DatabaseUrl } from './monitoring-b2-isolation.ts'
@@ -35,6 +50,7 @@ const prepareSchema = z.strictObject({
     profile: z.enum(['mixed', 'all-3s-timeout']),
     policies: z.literal(1000),
     windowId: z.string().regex(/^[a-z0-9-]{1,40}$/u),
+    finiteWindow: z.literal(true).optional(),
 })
 /** Read a PID/start-tick pair; an absent process cannot establish a live owner. */
 async function processIdentity(pid: number | undefined) {
@@ -241,9 +257,20 @@ export async function runMonitoringB2Appliance(runId: string) {
         origin: number
         stopped: boolean
         nativeStartAttempted: boolean
+        finiteWindow?: true | undefined
     }
     let current: Window | undefined,
         authority: Awaited<ReturnType<typeof createMonitoringB2Authority>> | undefined
+    let windowCap: Awaited<ReturnType<typeof createMonitoringB2WindowCap>>
+    let measurementSealCreated = false
+    let qualification:
+        | {
+              windowId: string
+              native: { pid: number; startTicks: string } | null
+              nativeStartedAtMs: number
+          }
+        | undefined
+    let nativeStartedAtMs = 0
     let native: ReturnType<typeof Bun.spawn> | undefined,
         nativeExit: Promise<number> | undefined,
         nativeSummary: unknown = null
@@ -378,6 +405,7 @@ export async function runMonitoringB2Appliance(runId: string) {
         if ((await nativeIdentities()).length !== 0)
             throw new Error('B2 untracked native writer prevents restart')
         current.nativeStartAttempted = true
+        nativeStartedAtMs = Date.now()
         native = Bun.spawn(['gosu', 'monitoring-b2', '/opt/rentnerproxy/web/monitoring-b2'], {
             env: {
                 PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
@@ -539,6 +567,13 @@ export async function runMonitoringB2Appliance(runId: string) {
     /** Release the prior owned window and authority before restoring baseline fixture hosts for another design. */
     async function clear() {
         await stop()
+        await windowCap?.drop()
+        windowCap = undefined
+        qualification = undefined
+        if (measurementSealCreated) {
+            await rm(root + '/measurement.json')
+            measurementSealCreated = false
+        }
         if (authority) {
             await authority.cleanup()
             authority = undefined
@@ -670,6 +705,24 @@ export async function runMonitoringB2Appliance(runId: string) {
         if (!(await applyProxyRuntimeConfiguration(snapshot)))
             throw new Error('B2 configured native snapshot failed activation')
         await jsonFile(root + '/mode.json', { runId, design: options.design })
+        if (options.finiteWindow) {
+            const policyIds = entries.map((entry) => entry.policyId)
+            await writeMonitoringB2WindowSeal({
+                enabled: true,
+                runId,
+                design: options.design,
+                windowId: options.windowId,
+                policyIds,
+            })
+            measurementSealCreated = true
+            windowCap = await createMonitoringB2WindowCap(sqlClient, {
+                enabled: true,
+                runId,
+                windowId: options.windowId,
+                design: options.design,
+                policyIds,
+            })
+        }
         if (options.design === 'B2') {
             phase = 'prepare-authority'
             authority = await createMonitoringB2Authority(sqlClient, {
@@ -823,11 +876,98 @@ export async function runMonitoringB2Appliance(runId: string) {
             nativeIdentity: null,
         }
     }
+    /** Prove an untouched idle store; never turn retained work or failure into measurement readiness. */
+    async function emptyMeasurementStore() {
+        if (!current) throw new Error('B2 measurement window missing')
+        const outbox = await openMonitoringB2OutboxForDrain(
+            root + '/state/' + current.windowId + '.sqlite',
+            current.nativeStartAttempted,
+        )
+        if (!outbox) throw new Error('B2 prepared measurement store missing')
+        try {
+            const row = outbox
+                .query<
+                    {
+                        records: number
+                        allocated: number
+                        acked: number
+                        pressure: number
+                        interrupted: number
+                        gaps: number
+                        resync: number
+                    },
+                    []
+                >(
+                    `SELECT
+                (SELECT count(*) FROM b2_outbox) records,
+                coalesce((SELECT seq FROM sqlite_sequence WHERE name='b2_outbox'),0) allocated,
+                i.acked_sequence acked,s.pressure,s.interrupted,s.gaps,s.resync_required resync FROM b2_identity i,b2_status s WHERE i.id=1 AND s.id=1`,
+                )
+                .get()
+            if (!row || Object.values(row).some((value) => value !== 0))
+                throw new Error('B2 measurement retains previous raw work')
+        } finally {
+            outbox.close()
+        }
+    }
+    /** Requalify before local /start while every measured policy is still disabled, future and unleased. */
+    async function qualifyWindow() {
+        if (!current?.finiteWindow || current.origin !== 0 || !windowCap)
+            throw new Error('B2 finite prepared window required')
+        const [idle] = await sqlClient.unsafe<{ count: number }[]>(
+            'SELECT count(*)::integer count FROM rentnerproxy.host_check_policies WHERE id=ANY($1::uuid[]) AND NOT enabled AND lease_token IS NULL AND next_check_at>clock_timestamp()',
+            [current.hosts.map((host) => host.policyId)],
+        )
+        if (idle?.count !== 1000) throw new Error('B2 measurement policies are not idle')
+        await windowCap.proof()
+        if (current.design === 'B2') {
+            await emptyMeasurementStore()
+            await stopNative() // CLEAN join; a failed prepared owner is not an accepted replacement.
+            await emptyMeasurementStore()
+            nativeSummary = null
+            await restartNative()
+            await qualifyMonitoringB2WindowSession(
+                sqlClient,
+                authority!.workerUrl,
+                `SELECT claim::text FROM ${authority!.namespace}.claim($1, $2, $3)`,
+                async () => {
+                    const identities = await nativeIdentities()
+                    return identities.length === 1 && identities[0]!.pid === native?.pid
+                },
+            )
+        } else if ((await nativeIdentities()).length !== 0)
+            throw new Error('A measurement retained native owner')
+        qualification = {
+            windowId: current.windowId,
+            native: await processIdentity(native?.pid),
+            nativeStartedAtMs: current.design === 'B2' ? nativeStartedAtMs : 0,
+        }
+        if (current.design === 'B2' && !qualification.native)
+            throw new Error('B2 fresh measurement identity absent')
+        return { ...qualification, policiesIdle: 1000 }
+    }
     /** Publish one common future due origin and require the original web owner's wake acknowledgement. */
     async function start() {
         if (!current || current.origin !== 0) throw new Error('B2 prepared window required')
         const window = current
+        if (current.finiteWindow) {
+            if (!qualification || qualification.windowId !== current.windowId || !windowCap)
+                throw new Error('B2 measurement was not qualified')
+            if (current.design === 'B2') {
+                const live = await processIdentity(native?.pid)
+                if (
+                    !live ||
+                    live.pid !== qualification.native?.pid ||
+                    live.startTicks !== qualification.native.startTicks ||
+                    Date.now() - qualification.nativeStartedAtMs > 15000
+                )
+                    throw new Error('B2 measurement qualification expired')
+            }
+        }
         current.origin = Date.now() + 1000
+        const finiteWorkload = current.finiteWindow
+            ? await windowCap!.arm(current.origin)
+            : undefined
         await monitoringB2PolicyTransaction(database, async (transaction) => {
             await transaction
                 .update(hostCheckPolicies)
@@ -879,7 +1019,12 @@ export async function runMonitoringB2Appliance(runId: string) {
         )
             throw new Error('B2 original web change wake identity or deadline unproven')
         wakeProof = proof
-        return { originMs: current.origin, design: current.design, policies: current.hosts.length }
+        return {
+            originMs: current.origin,
+            design: current.design,
+            policies: current.hosts.length,
+            ...(current.finiteWindow ? { finiteWorkload, nativeQualification: qualification } : {}),
+        }
     }
     /** Commit one owned host edit through original settings locks and apply its real controller revision. */
     async function configureHost(enabled: boolean) {
@@ -1117,6 +1262,7 @@ export async function runMonitoringB2Appliance(runId: string) {
             nativeIdentity: await processIdentity(native?.pid),
             controllerIdentity: await controllerIdentity(),
             nativeSummary,
+            finiteWorkload: windowCap ? await windowCap.proof() : null,
             wakeProof,
             postgresConnections: connections?.count ?? null,
             stopped: current.stopped,
@@ -1271,6 +1417,7 @@ export async function runMonitoringB2Appliance(runId: string) {
                         if (quiescing)
                             throw new Error('B2 maintenance remains fail-closed pending quiescence')
                         if (path === '/prepare') return prepare(input)
+                        if (path === '/qualify-window') return qualifyWindow()
                         if (path === '/rebootstrap') return rebootstrap(input)
                         if (path === '/start') return start()
                         if (path === '/native-restart') {

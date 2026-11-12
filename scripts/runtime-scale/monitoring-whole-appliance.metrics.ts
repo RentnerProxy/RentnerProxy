@@ -7,6 +7,8 @@ import type {
     MonitoringApplianceResource,
     MonitoringApplianceTraffic,
     MonitoringAppliancePairInput,
+    MonitoringApplianceWindowClock,
+    MonitoringApplianceWindowArming,
 } from './Types/monitoring-whole-appliance.types.ts'
 
 const number = z.number().finite().nonnegative()
@@ -218,6 +220,7 @@ export function assessMonitoringAppliancePairs(windows: readonly MonitoringAppli
 export const monitoringApplianceResourceSchema = z.strictObject({
     atMs: integer,
     monotonicMs: number,
+    scheduledAtMs: integer.optional(),
     cpuMicroseconds: integer,
     rssBytes: integer,
     workingSetBytes: integer,
@@ -248,6 +251,12 @@ export async function collectMonitoringApplianceResources(
     intervalMs = 1000,
     emit: (sample: MonitoringApplianceResource) => void = (sample) =>
         console.log(JSON.stringify(sample)),
+    clock?: MonitoringApplianceWindowClock,
+    schedule?: (
+        clock: MonitoringApplianceWindowClock,
+        intervalMs: number,
+        sample: (target: number) => Promise<void>,
+    ) => Promise<MonitoringApplianceWindowArming>,
 ) {
     const { readFile, readdir } = await import('node:fs/promises')
     const { SQL } = await import('bun')
@@ -257,104 +266,112 @@ export async function collectMonitoringApplianceResources(
         connectionTimeout: 2,
         idleTimeout: 2,
     })
-    const deadline = performance.now() + durationMs
-    try {
-        do {
-            const started = performance.now()
-            const [memory, memoryStat, cpu, quota, maximumMemory, maximumPids, pids, events, sql] =
-                await Promise.all([
-                    text('/sys/fs/cgroup/memory.current'),
-                    text('/sys/fs/cgroup/memory.stat'),
-                    text('/sys/fs/cgroup/cpu.stat'),
-                    text('/sys/fs/cgroup/cpu.max'),
-                    text('/sys/fs/cgroup/memory.max'),
-                    text('/sys/fs/cgroup/pids.max'),
-                    text('/sys/fs/cgroup/pids.current'),
-                    text('/sys/fs/cgroup/memory.events'),
-                    database`SELECT (SELECT count(*)::int FROM pg_stat_activity WHERE backend_type='client backend') AS connections,
+    const readSample = async (scheduledAtMs?: number) => {
+        const [memory, memoryStat, cpu, quota, maximumMemory, maximumPids, pids, events, sql] =
+            await Promise.all([
+                text('/sys/fs/cgroup/memory.current'),
+                text('/sys/fs/cgroup/memory.stat'),
+                text('/sys/fs/cgroup/cpu.stat'),
+                text('/sys/fs/cgroup/cpu.max'),
+                text('/sys/fs/cgroup/memory.max'),
+                text('/sys/fs/cgroup/pids.max'),
+                text('/sys/fs/cgroup/pids.current'),
+                text('/sys/fs/cgroup/memory.events'),
+                database`SELECT (SELECT count(*)::int FROM pg_stat_activity WHERE backend_type='client backend') AS connections,
                     current_setting('max_connections')::int AS maximum, xact_commit::float8 AS commits,
                     xact_rollback::float8 AS rollbacks, blks_read::float8 AS read, blks_hit::float8 AS hit,
                     tup_inserted::float8 AS inserted, tup_updated::float8 AS updated, tup_deleted::float8 AS deleted
                     FROM pg_stat_database WHERE datname=current_database()`,
+            ])
+        const roles: MonitoringApplianceResource['roles'] = {}
+        let rssBytes = 0,
+            fds = 0
+        for (const entry of await readdir('/proc')) {
+            if (!/^\d+$/u.test(entry)) continue
+            try {
+                const directory = '/proc/' + entry
+                const [status, command, descriptors] = await Promise.all([
+                    text(directory + '/status'),
+                    text(directory + '/cmdline'),
+                    readdir(directory + '/fd'),
                 ])
-            const roles: MonitoringApplianceResource['roles'] = {}
-            let rssBytes = 0,
-                fds = 0
-            for (const entry of await readdir('/proc')) {
-                if (!/^\d+$/u.test(entry)) continue
-                try {
-                    const directory = '/proc/' + entry
-                    const [status, command, descriptors] = await Promise.all([
-                        text(directory + '/status'),
-                        text(directory + '/cmdline'),
-                        readdir(directory + '/fd'),
-                    ])
-                    const rss = Number(/^VmRSS:[\t ]+(\d+)/mu.exec(status)?.[1] ?? 0) * 1024
-                    const args = command.split('\0')
-                    const executable = args[0]?.split('/').at(-1) ?? 'other'
-                    const roleName = args.some((arg) => arg.endsWith('/docker/web/serve.ts'))
-                        ? 'web'
-                        : executable === 'monitoring-b2'
-                          ? 'monitoring-b2'
-                          : executable === 'rentnerproxy-controller' && args[1] !== '--healthcheck'
-                            ? 'controller'
-                            : executable === 'caddy' && args[1] !== 'version'
-                              ? 'caddy'
-                              : /^Name:[\t ]+postgres$/mu.test(status)
-                                ? 'postgres'
-                                : executable === 'bun'
-                                  ? 'fixture-bun'
-                                  : 'other'
-                    const item = (roles[roleName] ??= { processes: 0, rssBytes: 0, fds: 0 })
-                    item.processes++
-                    item.rssBytes += rss
-                    item.fds += descriptors.length
-                    rssBytes += rss
-                    fds += descriptors.length
-                } catch (error) {
-                    if (
-                        typeof error === 'object' &&
-                        error !== null &&
-                        'code' in error &&
-                        ['ENOENT', 'ESRCH'].includes(String(error.code))
-                    )
-                        continue
-                    throw error
-                }
+                const rss = Number(/^VmRSS:[\t ]+(\d+)/mu.exec(status)?.[1] ?? 0) * 1024
+                const args = command.split('\0')
+                const executable = args[0]?.split('/').at(-1) ?? 'other'
+                const roleName = args.some((arg) => arg.endsWith('/docker/web/serve.ts'))
+                    ? 'web'
+                    : executable === 'monitoring-b2'
+                      ? 'monitoring-b2'
+                      : executable === 'rentnerproxy-controller' && args[1] !== '--healthcheck'
+                        ? 'controller'
+                        : executable === 'caddy' && args[1] !== 'version'
+                          ? 'caddy'
+                          : /^Name:[\t ]+postgres$/mu.test(status)
+                            ? 'postgres'
+                            : executable === 'bun'
+                              ? 'fixture-bun'
+                              : 'other'
+                const item = (roles[roleName] ??= { processes: 0, rssBytes: 0, fds: 0 })
+                item.processes++
+                item.rssBytes += rss
+                item.fds += descriptors.length
+                rssBytes += rss
+                fds += descriptors.length
+            } catch (error) {
+                if (
+                    typeof error === 'object' &&
+                    error !== null &&
+                    'code' in error &&
+                    ['ENOENT', 'ESRCH'].includes(String(error.code))
+                )
+                    continue
+                throw error
             }
-            const row = sql[0]
-            if (!row) throw new Error('B2 database counters missing')
-            const [allowed, period] = quota.trim().split(' ')
-            const sample: MonitoringApplianceResource = {
-                atMs: Date.now(),
-                monotonicMs: performance.now(),
-                cpuMicroseconds: Number(/^usage_usec (\d+)/mu.exec(cpu)?.[1]),
-                rssBytes,
-                memoryBytes: Number(memory),
-                workingSetBytes: Math.max(
-                    0,
-                    Number(memory) - Number(/^inactive_file (\d+)/mu.exec(memoryStat)?.[1] ?? 0),
-                ),
-                pids: Number(pids),
-                fds,
-                postgresConnections: Number(row.connections),
-                memoryLimitBytes: Number(maximumMemory),
-                pidLimit: Number(maximumPids),
-                cpuQuotaCores: Number(allowed) / Number(period),
-                postgresConnectionLimit: Number(row.maximum),
-                oomKills: Number(/^oom_kill (\d+)/mu.exec(events)?.[1]),
-                roles,
-                database: {
-                    commits: Number(row.commits),
-                    rollbacks: Number(row.rollbacks),
-                    blocksRead: Number(row.read),
-                    blocksHit: Number(row.hit),
-                    inserted: Number(row.inserted),
-                    updated: Number(row.updated),
-                    deleted: Number(row.deleted),
-                },
-            }
-            emit(sample)
+        }
+        const row = sql[0]
+        if (!row) throw new Error('B2 database counters missing')
+        const [allowed, period] = quota.trim().split(' ')
+        const sample: MonitoringApplianceResource = {
+            atMs: Date.now(),
+            monotonicMs: performance.now(),
+            cpuMicroseconds: Number(/^usage_usec (\d+)/mu.exec(cpu)?.[1]),
+            rssBytes,
+            memoryBytes: Number(memory),
+            workingSetBytes: Math.max(
+                0,
+                Number(memory) - Number(/^inactive_file (\d+)/mu.exec(memoryStat)?.[1] ?? 0),
+            ),
+            pids: Number(pids),
+            fds,
+            postgresConnections: Number(row.connections),
+            memoryLimitBytes: Number(maximumMemory),
+            pidLimit: Number(maximumPids),
+            cpuQuotaCores: Number(allowed) / Number(period),
+            postgresConnectionLimit: Number(row.maximum),
+            oomKills: Number(/^oom_kill (\d+)/mu.exec(events)?.[1]),
+            roles,
+            database: {
+                commits: Number(row.commits),
+                rollbacks: Number(row.rollbacks),
+                blocksRead: Number(row.read),
+                blocksHit: Number(row.hit),
+                inserted: Number(row.inserted),
+                updated: Number(row.updated),
+                deleted: Number(row.deleted),
+            },
+        }
+        emit({ ...sample, ...(scheduledAtMs === undefined ? {} : { scheduledAtMs }) })
+    }
+    try {
+        if (clock) {
+            if (durationMs !== 120000 || !schedule)
+                throw new Error('B2 absolute resource scheduler required')
+            return await schedule(clock, intervalMs, readSample)
+        }
+        const deadline = performance.now() + durationMs
+        do {
+            const started = performance.now()
+            await readSample()
             const remaining = deadline - performance.now()
             if (remaining <= 0) break
             await Bun.sleep(
@@ -376,6 +393,7 @@ export function monitoringApplianceResourceProbe(durationMs: number) {
 /** Require complete reference-envelope samples before summarizing cgroup CPU, summed RSS and connections. */
 export function summarizeMonitoringApplianceResources(
     samples: readonly MonitoringApplianceResource[],
+    expected?: { clock: MonitoringApplianceWindowClock; arming: MonitoringApplianceWindowArming },
 ) {
     const failures: string[] = []
     if (samples.length < contract.sampleMs / 2000) failures.push('insufficient-resource-samples')
@@ -405,6 +423,28 @@ export function summarizeMonitoringApplianceResources(
     const first = samples[0],
         last = samples.at(-1)
     const elapsedMs = first && last ? last.monotonicMs - first.monotonicMs : 0
+    if (expected) {
+        const { clock, arming } = expected
+        if (
+            clock.endMs - clock.originMs !== contract.sampleMs ||
+            Math.abs(clock.endMonotonicMs - clock.originMonotonicMs - contract.sampleMs) > 0.001 ||
+            arming.armedAtMs >= clock.originMs ||
+            arming.armedMonotonicMs >= clock.originMonotonicMs ||
+            samples.length !== contract.sampleMs / 1000 + 1 ||
+            first?.scheduledAtMs !== clock.originMs ||
+            last?.scheduledAtMs !== clock.endMs ||
+            samples.some(
+                (sample, index) =>
+                    sample.scheduledAtMs !== clock.originMs + index * 1000 ||
+                    sample.atMs < sample.scheduledAtMs ||
+                    sample.atMs - sample.scheduledAtMs >= 1000 ||
+                    sample.monotonicMs < clock.originMonotonicMs + index * 1000 ||
+                    sample.monotonicMs - (clock.originMonotonicMs + index * 1000) >= 1000,
+            )
+        )
+            failures.push('resource-window-origin-or-end-misaligned')
+    }
+
     if (
         elapsedMs < contract.sampleMs - 2000 ||
         !first ||

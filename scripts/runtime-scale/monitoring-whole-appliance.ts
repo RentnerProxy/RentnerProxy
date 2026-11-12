@@ -1,3 +1,4 @@
+import { monitoringApplianceWindowProbe } from './monitoring-whole-appliance.window.ts'
 // oxlint-disable no-await-in-loop -- Matched windows, exact-identity faults and cleanup must execute in order.
 import { createHash, randomBytes } from 'node:crypto'
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
@@ -13,7 +14,6 @@ import {
 } from './monitoring-whole-appliance.faults.ts'
 import {
     monitoringApplianceReportSchema,
-    collectMonitoringApplianceResources,
     monitoringApplianceResourceSchema,
     monitoringApplianceTrafficSchema,
     summarizeMonitoringApplianceProgress,
@@ -110,6 +110,9 @@ export async function monitoringApplianceOverlay(root = experimentRoot) {
         'scripts/runtime-reliability/harness.ts',
         'scripts/runtime-reliability/Types/control.types.ts',
         'scripts/runtime-scale/monitoring-b2-appliance.ts',
+        'scripts/runtime-scale/monitoring-b2-window-cap.ts',
+        'scripts/runtime-scale/Types/monitoring-b2-window-cap.types.ts',
+        'scripts/runtime-scale/monitoring-whole-appliance.window.ts',
         'scripts/runtime-scale/monitoring-b2-authority.ts',
         'scripts/runtime-scale/monitoring-b2-isolation.ts',
         'scripts/runtime-scale/monitoring-b2-replay.ts',
@@ -239,19 +242,42 @@ export async function startMonitoringApplianceControl(context: ReliabilityContex
     ])
 }
 
-/** One persistent observer per design uses identical polling and request overhead inside the measured cgroup. */
-export function monitoringApplianceTrafficProbe(originMs: number) {
-    if (!Number.isSafeInteger(originMs) || originMs < 0)
-        throw new Error('Invalid B2 observation origin')
-    return `const capability=await (${readMonitoringApplianceControlCapability.toString()})();const origin=${originMs},end=origin+${contract.sampleMs},resources=[];const capture=async()=>{const traffic=[],failures=[];let nextReport=origin;
-const request=async path=>{const r=await fetch('http://127.0.0.1:9020'+path,{headers:{authorization:'Bearer '+capability},signal:AbortSignal.timeout(5000)});if(!r.ok)throw new Error('fixture rejected observation');return await r.json()};
-await Bun.sleep(Math.max(0,origin-Date.now()));
-while(Date.now()<end){const began=performance.now();await Promise.all(['ssr','proxy'].map(async kind=>{try{const v=await request(kind==='ssr'?'/management':'/traffic');traffic.push({kind,atMs:Date.now(),...v})}catch{traffic.push({kind,atMs:Date.now(),status:0,elapsedMs:5000,validBody:false});failures.push('traffic-observation-unavailable')}}));if(Date.now()>=nextReport){try{await request('/visibility')}catch{failures.push('progress-observation-unavailable')}nextReport+=1000}await Bun.sleep(Math.min(Math.max(0,end-Date.now()),Math.max(1,250-(performance.now()-began))))}
-let report=null;try{report=await request('/report')}catch{failures.push('final-progress-unavailable')}return {traffic,report,failures}};
-await Bun.sleep(Math.max(0,origin-Date.now()));const results=await Promise.allSettled([capture(),(${collectMonitoringApplianceResources.toString()})(${contract.sampleMs},1000,sample=>resources.push(sample))]);if(results.some(v=>v.status!=='fulfilled'))throw new Error('B2 observer failed');process.stdout.write(JSON.stringify({...results[0].value,resources}));`
-}
+const windowClockSchema = z.strictObject({
+    originMs: z.number().int().positive(),
+    endMs: z.number().int().positive(),
+    originMonotonicMs: z.number().finite().nonnegative(),
+    endMonotonicMs: z.number().finite().nonnegative(),
+})
+const windowArmingSchema = z.strictObject({
+    armedAtMs: z.number().int().positive(),
+    armedMonotonicMs: z.number().finite().nonnegative(),
+})
+const finiteWorkloadSchema = z.strictObject({
+    runId: z.string().regex(/^[a-f0-9]{12}$/u),
+    windowId: z.string(),
+    policySetSha256: z.string().regex(/^[a-f0-9]{64}$/u),
+    policies: z.literal(1000),
+    installed: z.literal(true),
+    originMs: z.number().int().positive(),
+    endMs: z.number().int().positive(),
+    deferredMs: z.number().int().positive(),
+})
 
 const trafficCaptureSchema = z.strictObject({
+    start: z.looseObject({
+        originMs: z.number().int().positive(),
+        finiteWorkload: finiteWorkloadSchema,
+        nativeQualification: z.looseObject({
+            windowId: z.string(),
+            native: z
+                .object({ pid: z.number().int().positive(), startTicks: z.string() })
+                .nullable(),
+            nativeStartedAtMs: z.number().int().nonnegative(),
+        }),
+    }),
+    clock: windowClockSchema,
+    resourceArming: windowArmingSchema,
+    trafficArming: windowArmingSchema,
     resources: z.array(monitoringApplianceResourceSchema),
     traffic: z.array(
         monitoringApplianceTrafficSchema.extend({
@@ -1086,6 +1112,7 @@ export async function runMonitoringAppliance(options: MonitoringApplianceOptions
                 ...window,
                 pair: undefined,
                 policies: contract.policies,
+                finiteWindow: true,
             })
             stage = window.windowId + ':web-recovery'
             await recovery.recoverReliabilityComponent(
@@ -1104,10 +1131,8 @@ export async function runMonitoringAppliance(options: MonitoringApplianceOptions
             )
                 throw new Error('B2 scheduler topology/source proof failed')
             originalChunk = proof.chunkSha256
-            stage = window.windowId + ':start'
-            const start = z
-                .object({ originMs: z.number().int().positive() })
-                .parse(await monitoringApplianceRequest(context, '/start', {}))
+            stage = window.windowId + ':qualify'
+            const qualifiedOwner = await monitoringApplianceRequest(context, '/qualify-window', {})
             stage = window.windowId + ':capture'
             const captured = await context.docker(
                 [
@@ -1116,7 +1141,7 @@ export async function runMonitoringAppliance(options: MonitoringApplianceOptions
                     'bun',
                     '--no-env-file',
                     '-e',
-                    monitoringApplianceTrafficProbe(start.originMs),
+                    monitoringApplianceWindowProbe(readMonitoringApplianceControlCapability),
                 ],
                 { timeoutMs: contract.sampleMs + 15000 },
             )
@@ -1126,11 +1151,51 @@ export async function runMonitoringAppliance(options: MonitoringApplianceOptions
             if (
                 capture.report.design !== window.design ||
                 capture.report.profile !== window.profile ||
-                capture.report.originMs !== start.originMs
+                capture.report.originMs !== capture.start.originMs ||
+                capture.clock.originMs !== capture.start.originMs ||
+                capture.clock.endMs !== capture.start.originMs + contract.sampleMs
             )
                 throw new Error('B2 window identity mismatch')
-            const resourceSummary = summarizeMonitoringApplianceResources(resources)
+            const resourceSummary = summarizeMonitoringApplianceResources(resources, {
+                clock: capture.clock,
+                arming: capture.resourceArming,
+            })
             const progress = summarizeMonitoringApplianceProgress(capture.report, capture.traffic)
+            const actualCap = finiteWorkloadSchema.parse(capture.report.finiteWorkload)
+            const expectedHash = createHash('sha256')
+                .update(
+                    capture.report.policies
+                        .map((policy) => policy.policyId)
+                        .toSorted()
+                        .join('\n'),
+                )
+                .digest('hex')
+            for (const installed of [actualCap, capture.start.finiteWorkload])
+                if (
+                    installed.runId !== context.runId ||
+                    installed.windowId !== window.windowId ||
+                    installed.policySetSha256 !== expectedHash ||
+                    installed.originMs !== capture.start.originMs ||
+                    installed.endMs !== capture.clock.endMs ||
+                    installed.deferredMs !== capture.clock.endMs + 60000
+                )
+                    throw new Error('B2 finite two-cadence workload scope unproven')
+            if (
+                capture.trafficArming.armedAtMs >= capture.clock.originMs ||
+                capture.trafficArming.armedMonotonicMs >= capture.clock.originMonotonicMs
+            )
+                throw new Error('B2 traffic observer armed after origin')
+            const nativeOwner = capture.start.nativeQualification.native
+            if (
+                capture.start.nativeQualification.windowId !== window.windowId ||
+                (window.design === 'B2' &&
+                    (!nativeOwner ||
+                        nativeOwner.pid !== capture.report.nativeIdentity?.pid ||
+                        nativeOwner.startTicks !== capture.report.nativeIdentity.startTicks)) ||
+                (window.design === 'A' && nativeOwner !== null)
+            )
+                throw new Error('B2 qualified window owner changed')
+
             const snapshot = await dependencies.recoveryDependencies(context).snapshot()
             const owners = snapshot?.processes.filter((process) => process.role === 'web')
             const failures = [
@@ -1162,6 +1227,13 @@ export async function runMonitoringAppliance(options: MonitoringApplianceOptions
             report.windows.push({
                 ...window,
                 webProof: proof,
+                qualifiedOwner,
+                captureTiming: {
+                    clock: capture.clock,
+                    resourceArming: capture.resourceArming,
+                    trafficArming: capture.trafficArming,
+                    start: capture.start,
+                },
                 resources,
                 traffic: capture.traffic,
                 progressReport: capture.report,

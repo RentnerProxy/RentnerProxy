@@ -1,3 +1,4 @@
+import { monitoringApplianceWindowProbe } from '../../../../../scripts/runtime-scale/monitoring-whole-appliance.window.ts'
 import { describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -19,7 +20,6 @@ import {
 import {
     monitoringApplianceWindows,
     parseMonitoringApplianceOptions,
-    monitoringApplianceTrafficProbe,
     proveMonitoringApplianceContinuity,
     collectMonitoringApplianceContinuity,
     monitoringApplianceOverlay,
@@ -775,9 +775,10 @@ describe('whole-appliance monitoring reference evidence', () => {
         }
         expect(() => monitoringApplianceResourceProbe(1000)).toThrow()
         expect(monitoringApplianceResourceProbe(120000)).toContain('120000')
-        expect(() => monitoringApplianceTrafficProbe(NaN)).toThrow()
         expect(() =>
-            new Bun.Transpiler({ loader: 'js' }).scan(monitoringApplianceTrafficProbe(1_000_000)),
+            new Bun.Transpiler({ loader: 'js' }).scan(
+                monitoringApplianceWindowProbe(async () => 'synthetic-test-capability'),
+            ),
         ).not.toThrow()
         expect(() =>
             new Bun.Transpiler({ loader: 'js' }).scan(monitoringApplianceResourceProbe(120000)),
