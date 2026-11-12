@@ -89,6 +89,11 @@ const schema = z.object({
             .max(1024),
         admittedIds: z.array(z.string()).max(1024),
     }),
+    recovery: z.array(z.object({
+        component: z.enum(['web', 'controller', 'postgres-unavailable']),
+        elapsedMs: z.number().finite().nonnegative(),
+        passed: z.literal(true),
+    })).length(3),
     extendedRecovery: backgroundExtendedRecoverySchema,
     summary: z.object({ passed: z.literal(true), capacity: z.literal('insufficient') }),
     reportSha256: digest,
@@ -151,6 +156,7 @@ export function backgroundRecoveryEvidence(
         JSON.stringify(provenance.scenario.faults) ===
             JSON.stringify(backgroundFaultSelection(true)),
     )
+    requireEvidence(new Set(report.recovery.map((item) => item.component)).size === 3)
     const notifications = report.notifications
     requireEvidence(
         notifications.initiallyDeferredIdentities.length === notifications.initiallyDeferred,

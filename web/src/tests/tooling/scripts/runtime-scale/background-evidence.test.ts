@@ -104,6 +104,11 @@ function fixture(platform: 'linux/amd64' | 'linux/arm64' = 'linux/amd64') {
             ],
             admittedIds: ['delivery'],
         },
+        recovery: [
+            { component: 'web', elapsedMs: 1000, passed: true },
+            { component: 'controller', elapsedMs: 1000, passed: true },
+            { component: 'postgres-unavailable', elapsedMs: 1000, passed: true },
+        ],
         extendedRecovery: {
             status: 'met',
             elapsedMs: 5000,
@@ -282,6 +287,36 @@ const invalid: {
         name: 'late post-restore write',
         mutate: (report) => {
             report.extendedRecovery.activeRestore.noLateMonitoringWrites = false
+        },
+    },
+    {
+        name: 'missing component recovery',
+        mutate: (report) => {
+            report.recovery.pop()
+        },
+    },
+    {
+        name: 'failed component recovery',
+        mutate: (report) => {
+            report.recovery[0]!.passed = false
+        },
+    },
+    {
+        name: 'duplicate component recovery',
+        mutate: (report) => {
+            report.recovery[1]!.component = 'web'
+        },
+    },
+    {
+        name: 'unknown component recovery',
+        mutate: (report) => {
+            report.recovery[1]!.component = 'unknown'
+        },
+    },
+    {
+        name: 'negative recovery duration',
+        mutate: (report) => {
+            report.recovery[0]!.elapsedMs = -1
         },
     },
     {

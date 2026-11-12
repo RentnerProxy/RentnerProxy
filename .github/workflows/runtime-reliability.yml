@@ -216,6 +216,25 @@ jobs:
                     if [ "$owner" = "$RENTNERPROXY_SMOKE_RUN" ]; then docker rm --force "$name"; fi
                   done
 
+            - name: Return private reports to the runner without widening permissions
+              if: always()
+              run: |
+                  reports="$RUNNER_TEMP/worker-postgres-evidence"
+                  owner="$(id -u):$(id -g)"
+                  test ! -L "$reports"
+                  for name in migrations-profile.log profile.log sql-profile.json migrations-regressions.log regressions.log; do
+                    file="$reports/$name"
+                    test ! -L "$file"
+                    if [ ! -e "$file" ]; then continue; fi
+                    test -f "$file"
+                    sudo chown --no-dereference "$owner" "$file"
+                    test -r "$file"
+                  done
+                  if [ -f "$reports/sql-profile.json" ]; then
+                    test "$(stat --format=%a "$reports/sql-profile.json")" = 600
+                    test "$(stat --format=%u:%g "$reports/sql-profile.json")" = "$owner"
+                  fi
+
             - name: Store source-bound SQL and history evidence
               if: always()
               uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
