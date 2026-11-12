@@ -27,10 +27,12 @@ import { exerciseExtendedBackgroundRecovery } from './background-extended.ts'
 import { backgroundPolicies } from './background.ts'
 import { backgroundReceiptsSchema, backgroundSnapshotSchema } from './background.validation.ts'
 import { stageBackgroundFixtureSources } from './background-source.ts'
+import { settleBackgroundCapture } from './background-capture-settlement.ts'
 import {
     backgroundSourceManifest,
     backgroundReportBinding,
     backgroundAutomationManifest,
+    recheckBackgroundAutomationManifest,
 } from './background-provenance.ts'
 import type {
     BackgroundOptions,
@@ -245,6 +247,7 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
     let snapshot: BackgroundSnapshot | undefined
     let contention: Awaited<ReturnType<typeof runContentionWindow>>['report'] | undefined
     let monitoring: ReturnType<typeof backgroundMonitoringReport> | undefined
+    let captureSettlement: Omit<Awaited<ReturnType<typeof settleBackgroundCapture>>, 'snapshot'> | undefined
     let fences: unknown
     let notifications: unknown
     let discovery: unknown
@@ -432,6 +435,13 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
         }
         elapsedMs = performance.now() - origin
         assert.ok(snapshot)
+        enter('capture-settlement')
+        const settled = await settleBackgroundCapture(snapshot, { runId: context.runId, sourceSha: harness.targetSha }, {
+            signal: abort.signal,
+            read: async (remainingMs) => backgroundSnapshotSchema.parse((await context.fixture('background-read', extra, { timeoutMs: remainingMs })).background),
+        })
+        snapshot = settled.snapshot
+        captureSettlement = { status: settled.status, reads: settled.reads, budgetMs: settled.budgetMs, elapsedMs: settled.elapsedMs }
         const receipts = backgroundReceiptsSchema.parse(await harness.backgroundReceipts())
         receiptsOverflowed = receipts.overflowed
         monitoring = backgroundMonitoringReport(options, snapshot, receipts.receipts, elapsedMs, {
@@ -591,9 +601,8 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
         process.off('SIGTERM', interrupt)
     }
     const resourceEvidence = backgroundResourceEvidence(resources)
-    const automationSourcesUnchanged =
-        (await backgroundAutomationManifest(resolve(import.meta.dir, '../..'))).sha256 ===
-        automationSources.sha256
+    const automationSourceRecheck = await recheckBackgroundAutomationManifest(resolve(import.meta.dir, '../..'), automationSources.sha256)
+    const automationSourcesUnchanged = automationSourceRecheck.unchanged
     if (!automationSourcesUnchanged) failure ??= 'automation-source-changed'
     const interactive = {
         management: {
@@ -641,6 +650,7 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
             fixture: fixtureProvenance ?? null,
             automationSources,
             automationSourcesUnchanged,
+            automationSourceRecheck,
             semantics:
                 'Image revision is checked by the harness; fixture source is staged independently and its manifest and installed bundle bytes are recorded separately. Selected faults are not proof of completion; inspect actual per-stage results.',
         },
@@ -667,6 +677,7 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
                 'Only persisted matching events qualify; an unflushed or missing last event yields insufficient evidence rather than inferred admission',
         },
         monitoring,
+        captureSettlement,
         ...(contention ? { contention } : {}),
         interactive,
         fences,

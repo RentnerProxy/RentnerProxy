@@ -172,7 +172,7 @@ test('normal and malformed opt-in never enable filesystem capture', async () => 
     expect(JSON.parse(output)).toEqual({ disabled: true })
 })
 
-test.skipIf(process.platform === 'win32')(
+test.skipIf(process.platform !== 'linux')(
     'Linux opt-in writer publishes private atomic snapshots and identifies its actual process',
     async () => {
         const output = await runBunScript(

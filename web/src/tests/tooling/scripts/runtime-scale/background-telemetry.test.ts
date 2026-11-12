@@ -168,6 +168,7 @@ test('cancelled late claims and duplicated or cross-attempt starts cannot fabric
         original.events.map((event, index) =>
             index === 1 ? { ...event, attemptHash: 'f'.repeat(64) } : event,
         ),
+        [...original.events, { ...original.events[1]!, attemptHash: 'f'.repeat(64) }],
     ]) {
         const report = backgroundMonitoringReport(
             f.options,

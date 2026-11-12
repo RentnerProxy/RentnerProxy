@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
-import { readFile, readdir } from 'node:fs/promises'
-import { join, relative } from 'node:path'
+import { readFile, readdir, realpath } from 'node:fs/promises'
+import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path'
 
 async function collect(directory: string): Promise<string[]> {
     const entries = await readdir(directory, { withFileTypes: true })
@@ -34,32 +34,41 @@ export function backgroundReportBinding(value: unknown) {
     return createHash('sha256').update(JSON.stringify(value)).digest('hex')
 }
 
-/** Record the host runner graph separately from archived application inputs; only source files and lock/config files are read. */
+/** Follow literal executable imports, including dynamic imports, without executing modules or resolving external packages. */
 export async function backgroundAutomationManifest(root: string) {
-    const paths: string[] = ['package.json', 'bun.lock', 'tsconfig.json', 'tsconfig.scripts.json']
-    for (const directory of ['scripts/runtime-scale', 'scripts/runtime-reliability']) {
-        // oxlint-disable-next-line no-await-in-loop -- Two fixed source owners are enumerated, never runtime state.
-        const entries = await readdir(join(root, directory), { withFileTypes: true })
-        paths.push(
-            ...entries
-                .filter((entry) => entry.isFile() && entry.name.endsWith('.ts'))
-                .map((entry) => directory + '/' + entry.name),
-        )
-        // oxlint-disable-next-line no-await-in-loop -- Type sources belong to their preceding fixed owner.
-        const types = await readdir(join(root, directory, 'Types'))
-        paths.push(
-            ...types
-                .filter((name) => name.endsWith('.ts'))
-                .map((name) => directory + '/Types/' + name),
-        )
+    const rootPath = await realpath(root)
+    const pending = ['scripts/runtime-scale/background-run.ts', 'scripts/runtime-reliability/harness.ts', 'package.json', 'bun.lock', 'tsconfig.json', 'tsconfig.scripts.json'].map((path) => resolve(rootPath, path))
+    const visited = new Set<string>()
+    const files: { path: string; sha256: string }[] = []
+    while (pending.length) {
+        const path = pending.pop()!
+        if (visited.has(path)) continue
+        if (visited.size >= 10_000) throw new Error('Automation import graph exceeds bound')
+        const relativePath = relative(rootPath, path).replaceAll('\\', '/')
+        if (isAbsolute(relativePath) || relativePath.startsWith('../') || relativePath.split('/').includes('node_modules') || (!['.ts', '.tsx', '.json'].includes(extname(path)) && relativePath !== 'bun.lock')) throw new Error('Automation input is outside the source boundary')
+        // oxlint-disable-next-line no-await-in-loop -- Resolve each newly discovered local source before reading it.
+        if (await realpath(path) !== path) throw new Error('Automation source must not contain symlinks')
+        visited.add(path)
+        // oxlint-disable-next-line no-await-in-loop -- The exact hashed bytes also supply this module's import scan.
+        const contents = await readFile(path)
+        files.push({ path: relativePath, sha256: createHash('sha256').update(contents).digest('hex') })
+        if (!['.ts', '.tsx'].includes(extname(path))) continue
+        const imports = new Bun.Transpiler({ loader: path.endsWith('.tsx') ? 'tsx' : 'ts' }).scanImports(contents)
+        for (const item of imports) {
+            if (item.path.startsWith('.')) pending.push(resolve(dirname(path), item.path))
+            else if (item.path.startsWith('@/')) pending.push(resolve(rootPath, 'web/src', item.path.slice(2)))
+        }
     }
-    const files = await Promise.all(
-        paths.toSorted().map(async (path) => ({
-            path,
-            sha256: createHash('sha256')
-                .update(await readFile(join(root, path)))
-                .digest('hex'),
-        })),
-    )
+    files.sort((a, b) => a.path.localeCompare(b.path, 'en'))
     return { sha256: backgroundReportBinding(files), files }
+}
+
+/** A source disappearing after cleanup invalidates provenance but must not discard completed measurements or suppress the report. */
+export async function recheckBackgroundAutomationManifest(root: string, expectedSha256: string) {
+    try {
+        const current = await backgroundAutomationManifest(root)
+        return { unchanged: current.sha256 === expectedSha256, sha256: current.sha256, status: current.sha256 === expectedSha256 ? 'matched' as const : 'changed' as const }
+    } catch {
+        return { unchanged: false, sha256: null, status: 'unavailable' as const }
+    }
 }

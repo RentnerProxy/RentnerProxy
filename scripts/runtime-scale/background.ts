@@ -347,17 +347,16 @@ export function backgroundMonitoringReport(
               )
             : []
         const admission = admitted.length === 1 ? admitted[0] : undefined
-        const started = admission
+        const started = captured
             ? capture!.events.filter(
                   (event) =>
                       event.kind === 'started' &&
-                      event.attemptHash === admission.attemptHash &&
                       event.policyId === policy.id &&
                       event.policyVersion === policy.version &&
                       event.dueAt === policy.dueAt,
               )
             : []
-        const adapterStart = started.length === 1 ? started[0] : undefined
+        const adapterStart = started.length === 1 && started[0]!.attemptHash === admission?.attemptHash ? started[0] : undefined
         const validTiming =
             admission &&
             adapterStart &&
