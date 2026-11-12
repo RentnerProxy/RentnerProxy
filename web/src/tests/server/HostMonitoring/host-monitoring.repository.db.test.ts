@@ -1145,34 +1145,43 @@ describe('durable scheduled monitoring repository', () => {
     )
 
     for (const table of ['observations', 'incidents'] as const)
-        integrationTest(`completion prunes expired ${table} when the other retention page is empty`, async () => {
-            const policy = await fixture()
-            const old = new Date(Date.now() - 31 * 86_400_000)
-            if (table === 'observations')
-                await db.insert(hostCheckObservations).values({
-                    policyId: policy.id,
-                    policyVersion: policy.version,
-                    checkedAt: old,
-                    status: 'healthy',
-                    code: 'expected_status',
-                })
-            else
-                await db.insert(hostCheckIncidents).values({
-                    policyId: policy.id,
-                    startedAt: old,
-                    detectedAt: old,
-                    failureCode: 'upstream_timeout',
-                    closedReason: 'policy_changed',
-                    closedAt: old,
-                })
-            expect(await finish(policy, unknown)).toBe(true)
-            const observations = await db.select().from(hostCheckObservations)
-                .where(eq(hostCheckObservations.policyId, policy.id))
-            expect(observations).toHaveLength(1)
-            expect(observations[0]!.checkedAt > old).toBe(true)
-            expect(await db.select().from(hostCheckIncidents)
-                .where(eq(hostCheckIncidents.policyId, policy.id))).toHaveLength(0)
-        })
+        integrationTest(
+            `completion prunes expired ${table} when the other retention page is empty`,
+            async () => {
+                const policy = await fixture()
+                const old = new Date(Date.now() - 31 * 86_400_000)
+                if (table === 'observations')
+                    await db.insert(hostCheckObservations).values({
+                        policyId: policy.id,
+                        policyVersion: policy.version,
+                        checkedAt: old,
+                        status: 'healthy',
+                        code: 'expected_status',
+                    })
+                else
+                    await db.insert(hostCheckIncidents).values({
+                        policyId: policy.id,
+                        startedAt: old,
+                        detectedAt: old,
+                        failureCode: 'upstream_timeout',
+                        closedReason: 'policy_changed',
+                        closedAt: old,
+                    })
+                expect(await finish(policy, unknown)).toBe(true)
+                const observations = await db
+                    .select()
+                    .from(hostCheckObservations)
+                    .where(eq(hostCheckObservations.policyId, policy.id))
+                expect(observations).toHaveLength(1)
+                expect(observations[0]!.checkedAt > old).toBe(true)
+                expect(
+                    await db
+                        .select()
+                        .from(hostCheckIncidents)
+                        .where(eq(hostCheckIncidents.policyId, policy.id)),
+                ).toHaveLength(0)
+            },
+        )
 
     integrationTest(
         'a long outage remains in history for the retention period after recovery',
