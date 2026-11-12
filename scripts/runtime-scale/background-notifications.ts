@@ -86,7 +86,16 @@ export async function runBackgroundNotifications(
         initialDeferred = 0,
         finalPending = -1
     let initiallyDeferredIdentities: ReturnType<typeof backgroundDeferredNotifications> = []
-    const admittedIdentities = new Map<string, { incidentId: string; channelId: string; channelRevision: number; type: string; deliveryId: string }>()
+    const admittedIdentities = new Map<
+        string,
+        {
+            incidentId: string
+            channelId: string
+            channelRevision: number
+            type: string
+            deliveryId: string
+        }
+    >()
     const runtime = () => database.transaction(storage.readNotificationRuntime)
     try {
         Date.now = () => now
@@ -113,7 +122,11 @@ export async function runBackgroundNotifications(
             )
             initialAdmitted = engine.deliveries.map((item) => item.id)
             initialDeferred = engine.deferredCount
-            initiallyDeferredIdentities = backgroundDeferredNotifications(engine, configuration, now)
+            initiallyDeferredIdentities = backgroundDeferredNotifications(
+                engine,
+                configuration,
+                now,
+            )
             assert.equal(initiallyDeferredIdentities.length, initialDeferred)
             assert.ok(
                 initialDeferred > 0 && initialAdmitted.length <= NOTIFICATION_LIMITS.deliveries,
@@ -144,7 +157,13 @@ export async function runBackgroundNotifications(
                 continue
             }
             admitted.add(claim.id)
-            admittedIdentities.set(claim.id, { incidentId: claim.payload.incidentId, channelId: claim.channelId, channelRevision: claim.channelRevision, type: claim.payload.type, deliveryId: claim.id })
+            admittedIdentities.set(claim.id, {
+                incidentId: claim.payload.incidentId,
+                channelId: claim.channelId,
+                channelRevision: claim.channelRevision,
+                type: claim.payload.type,
+                deliveryId: claim.id,
+            })
             attempts.set(claim.id, (attempts.get(claim.id) ?? 0) + 1)
             const channel = configuration.channels.findIndex((item) => item.id === claim.channelId)
             if (channel !== 0 && attempts.get(claim.id) === 1 && slow[claim.channel.kind] < 2) {
@@ -244,8 +263,18 @@ export async function runBackgroundNotifications(
         assert.equal(acknowledged.size, 280)
         assert.equal(permanent.size, 40)
         const deferredAdmissions = initiallyDeferredIdentities.map((identity) => {
-            const matches = [...admittedIdentities.values()].filter((item) => item.incidentId === identity.incidentId && item.channelId === identity.channelId && item.channelRevision === identity.channelRevision && item.type === identity.type)
-            assert.equal(matches.length, 1, 'Each deferred obligation has one subsequently allocated delivery identity')
+            const matches = [...admittedIdentities.values()].filter(
+                (item) =>
+                    item.incidentId === identity.incidentId &&
+                    item.channelId === identity.channelId &&
+                    item.channelRevision === identity.channelRevision &&
+                    item.type === identity.type,
+            )
+            assert.equal(
+                matches.length,
+                1,
+                'Each deferred obligation has one subsequently allocated delivery identity',
+            )
             return matches[0]!
         })
         assert.equal(faults.length, 3)

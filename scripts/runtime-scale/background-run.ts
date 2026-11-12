@@ -27,7 +27,11 @@ import { exerciseExtendedBackgroundRecovery } from './background-extended.ts'
 import { backgroundPolicies } from './background.ts'
 import { backgroundReceiptsSchema, backgroundSnapshotSchema } from './background.validation.ts'
 import { stageBackgroundFixtureSources } from './background-source.ts'
-import { backgroundSourceManifest, backgroundReportBinding, backgroundAutomationManifest } from './background-provenance.ts'
+import {
+    backgroundSourceManifest,
+    backgroundReportBinding,
+    backgroundAutomationManifest,
+} from './background-provenance.ts'
 import type {
     BackgroundOptions,
     BackgroundResourceSample,
@@ -103,13 +107,33 @@ async function installFixture(context: ReliabilityContext) {
         context.container + ':/opt/rentnerproxy/web/background-contention-web.js',
     ])
     const sourceManifest = await backgroundSourceManifest(source)
-    const artifacts = await Promise.all([
-        ['reliability-fixture.js', bundle],
-        ['background-contention-receiver.js', receiver],
-        ['background-contention-web.js', probe],
-    ].map(async ([name, path]) => ({ name: name!, sha256: createHash('sha256').update(await readFile(path!)).digest('hex') })))
-    const installed = JSON.parse(await context.docker(['exec', context.container, 'bun', '--no-env-file', '-e', "const names=['reliability-fixture.js','background-contention-receiver.js','background-contention-web.js'];console.log(JSON.stringify(await Promise.all(names.map(async name=>({name,sha256:new Bun.CryptoHasher('sha256').update(await Bun.file('/opt/rentnerproxy/web/'+name).arrayBuffer()).digest('hex')})))))"])) as unknown
-    assert.deepEqual(installed, artifacts, 'Installed fixture artifacts must match the exact locally built bytes')
+    const artifacts = await Promise.all(
+        [
+            ['reliability-fixture.js', bundle],
+            ['background-contention-receiver.js', receiver],
+            ['background-contention-web.js', probe],
+        ].map(async ([name, path]) => ({
+            name: name!,
+            sha256: createHash('sha256')
+                .update(await readFile(path!))
+                .digest('hex'),
+        })),
+    )
+    const installed = JSON.parse(
+        await context.docker([
+            'exec',
+            context.container,
+            'bun',
+            '--no-env-file',
+            '-e',
+            "const names=['reliability-fixture.js','background-contention-receiver.js','background-contention-web.js'];console.log(JSON.stringify(await Promise.all(names.map(async name=>({name,sha256:new Bun.CryptoHasher('sha256').update(await Bun.file('/opt/rentnerproxy/web/'+name).arrayBuffer()).digest('hex')})))))",
+        ]),
+    ) as unknown
+    assert.deepEqual(
+        installed,
+        artifacts,
+        'Installed fixture artifacts must match the exact locally built bytes',
+    )
     return { sourceManifest, artifacts, installedArtifactsVerified: true as const }
 }
 
@@ -258,7 +282,22 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
         durationSeconds: options.durationSeconds,
         contention: options.contention === true,
         extendedRecovery: options.extendedRecovery === true,
-        faults: ['policy-version', 'lease-expiry', 'host-change', 'host-disabled', 'access-policy-change', 'trusted-ca-change', 'database-lock', 'cancelled', 'duplicate-completion', 'notification-lease-faults', 'web-stop', 'controller-stop', 'postgres-pause', 'web-pause'],
+        faults: [
+            'policy-version',
+            'lease-expiry',
+            'host-change',
+            'host-disabled',
+            'access-policy-change',
+            'trusted-ca-change',
+            'database-lock',
+            'cancelled',
+            'duplicate-completion',
+            'notification-lease-faults',
+            'web-stop',
+            'controller-stop',
+            'postgres-pause',
+            'web-pause',
+        ],
     }
     let proxyFailures = 0
     let origin = 0
@@ -395,7 +434,10 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
         assert.ok(snapshot)
         const receipts = backgroundReceiptsSchema.parse(await harness.backgroundReceipts())
         receiptsOverflowed = receipts.overflowed
-        monitoring = backgroundMonitoringReport(options, snapshot, receipts.receipts, elapsedMs, { runId: context.runId, sourceSha: harness.targetSha })
+        monitoring = backgroundMonitoringReport(options, snapshot, receipts.receipts, elapsedMs, {
+            runId: context.runId,
+            sourceSha: harness.targetSha,
+        })
         const quiescent = backgroundSnapshotSchema.parse(
             (await context.fixture('background-quiesce', extra)).background,
         )
@@ -549,7 +591,9 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
         process.off('SIGTERM', interrupt)
     }
     const resourceEvidence = backgroundResourceEvidence(resources)
-    const automationSourcesUnchanged = (await backgroundAutomationManifest(resolve(import.meta.dir, '../..'))).sha256 === automationSources.sha256
+    const automationSourcesUnchanged =
+        (await backgroundAutomationManifest(resolve(import.meta.dir, '../..'))).sha256 ===
+        automationSources.sha256
     if (!automationSourcesUnchanged) failure ??= 'automation-source-changed'
     const interactive = {
         management: {
@@ -587,11 +631,18 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
         provenance: {
             runId: context.runId,
             scenario: scenarioIdentity,
-            bindingSha256: backgroundReportBinding({ targetSha: harness.targetSha, imageIdentity: harness.imageIdentity, imagePlatform, scenario: scenarioIdentity, fixture: fixtureProvenance ?? null }),
+            bindingSha256: backgroundReportBinding({
+                targetSha: harness.targetSha,
+                imageIdentity: harness.imageIdentity,
+                imagePlatform,
+                scenario: scenarioIdentity,
+                fixture: fixtureProvenance ?? null,
+            }),
             fixture: fixtureProvenance ?? null,
             automationSources,
             automationSourcesUnchanged,
-            semantics: 'Image revision is checked by the harness; fixture source is staged independently and its manifest and installed bundle bytes are recorded separately. Selected faults are not proof of completion; inspect actual per-stage results.',
+            semantics:
+                'Image revision is checked by the harness; fixture source is staged independently and its manifest and installed bundle bytes are recorded separately. Selected faults are not proof of completion; inspect actual per-stage results.',
         },
         targetSha: harness.targetSha,
         imageIdentity: harness.imageIdentity,
@@ -606,12 +657,14 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
         extendedRecoverySelected: options.extendedRecovery === true,
         slo: backgroundSlo,
         instrumentation: {
-            schedulerCapture: 'opt-in actual web owner; instrumentation overhead is included, not an uninstrumented capacity measurement',
+            schedulerCapture:
+                'opt-in actual web owner; instrumentation overhead is included, not an uninstrumented capacity measurement',
             maximumEvents: 20_000,
             captureLifetimeMs: 600_000,
             maximumCaptureBytes: 8 * 1024 * 1024,
             writeCoalesceMs: 25,
-            finalCaptureSemantics: 'Only persisted matching events qualify; an unflushed or missing last event yields insufficient evidence rather than inferred admission',
+            finalCaptureSemantics:
+                'Only persisted matching events qualify; an unflushed or missing last event yields insufficient evidence rather than inferred admission',
         },
         monitoring,
         ...(contention ? { contention } : {}),

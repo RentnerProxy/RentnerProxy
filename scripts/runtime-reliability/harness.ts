@@ -632,10 +632,12 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
                         SMTP_FROM: 'reliability@example.invalid',
                         SMTP_USER: 'reliability',
                         SMTP_PASSWORD: 'fixture-only',
-                        ...(options.backgroundTelemetry ? {
-                            RENTNERPROXY_BACKGROUND_CAPTURE_RUN: runId,
-                            RENTNERPROXY_BACKGROUND_CAPTURE_SOURCE_SHA: targetSha,
-                        } : {}),
+                        ...(options.backgroundTelemetry
+                            ? {
+                                  RENTNERPROXY_BACKGROUND_CAPTURE_RUN: runId,
+                                  RENTNERPROXY_BACKGROUND_CAPTURE_SOURCE_SHA: targetSha,
+                              }
+                            : {}),
                         ...(options.backgroundContention
                             ? { NODE_EXTRA_CA_CERTS: '/test/background-contention-ca.pem' }
                             : {}),

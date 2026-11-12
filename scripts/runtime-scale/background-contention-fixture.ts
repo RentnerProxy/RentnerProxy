@@ -230,7 +230,14 @@ export async function backgroundContentionFixture(context: FixtureContext) {
     }
     assert.equal(context.command.phase, 'background-contention-read')
     const [notificationSnapshot, registry, rows] = await Promise.all([
-        database.transaction(async (transaction) => ({ runtime: await notifications.readNotificationRuntime(transaction), configuration: await notifications.readNotificationConfiguration(transaction), observedAt: Date.now() }), { isolationLevel: 'repeatable read', accessMode: 'read only' }),
+        database.transaction(
+            async (transaction) => ({
+                runtime: await notifications.readNotificationRuntime(transaction),
+                configuration: await notifications.readNotificationConfiguration(transaction),
+                observedAt: Date.now(),
+            }),
+            { isolationLevel: 'repeatable read', accessMode: 'read only' },
+        ),
         database.transaction(readDiscoveryRegistry),
         database.execute<{
             connections: number
@@ -246,7 +253,16 @@ export async function backgroundContentionFixture(context: FixtureContext) {
     const totals = { pending: 0, inflight: 0, succeeded: 0, failed: 0, cancelled: 0 }
     for (const delivery of runtime.engine.deliveries) totals[delivery.status]++
     return {
-        notification: { ...totals, deferred: runtime.engine.deferredCount, deferredIdentities: backgroundDeferredNotifications(runtime.engine, configuration, observedAt), deferredObservedAt: observedAt },
+        notification: {
+            ...totals,
+            deferred: runtime.engine.deferredCount,
+            deferredIdentities: backgroundDeferredNotifications(
+                runtime.engine,
+                configuration,
+                observedAt,
+            ),
+            deferredObservedAt: observedAt,
+        },
         discovery: {
             revision: registry.revision,
             error: registry.error,

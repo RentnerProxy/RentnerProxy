@@ -113,7 +113,8 @@ const worker = createHostMonitoringWorker({
             'host_monitoring',
             async () => {
                 const claims = await claimDueHostMonitoringPolicies(limit)
-                if (hostMonitoringCapture) for (const claim of claims) hostMonitoringCapture.record('admitted', claim)
+                if (hostMonitoringCapture)
+                    for (const claim of claims) hostMonitoringCapture.record('admitted', claim)
                 return claims
             },
             undefined,
@@ -181,7 +182,11 @@ const worker = createHostMonitoringWorker({
 export const hostMonitoringWorker = {
     ...worker,
     async stop() {
-        try { await worker.stop() } finally { await hostMonitoringCapture?.flush() }
+        try {
+            await worker.stop()
+        } finally {
+            await hostMonitoringCapture?.flush()
+        }
     },
 }
 

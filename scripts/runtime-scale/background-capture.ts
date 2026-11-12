@@ -22,11 +22,32 @@ export async function readBoundedBackgroundCapture(path: string) {
         }
         if (size > stat.size || size > maximum) return null
         return buffer.subarray(0, size).toString('utf8')
-    } finally { await file.close() }
+    } finally {
+        await file.close()
+    }
 }
 /** Compare both census brackets; neither PID reuse nor a child-process capture establishes serving-owner evidence. */
-export function backgroundCaptureMatchesOwner(capture: HostMonitoringCapture, expected: { runId: string; sourceSha: string | undefined }, before: Owner[], after: Owner[], now: number) {
-    return before.length === 1 && after.length === 1 && !['Z', 'X'].includes(before[0]!.state) && !['Z', 'X'].includes(after[0]!.state) && capture.runId === expected.runId && capture.sourceSha === expected.sourceSha && capture.pid === before[0]!.pid && capture.processStartTicks === before[0]!.startTicks && before[0]!.pid === after[0]!.pid && before[0]!.startTicks === after[0]!.startTicks && now >= capture.createdAt && now <= capture.expiresAt
+export function backgroundCaptureMatchesOwner(
+    capture: HostMonitoringCapture,
+    expected: { runId: string; sourceSha: string | undefined },
+    before: Owner[],
+    after: Owner[],
+    now: number,
+) {
+    return (
+        before.length === 1 &&
+        after.length === 1 &&
+        !['Z', 'X'].includes(before[0]!.state) &&
+        !['Z', 'X'].includes(after[0]!.state) &&
+        capture.runId === expected.runId &&
+        capture.sourceSha === expected.sourceSha &&
+        capture.pid === before[0]!.pid &&
+        capture.processStartTicks === before[0]!.startTicks &&
+        before[0]!.pid === after[0]!.pid &&
+        before[0]!.startTicks === after[0]!.startTicks &&
+        now >= capture.createdAt &&
+        now <= capture.expiresAt
+    )
 }
 
 /** Missing, replaced, oversized, nonregular or mismatched capture is unavailable; no network receipt can substitute for it. */
@@ -39,7 +60,18 @@ export async function readBackgroundCapture(runId: string) {
         if (text === null) return null
         const capture = hostMonitoringCaptureSchema.parse(JSON.parse(text))
         const after = (await readRuntimeProcesses()).filter((owner) => owner.role === 'web')
-        if (!backgroundCaptureMatchesOwner(capture, { runId, sourceSha: process.env.RENTNERPROXY_BACKGROUND_CAPTURE_SOURCE_SHA }, before, after, Date.now())) return null
+        if (
+            !backgroundCaptureMatchesOwner(
+                capture,
+                { runId, sourceSha: process.env.RENTNERPROXY_BACKGROUND_CAPTURE_SOURCE_SHA },
+                before,
+                after,
+                Date.now(),
+            )
+        )
+            return null
         return capture
-    } catch { return null }
+    } catch {
+        return null
+    }
 }

@@ -3,20 +3,29 @@ import { readFile, readdir } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 
 async function collect(directory: string): Promise<string[]> {
-        const entries = await readdir(directory, { withFileTypes: true })
-        const groups = await Promise.all(entries.map((entry) => {
+    const entries = await readdir(directory, { withFileTypes: true })
+    const groups = await Promise.all(
+        entries.map((entry) => {
             if (entry.isSymbolicLink()) throw new Error('Fixture source must not contain symlinks')
             const path = join(directory, entry.name)
             return entry.isDirectory() ? collect(path) : Promise.resolve([path])
-        }))
-        return groups.flat()
+        }),
+    )
+    return groups.flat()
 }
 
 /** Hash only the explicitly staged source tree; paths stay relative and no environment or runtime state is inspected. */
 export async function backgroundSourceManifest(root: string) {
     const paths = (await collect(root)).toSorted()
     if (paths.length > 10_000) throw new Error('Fixture source manifest exceeds bound')
-    const files = await Promise.all(paths.map(async (path) => ({ path: relative(root, path).replaceAll('\\', '/'), sha256: createHash('sha256').update(await readFile(path)).digest('hex') })))
+    const files = await Promise.all(
+        paths.map(async (path) => ({
+            path: relative(root, path).replaceAll('\\', '/'),
+            sha256: createHash('sha256')
+                .update(await readFile(path))
+                .digest('hex'),
+        })),
+    )
     return { sha256: createHash('sha256').update(JSON.stringify(files)).digest('hex'), files }
 }
 
@@ -31,11 +40,26 @@ export async function backgroundAutomationManifest(root: string) {
     for (const directory of ['scripts/runtime-scale', 'scripts/runtime-reliability']) {
         // oxlint-disable-next-line no-await-in-loop -- Two fixed source owners are enumerated, never runtime state.
         const entries = await readdir(join(root, directory), { withFileTypes: true })
-        paths.push(...entries.filter((entry) => entry.isFile() && entry.name.endsWith('.ts')).map((entry) => directory + '/' + entry.name))
+        paths.push(
+            ...entries
+                .filter((entry) => entry.isFile() && entry.name.endsWith('.ts'))
+                .map((entry) => directory + '/' + entry.name),
+        )
         // oxlint-disable-next-line no-await-in-loop -- Type sources belong to their preceding fixed owner.
         const types = await readdir(join(root, directory, 'Types'))
-        paths.push(...types.filter((name) => name.endsWith('.ts')).map((name) => directory + '/Types/' + name))
+        paths.push(
+            ...types
+                .filter((name) => name.endsWith('.ts'))
+                .map((name) => directory + '/Types/' + name),
+        )
     }
-    const files = await Promise.all(paths.toSorted().map(async (path) => ({ path, sha256: createHash('sha256').update(await readFile(join(root, path))).digest('hex') })))
+    const files = await Promise.all(
+        paths.toSorted().map(async (path) => ({
+            path,
+            sha256: createHash('sha256')
+                .update(await readFile(join(root, path)))
+                .digest('hex'),
+        })),
+    )
     return { sha256: backgroundReportBinding(files), files }
 }
