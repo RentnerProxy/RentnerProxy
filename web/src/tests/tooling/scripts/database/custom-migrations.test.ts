@@ -76,6 +76,75 @@ async function writeHistory(outputDirectory: string, tags: readonly string[]) {
 }
 
 describe('custom migration generation', () => {
+    test('rejects an unsupported source name before starting Kit', async () => {
+        await fixture(async (options, calls) => {
+            await rm(join(options.sourceDirectory, 'audit_v1.sql'))
+            const path = join(options.sourceDirectory, 'invalid-name.sql')
+            await writeFile(path, 'select 9;\n')
+            await expect(generateCustomMigrations(options)).rejects.toThrow('Invalid custom migration source name')
+            expect(calls).toHaveLength(0)
+            expect(await readFile(path, 'utf8')).toBe('select 9;\n')
+        })
+    })
+
+    test.each([
+        { value: null, error: 'Invalid Drizzle migration journal' },
+        { value: { entries: 1 }, error: 'Invalid Drizzle migration journal' },
+        { value: { entries: [null] }, error: 'Invalid Drizzle migration journal entry' },
+        { value: { entries: [{ tag: 7 }] }, error: 'Invalid Drizzle migration journal entry' },
+        { value: { entries: [{ tag: '../outside' }] }, error: 'Invalid or duplicate Drizzle migration journal tag' },
+    ])('rejects malformed journal metadata without allocating a migration: %j', async ({ value, error }) => {
+        await fixture(async (options, calls) => {
+            await mkdir(join(options.outputDirectory, 'meta'))
+            const path = join(options.outputDirectory, 'meta/_journal.json')
+            const original = JSON.stringify(value)
+            await writeFile(path, original)
+            await expect(generateCustomMigrations(options)).rejects.toThrow(error)
+            expect(calls).toHaveLength(0)
+            expect(await readFile(path, 'utf8')).toBe(original)
+        })
+    })
+
+    test('rejects an existing metadata directory without its journal', async () => {
+        await fixture(async (options, calls) => {
+            await mkdir(join(options.outputDirectory, 'meta'))
+            await expect(generateCustomMigrations(options)).rejects.toThrow('metadata journal is missing')
+            expect(calls).toHaveLength(0)
+            expect(await readdir(join(options.outputDirectory, 'meta'))).toEqual([])
+        })
+    })
+
+    test('propagates an unusable metadata path without treating it as a fresh history', async () => {
+        await fixture(async (options, calls) => {
+            const path = join(options.outputDirectory, 'meta')
+            await writeFile(path, 'not a directory')
+            await expect(generateCustomMigrations(options)).rejects.toThrow()
+            expect(calls).toHaveLength(0)
+            expect(await readFile(path, 'utf8')).toBe('not a directory')
+        })
+    })
+
+    test.each(['custom-name', 'journal-tag'] as const)('rejects a true duplicate %s without changing completed SQL', async (duplicate) => {
+        await fixture(async (options, calls) => {
+            await generateCustomMigrations(options)
+            const path = join(options.outputDirectory, '0001_audit_v1.sql')
+            const original = await readFile(path, 'utf8')
+            if (duplicate === 'custom-name') {
+                await writeFile(join(options.outputDirectory, '0002_audit_v1.sql'), original)
+                await writeHistory(options.outputDirectory, ['0001_audit_v1', '0002_audit_v1'])
+            } else {
+                await writeFile(join(options.outputDirectory, 'meta/_journal.json'), JSON.stringify({
+                    entries: [{ tag: '0001_audit_v1' }, { tag: '0001_audit_v1' }],
+                }))
+            }
+            await expect(generateCustomMigrations(options)).rejects.toThrow(
+                duplicate === 'custom-name' ? 'Duplicate custom migration' : 'Invalid or duplicate Drizzle migration journal tag',
+            )
+            expect(calls).toEqual(['audit_v1'])
+            expect(await readFile(path, 'utf8')).toBe(original)
+        })
+    })
+
     test('emits a source only into the newly kit-created file and is idempotent', async () => {
         await fixture(async (options, calls) => {
             await writeFile(join(options.outputDirectory, '0000_existing.sql'), 'select 0;')
