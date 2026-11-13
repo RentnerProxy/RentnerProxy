@@ -842,7 +842,9 @@ test('a verified reconnect ignores an old socket snapshot whose identity digest 
     const pendingDigest = Promise.withResolvers<ArrayBuffer>()
     const digest = spyOn(crypto.subtle, 'digest').mockReturnValueOnce(pendingDigest.promise)
     try {
-        await act(async () => first.deliver({ ...snapshot, revision: 'obsolete', userVersion: 'old-preferences' }))
+        await act(async () =>
+            first.deliver({ ...snapshot, revision: 'obsolete', userVersion: 'old-preferences' }),
+        )
         expect(digest).toHaveBeenCalledTimes(1)
     } finally {
         digest.mockRestore()
@@ -856,9 +858,12 @@ test('a verified reconnect ignores an old socket snapshot whose identity digest 
         socket.protocol = LIVE_SESSION_PROTOCOL_PREFIX + sessionVersion
         await act(async () => socket.open())
         await flush()
-        await act(async () => pendingDigest.resolve(
-            Uint8Array.from(sessionVersion.match(/../g)!, (part) => Number.parseInt(part, 16)).buffer,
-        ))
+        await act(async () =>
+            pendingDigest.resolve(
+                Uint8Array.from(sessionVersion.match(/../g)!, (part) => Number.parseInt(part, 16))
+                    .buffer,
+            ),
+        )
         await flush()
         expect(invalidateSpy).not.toHaveBeenCalled()
         expect(container.querySelector<HTMLElement>('[data-protected]')?.hidden).toBe(false)
