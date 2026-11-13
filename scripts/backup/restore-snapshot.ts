@@ -3,7 +3,8 @@ import { createDecipheriv, createHash } from 'node:crypto'
 import { constants } from 'node:fs'
 import { chmod, open, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { assertBackupCapacity, backupCapacityGuard } from './capacity.ts'
+import { assertBackupCapacity, backupCapacityGuard, stateArchiveAllocationEvidence } from './capacity.ts'
+import type { StateArchiveAllocationEvidence } from './Types/capacity.types.ts'
 import {
     parseBackupMetadata,
     validateControllerEncryptionFile,
@@ -81,12 +82,14 @@ export async function snapshotProductionRestore(
         await keyFile.close()
     }
     const controllerFile = await open(join(snapshot, stateArchiveName), 'r')
+    let controllerState: StateArchiveAllocationEvidence
     try {
         const controllerEntries = await validateStateArchiveFile(
             controllerFile,
             'controller',
             signal,
         )
+        controllerState = stateArchiveAllocationEvidence(controllerEntries)
         await validateControllerEncryptionFile(
             controllerFile,
             controllerEntries,
@@ -108,11 +111,12 @@ export async function snapshotProductionRestore(
         await controllerFile.close()
     }
     const crowdSecFile = await open(join(snapshot, 'crowdsec-state.tar'), 'r')
+    let crowdSecState: StateArchiveAllocationEvidence
     try {
-        await validateStateArchiveFile(crowdSecFile, 'crowdsec', signal)
+        crowdSecState = stateArchiveAllocationEvidence(await validateStateArchiveFile(crowdSecFile, 'crowdsec', signal))
     } finally {
         await crowdSecFile.close()
     }
 
-    return { metadata, backupId }
+    return { metadata, backupId, stateCapacity: { controllerState, crowdSecState } }
 }

@@ -65,7 +65,7 @@ async function command(args: string[], output?: string) {
             maximumOutputBytes: 1_048_576,
             signal: operationSignal,
             checkCapacity: backupCapacityGuard(
-                output ? ['/backup'] : ['/tmp', '/var/lib/rentnerproxy'],
+                output ? ['/backup', '/var/lib/rentnerproxy'] : ['/tmp', '/var/lib/rentnerproxy'],
             ),
             ...(file
                 ? { outputFile: { file, maximumBytes: BACKUP_RUNTIME_POLICY.maximumArtifactBytes } }
@@ -160,12 +160,12 @@ async function offlineValidate() {
     await chmod(snapshot, 0o700)
     const validation = await mkdtemp('/tmp/rentnerproxy-offline-validation-')
     try {
-        const { backupId, metadata } = await snapshotProductionRestore(
+        const { backupId, stateCapacity } = await snapshotProductionRestore(
             '/backup',
             snapshot,
             operationSignal,
         )
-        await assertBackupCapacity([{ path: '/tmp', bytes: metadata.crowdSecState.bytes }])
+        await assertBackupCapacity([{ path: '/tmp', bytes: 0, archive: stateCapacity.crowdSecState }])
         await command(['chown', 'postgres:postgres', validation])
         await command(['bash', '-c', validationCommand(snapshot, validation)])
         const capacity = await measureRestoreCapacity(validation, operationSignal)
@@ -259,7 +259,7 @@ async function offlineRestore(options: readonly string[]) {
     await chmod(snapshot, 0o700)
     try {
         const capacity = await readIsolatedValidationCapacity()
-        const { metadata, backupId } = await snapshotProductionRestore(
+        const { metadata, backupId, stateCapacity } = await snapshotProductionRestore(
             '/backup',
             snapshot,
             operationSignal,
@@ -286,7 +286,7 @@ async function offlineRestore(options: readonly string[]) {
         operationSignal.throwIfAborted()
         await assertRestoreCapacity(
             capacity,
-            metadata.controllerState.bytes + metadata.crowdSecState.bytes,
+            stateCapacity,
         )
         if (!pending)
             await command(['/usr/local/bin/rentnerproxy-production', '--initialize-restore-target'])

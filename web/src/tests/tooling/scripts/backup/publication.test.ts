@@ -126,6 +126,10 @@ test('publishes and verifies canonical artifacts with managed build metadata', (
         })
         assert.ok(progress > 5, 'verification must report metadata, payload and parser I/O')
         assert.deepEqual(verified.metadata, metadata)
+        assert.deepEqual(verified.stateCapacity, {
+            controllerState: { payloadBytes: 0, nodes: 5 },
+            crowdSecState: { payloadBytes: 0, nodes: 5 },
+        })
         const bytes = await readFile(join(canonical, 'metadata.json'))
         assert.equal(verified.metadataSha256, digest(bytes))
         assert.equal(

@@ -53,7 +53,7 @@ import {
     writePrivateJson,
 } from './storage.ts'
 import type { ManagedBackupMaintenance } from '../../../web/src/lib/Backups/Types/backups.types.ts'
-import type { RestoreCapacityEvidence } from '../../../scripts/backup/Types/capacity.types.ts'
+import type { RestoreCapacityEvidence, StateArchiveCapacityEvidence } from '../../../scripts/backup/Types/capacity.types.ts'
 
 export const maintenanceRoot = '/run/rentnerproxy/maintenance'
 const phaseFile = join(controlRoot, 'restore-progress.json')
@@ -216,12 +216,14 @@ export async function measureRestoreCapacity(
     return { databaseBytes, sqlBytes }
 }
 
-export async function assertRestoreCapacity(evidence: RestoreCapacityEvidence, stateBytes: number) {
+export async function assertRestoreCapacity(evidence: RestoreCapacityEvidence, stateCapacity: StateArchiveCapacityEvidence) {
     // The isolated cluster measures decompression, indexes and WAL, which cannot
     // be inferred from custom-dump bytes. Double its footprint for live transaction
     // and WAL headroom; active guards cover concurrent allocations and working space.
     await assertBackupCapacity([
-        { path: '/var/lib/rentnerproxy', bytes: evidence.databaseBytes * 2 + stateBytes },
+        { path: '/var/lib/rentnerproxy', bytes: evidence.databaseBytes * 2 },
+        { path: '/var/lib/rentnerproxy', bytes: 0, archive: stateCapacity.controllerState },
+        { path: '/var/lib/rentnerproxy', bytes: 0, archive: stateCapacity.crowdSecState },
         { path: '/tmp', bytes: evidence.sqlBytes },
     ])
 }
@@ -340,11 +342,13 @@ export async function restoreManagedBackup(id: string, signal?: AbortSignal) {
     const stateBytes = metadata.controllerState.bytes + metadata.crowdSecState.bytes
     const snapshotBytes =
         stateBytes + metadata.postgres.bytes + metadata.applicationEncryptionKey.bytes + 65_536
-    // TAR bodies are uncompressed; archive bytes bound the extracted payload. Existing
-    // live data is already reflected in free space and remains present during replacement.
+    // Existing live data is already reflected in free space. Extracted state also
+    // needs target filesystem allocation for file tails, directories and metadata.
     await assertBackupCapacity([
-        { path: backupRoot, bytes: snapshotBytes + stateBytes },
-        { path: '/tmp', bytes: metadata.crowdSecState.bytes },
+        { path: backupRoot, bytes: snapshotBytes },
+        { path: '/var/lib/rentnerproxy', bytes: 0, archive: verified.stateCapacity.controllerState },
+        { path: '/var/lib/rentnerproxy', bytes: 0, archive: verified.stateCapacity.crowdSecState },
+        { path: '/tmp', bytes: 0, archive: verified.stateCapacity.crowdSecState },
     ])
     const snapshot = join(backupRoot, '.restore-' + id)
     await mkdir(snapshot, { mode: 0o700 })
@@ -397,7 +401,7 @@ export async function restoreManagedBackup(id: string, signal?: AbortSignal) {
         await phase('validating', 15)
         await command(['bash', '-c', validationCommand(snapshot, temporary)], signal)
         const capacity = await measureRestoreCapacity(temporary, signal)
-        await assertRestoreCapacity(capacity, stateBytes)
+        await assertRestoreCapacity(capacity, verified.stateCapacity)
         await phase('validating', 18)
         await phase('quiescing', 20)
         await awaitWebQuiescence(id, signal)
@@ -411,7 +415,7 @@ export async function restoreManagedBackup(id: string, signal?: AbortSignal) {
         const merge = mergeRestoreSessionsSql(sessions)
         await writeFile(join(snapshot, 'sessions.json'), sessions, { mode: 0o600, flag: 'wx' })
         signal.throwIfAborted()
-        await assertRestoreCapacity(capacity, stateBytes)
+        await assertRestoreCapacity(capacity, verified.stateCapacity)
         await beginProductionRestore(operation.metadataSha256!)
         committed = true
         await beginAppEncryptionKeyRestore(join(snapshot, 'app-encryption-key'))

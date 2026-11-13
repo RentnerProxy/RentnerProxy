@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path'
 import { watch } from 'node:fs'
 import { mkdir, mkdtemp, open, readFile, rm } from 'node:fs/promises'
 import { BACKUP_RUNTIME_POLICY } from '../../../../config/backup-runtime.config.ts'
-import { runMaintenanceProcess } from '../../../../../../scripts/backup/maintenance-process.ts'
+import { MaintenanceProcessNotDispatched, runMaintenanceProcess } from '../../../../../../scripts/backup/maintenance-process.ts'
 
 const cwd = resolve(import.meta.dir, '../../../../../..')
 const child = (script: string) => [process.execPath, '--no-env-file', '-e', script]
@@ -190,7 +190,16 @@ test('pre-aborted maintenance never attempts process dispatch', async () => {
             timeoutMs: 5_000,
             signal: controller.signal,
         }),
-    ).rejects.toBe(reason)
+    ).rejects.toMatchObject({ name: 'MaintenanceProcessNotDispatched', cause: reason })
+})
+
+test('spawn exceptions never carry positive pre-dispatch evidence', async () => {
+    let failure: unknown
+    try {
+        await runMaintenanceProcess(['nonexistent-maintenance-command-fixture'], { cwd, timeoutMs: 5_000 })
+    } catch (error) { failure = error }
+    expect(failure).toBeInstanceOf(Error)
+    expect(failure).not.toBeInstanceOf(MaintenanceProcessNotDispatched)
 })
 
 test('capped stdout fails and stops an otherwise long-running child', async () => {
@@ -256,15 +265,16 @@ test('streamed capture checks its reserve again before the next bounded write ba
 })
 
 test('failed initial capacity admission never dispatches a command', async () => {
+    const reason = new Error('synthetic admission rejection')
     await expect(
         runMaintenanceProcess(['must-not-spawn'], {
             cwd,
             timeoutMs: 5_000,
             checkCapacity: async () => {
-                throw new Error('synthetic admission rejection')
+                throw reason
             },
         }),
-    ).rejects.toThrow('synthetic admission rejection')
+    ).rejects.toEqual(new MaintenanceProcessNotDispatched(reason))
 })
 
 test('a stalled capacity admission remains bounded before process dispatch', async () => {

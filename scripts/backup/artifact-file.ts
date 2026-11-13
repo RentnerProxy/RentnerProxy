@@ -84,6 +84,7 @@ export async function snapshotBackupArtifactFile(
         )
             throw new Error('backup artifact checksum mismatch')
         await output.sync()
+        signal?.throwIfAborted()
     } catch (error) {
         if (output) {
             await output.close()

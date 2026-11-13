@@ -7,37 +7,50 @@ import { createHash } from 'node:crypto'
 import { writeFileChunk } from './artifact-file.ts'
 import { BACKUP_RUNTIME_POLICY } from '../../web/src/config/backup-runtime.config.ts'
 
+export class MaintenanceProcessNotDispatched extends Error {
+    constructor(cause: unknown) {
+        super(cause instanceof Error ? cause.message : 'Maintenance process was not dispatched', { cause })
+        this.name = 'MaintenanceProcessNotDispatched'
+    }
+}
+
 export async function runMaintenanceProcess(
     args: readonly string[],
     options: MaintenanceProcessOptions,
 ): Promise<MaintenanceProcessResult> {
-    options.signal?.throwIfAborted()
-    if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0)
-        throw new Error('Maintenance process timeout must be positive and finite')
     const deadline = performance.now() + options.timeoutMs
-    if (options.checkCapacity) {
-        let admissionTimer: ReturnType<typeof setTimeout> | undefined
-        let admissionAbort: (() => void) | undefined
-        try {
-            await Promise.race([
-                options.checkCapacity(),
-                new Promise<never>((_, reject) => {
-                    admissionTimer = setTimeout(
-                        () => reject(new Error('maintenance deadline exceeded')),
-                        options.timeoutMs,
-                    )
-                    admissionAbort = () => reject(new Error('maintenance cancelled'))
-                    options.signal?.addEventListener('abort', admissionAbort, { once: true })
-                    if (options.signal?.aborted) admissionAbort()
-                }),
-            ])
-        } finally {
-            clearTimeout(admissionTimer)
-            if (admissionAbort) options.signal?.removeEventListener('abort', admissionAbort)
+    try {
+        options.signal?.throwIfAborted()
+        if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0)
+            throw new Error('Maintenance process timeout must be positive and finite')
+        if (options.checkCapacity) {
+            let admissionTimer: ReturnType<typeof setTimeout> | undefined
+            let admissionAbort: (() => void) | undefined
+            try {
+                await Promise.race([
+                    options.checkCapacity(),
+                    new Promise<never>((_, reject) => {
+                        admissionTimer = setTimeout(
+                            () => reject(new Error('maintenance deadline exceeded')),
+                            options.timeoutMs,
+                        )
+                        admissionAbort = () => reject(options.signal?.reason ?? new Error('maintenance cancelled'))
+                        options.signal?.addEventListener('abort', admissionAbort, { once: true })
+                        if (options.signal?.aborted) admissionAbort()
+                    }),
+                ])
+            } finally {
+                clearTimeout(admissionTimer)
+                if (admissionAbort) options.signal?.removeEventListener('abort', admissionAbort)
+            }
         }
+        options.signal?.throwIfAborted()
+        if (performance.now() > deadline) throw new Error('maintenance deadline exceeded')
+    } catch (cause) {
+        // Only this completed preflight proves Bun.spawn was never attempted. Spawn
+        // and transport errors deliberately remain ambiguous to container owners.
+        throw new MaintenanceProcessNotDispatched(cause)
     }
-    options.signal?.throwIfAborted()
-    if (performance.now() > deadline) throw new Error('maintenance deadline exceeded')
     const child = Bun.spawn({
         cmd: [...args],
         cwd: options.cwd,

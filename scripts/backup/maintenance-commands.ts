@@ -3,7 +3,7 @@ import { open, rm, type FileHandle } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { BACKUP_RUNTIME_POLICY } from '../../web/src/config/backup-runtime.config.ts'
 import { backupCapacityGuard } from './capacity.ts'
-import { runMaintenanceProcess } from './maintenance-process.ts'
+import { MaintenanceProcessNotDispatched, runMaintenanceProcess } from './maintenance-process.ts'
 import type { MaintenanceCommandOptions } from './Types/maintenance-commands.types.ts'
 
 const ownerLabel = 'io.rentnerproxy.maintenance-run'
@@ -101,6 +101,8 @@ export function createMaintenanceCommands(options: MaintenanceCommandOptions) {
             prepared.splice(index + 1, 0, '--name', name, '--label', ownerLabel + '=' + owner)
         let result: Awaited<ReturnType<typeof execute>> | undefined
         let cleanupFailed = false
+        let notDispatched = false
+        let failureCause: unknown
         try {
             result = await execute(transform(prepared), {
                 cwd: options.cwd,
@@ -109,10 +111,12 @@ export function createMaintenanceCommands(options: MaintenanceCommandOptions) {
                 ...(outputFile ? { outputFile } : {}),
                 ...(checkCapacity ? { checkCapacity } : {}),
             })
-        } catch {
+        } catch (error) {
             // Spawn/transport failures use the same sanitized operation contract.
+            notDispatched = error instanceof MaintenanceProcessNotDispatched
+            failureCause = error instanceof MaintenanceProcessNotDispatched ? error.cause : error
         } finally {
-            if (index >= 0) {
+            if (index >= 0 && !notDispatched) {
                 try {
                     await cleanup(
                         name,
@@ -131,7 +135,7 @@ export function createMaintenanceCommands(options: MaintenanceCommandOptions) {
                 ? ' Maintenance cleanup unresolved; automatic appliance startup is blocked.'
                 : ''
             if (options.operation !== 'restore' || operation !== 'restore PostgreSQL')
-                throw new Error(prefix + (cleanupFailed ? '.' + cleanupMessage : ''))
+                throw new Error(prefix + (cleanupFailed ? '.' + cleanupMessage : ''), { cause: failureCause })
             const phase = /RESTORE_PHASE=(initialize|archive|render|assemble|execute)/u.exec(
                 result?.stderr ?? '',
             )?.[1]
@@ -152,6 +156,7 @@ export function createMaintenanceCommands(options: MaintenanceCommandOptions) {
                     '.' +
                     (details.length ? ' ' + details.join('; ') + '.' : '') +
                     cleanupMessage,
+                { cause: failureCause },
             )
         }
         return result
