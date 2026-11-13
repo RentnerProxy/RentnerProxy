@@ -364,51 +364,73 @@ describe('audit event PostgreSQL persistence', () => {
             const { db, sql } = current
             const targetId = crypto.randomUUID()
             const rollback = new Error('rollback cardinality fixture')
-            await expect(db.transaction(async (transaction) => {
-                const cardinality = async () => {
-                    const [row] = await transaction.execute<{ actual: string; recorded: string; version: string }>(sql`
+            await expect(
+                db.transaction(async (transaction) => {
+                    const cardinality = async () => {
+                        const [row] = await transaction.execute<{
+                            actual: string
+                            recorded: string
+                            version: string
+                        }>(sql`
                         select count(*)::text as actual,
                             (select row_count::text from rentnerproxy.audit_retention_state where singleton) as recorded,
                             (select ctid::text from rentnerproxy.audit_retention_state where singleton) as version
                         from rentnerproxy.audit_events
                     `)
-                    expect(row?.recorded).toBe(row?.actual)
-                    return row!
-                }
-                const original = await cardinality()
-                const [inserted] = await transaction.execute<{ id: string }>(sql`
+                        expect(row?.recorded).toBe(row?.actual)
+                        return row!
+                    }
+                    const original = await cardinality()
+                    const [inserted] = await transaction.execute<{ id: string }>(sql`
                     insert into rentnerproxy.audit_events (actor_kind, action, resource, target_id, result)
                     values ('system', 'apply', 'proxy-runtime', ${targetId}::uuid, 'success') returning id
                 `)
-                const afterInsert = await cardinality()
-                expect(BigInt(afterInsert.actual)).toBe(BigInt(original.actual) + 1n)
-                await transaction.execute(sql`
+                    const afterInsert = await cardinality()
+                    expect(BigInt(afterInsert.actual)).toBe(BigInt(original.actual) + 1n)
+                    await transaction.execute(sql`
                     insert into rentnerproxy.audit_events (id, actor_kind, action, resource, result)
                     values (${inserted!.id}::uuid, 'system', 'apply', 'proxy-runtime', 'success') on conflict do nothing
                 `)
-                const beforeNoop = await cardinality()
-                expect(beforeNoop.version).toBe(afterInsert.version)
-                await transaction.execute(sql`delete from rentnerproxy.audit_events where false`)
-                await transaction.execute(sql`update rentnerproxy.audit_events set created_at = now() where id = ${inserted!.id}::uuid`)
-                expect((await cardinality()).version).toBe(beforeNoop.version)
-                await expect(transaction.transaction(async (nested) => {
-                    await nested.execute(sql`delete from rentnerproxy.audit_events where id = ${inserted!.id}::uuid`)
-                    const [count] = await nested.execute<{ recorded: string }>(sql`select row_count::text as recorded from rentnerproxy.audit_retention_state where singleton`)
-                    expect(count?.recorded).toBe(original.recorded)
-                    throw new Error('rollback raw delete')
-                })).rejects.toThrow('rollback raw delete')
-                expect((await cardinality()).actual).toBe(beforeNoop.actual)
-                await expect(transaction.transaction(async (nested) => {
-                    await nested.execute(sql`truncate rentnerproxy.audit_events`)
-                    const [count] = await nested.execute<{ recorded: string }>(sql`select row_count::text as recorded from rentnerproxy.audit_retention_state where singleton`)
-                    expect(count?.recorded).toBe('0')
-                    throw new Error('rollback truncate')
-                })).rejects.toThrow('rollback truncate')
-                expect((await cardinality()).actual).toBe(beforeNoop.actual)
-                await transaction.execute(sql`delete from rentnerproxy.audit_events where id = ${inserted!.id}::uuid`)
-                expect((await cardinality()).actual).toBe(original.actual)
-                throw rollback
-            })).rejects.toBe(rollback)
+                    const beforeNoop = await cardinality()
+                    expect(beforeNoop.version).toBe(afterInsert.version)
+                    await transaction.execute(
+                        sql`delete from rentnerproxy.audit_events where false`,
+                    )
+                    await transaction.execute(
+                        sql`update rentnerproxy.audit_events set created_at = now() where id = ${inserted!.id}::uuid`,
+                    )
+                    expect((await cardinality()).version).toBe(beforeNoop.version)
+                    await expect(
+                        transaction.transaction(async (nested) => {
+                            await nested.execute(
+                                sql`delete from rentnerproxy.audit_events where id = ${inserted!.id}::uuid`,
+                            )
+                            const [count] = await nested.execute<{ recorded: string }>(
+                                sql`select row_count::text as recorded from rentnerproxy.audit_retention_state where singleton`,
+                            )
+                            expect(count?.recorded).toBe(original.recorded)
+                            throw new Error('rollback raw delete')
+                        }),
+                    ).rejects.toThrow('rollback raw delete')
+                    expect((await cardinality()).actual).toBe(beforeNoop.actual)
+                    await expect(
+                        transaction.transaction(async (nested) => {
+                            await nested.execute(sql`truncate rentnerproxy.audit_events`)
+                            const [count] = await nested.execute<{ recorded: string }>(
+                                sql`select row_count::text as recorded from rentnerproxy.audit_retention_state where singleton`,
+                            )
+                            expect(count?.recorded).toBe('0')
+                            throw new Error('rollback truncate')
+                        }),
+                    ).rejects.toThrow('rollback truncate')
+                    expect((await cardinality()).actual).toBe(beforeNoop.actual)
+                    await transaction.execute(
+                        sql`delete from rentnerproxy.audit_events where id = ${inserted!.id}::uuid`,
+                    )
+                    expect((await cardinality()).actual).toBe(original.actual)
+                    throw rollback
+                }),
+            ).rejects.toBe(rollback)
         },
     )
 
@@ -419,30 +441,40 @@ describe('audit event PostgreSQL persistence', () => {
             const { db, sql } = current
             const targetId = crypto.randomUUID()
             const rollback = new Error('rollback multi-batch cap fixture')
-            await expect(db.transaction(async (transaction) => {
-                await transaction.execute(sql`
+            await expect(
+                db.transaction(async (transaction) => {
+                    await transaction.execute(sql`
                     insert into rentnerproxy.audit_events (created_at, actor_kind, action, resource, target_id, result)
                     select now() - interval '1 day', 'system', 'apply', 'proxy-runtime', ${targetId}::uuid, 'success'
                     from generate_series(1, 100513)
                 `)
-                const [oldest] = await transaction.execute<{ id: string }>(sql`
+                    const [oldest] = await transaction.execute<{ id: string }>(sql`
                     select id from rentnerproxy.audit_events order by created_at,id limit 1
                 `)
-                await current.appendAuditEventInTransactionService(transaction, {
-                    actorUserId: null, actorKind: 'system', action: 'apply',
-                    resource: 'proxy-runtime', targetId, result: 'success',
-                })
-                const [counts] = await transaction.execute<{ actual: string; recorded: string; oldestRemains: boolean }>(sql`
+                    await current.appendAuditEventInTransactionService(transaction, {
+                        actorUserId: null,
+                        actorKind: 'system',
+                        action: 'apply',
+                        resource: 'proxy-runtime',
+                        targetId,
+                        result: 'success',
+                    })
+                    const [counts] = await transaction.execute<{
+                        actual: string
+                        recorded: string
+                        oldestRemains: boolean
+                    }>(sql`
                     select count(*)::text as actual,
                         (select row_count::text from rentnerproxy.audit_retention_state where singleton) as recorded,
                         exists(select 1 from rentnerproxy.audit_events where id = ${oldest!.id}::uuid) as "oldestRemains"
                     from rentnerproxy.audit_events
                 `)
-                expect(counts?.actual).toBe('100000')
-                expect(counts?.recorded).toBe('100000')
-                expect(counts?.oldestRemains).toBe(false)
-                throw rollback
-            })).rejects.toBe(rollback)
+                    expect(counts?.actual).toBe('100000')
+                    expect(counts?.recorded).toBe('100000')
+                    expect(counts?.oldestRemains).toBe(false)
+                    throw rollback
+                }),
+            ).rejects.toBe(rollback)
         },
         10_000,
     )
@@ -461,24 +493,43 @@ describe('audit event PostgreSQL persistence', () => {
                         values ('system', 'apply', 'proxy-runtime', ${targetId}::uuid, 'success')
                     `)
                     let releaseRaw!: () => void
-                    const gate = new Promise<void>((resolve) => { releaseRaw = resolve })
+                    const gate = new Promise<void>((resolve) => {
+                        releaseRaw = resolve
+                    })
                     let rawReady!: (pid: number) => void
-                    const started = new Promise<number>((resolve) => { rawReady = resolve })
-                    const write = (transaction: Parameters<typeof current.appendAuditEventInTransactionService>[0]) =>
+                    const started = new Promise<number>((resolve) => {
+                        rawReady = resolve
+                    })
+                    const write = (
+                        transaction: Parameters<
+                            typeof current.appendAuditEventInTransactionService
+                        >[0],
+                    ) =>
                         current.appendAuditEventInTransactionService(transaction, {
-                            actorUserId: null, actorKind: 'system', action: 'apply',
-                            resource: 'proxy-runtime', targetId, result: 'success',
+                            actorUserId: null,
+                            actorKind: 'system',
+                            action: 'apply',
+                            resource: 'proxy-runtime',
+                            targetId,
+                            result: 'success',
                         })
                     const raw = db.transaction(async (transaction) => {
-                        if (operation === 'insert') await transaction.execute(sql`
+                        if (operation === 'insert')
+                            await transaction.execute(sql`
                             insert into rentnerproxy.audit_events (actor_kind, action, resource, target_id, result)
                             values ('system', 'apply', 'proxy-runtime', ${targetId}::uuid, 'success')
                         `)
-                        else if (operation === 'update') await transaction.execute(sql`
+                        else if (operation === 'update')
+                            await transaction.execute(sql`
                             update rentnerproxy.audit_events set created_at = now() where target_id = ${targetId}::uuid
                         `)
-                        else await transaction.execute(sql`delete from rentnerproxy.audit_events where target_id = ${targetId}::uuid`)
-                        const [pid] = await transaction.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`)
+                        else
+                            await transaction.execute(
+                                sql`delete from rentnerproxy.audit_events where target_id = ${targetId}::uuid`,
+                            )
+                        const [pid] = await transaction.execute<{ pid: number }>(
+                            sql`select pg_backend_pid() as pid`,
+                        )
                         rawReady(pid!.pid)
                         await gate
                         // If raw writes locked rows/counter before the audit lock, this reentrant append
@@ -497,7 +548,9 @@ describe('audit event PostgreSQL persistence', () => {
                         expect(rawLock?.held).toBe(true)
                         let writerPid = 0
                         writer = getAuthDatabase().transaction(async (transaction) => {
-                            const [pid] = await transaction.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`)
+                            const [pid] = await transaction.execute<{ pid: number }>(
+                                sql`select pg_backend_pid() as pid`,
+                            )
                             writerPid = pid!.pid
                             await write(transaction)
                         })
@@ -522,11 +575,15 @@ describe('audit event PostgreSQL persistence', () => {
                     } finally {
                         releaseRaw()
                         // oxlint-disable-next-line no-await-in-loop -- Finish both owned transactions even if a lock assertion fails.
-                        await Promise.allSettled([raw, writer].filter((value) => value !== undefined))
+                        await Promise.allSettled(
+                            [raw, writer].filter((value) => value !== undefined),
+                        )
                     }
                 }
             } finally {
-                await db.execute(sql`delete from rentnerproxy.audit_events where target_id = ${targetId}::uuid`)
+                await db.execute(
+                    sql`delete from rentnerproxy.audit_events where target_id = ${targetId}::uuid`,
+                )
             }
         },
         15_000,
@@ -539,11 +596,17 @@ describe('audit event PostgreSQL persistence', () => {
             const { db, getAuthDatabase, sql } = current
             const targetId = crypto.randomUUID()
             let releaseBlocker!: () => void
-            const blockerGate = new Promise<void>((resolve) => { releaseBlocker = resolve })
+            const blockerGate = new Promise<void>((resolve) => {
+                releaseBlocker = resolve
+            })
             let blockerReady!: () => void
-            const blockerStarted = new Promise<void>((resolve) => { blockerReady = resolve })
+            const blockerStarted = new Promise<void>((resolve) => {
+                blockerReady = resolve
+            })
             const blocker = db.transaction(async (transaction) => {
-                await transaction.execute(sql`select pg_advisory_xact_lock(${current.AUDIT_RETENTION_LOCK_ID})`)
+                await transaction.execute(
+                    sql`select pg_advisory_xact_lock(${current.AUDIT_RETENTION_LOCK_ID})`,
+                )
                 blockerReady()
                 await blockerGate
             })
@@ -554,11 +617,17 @@ describe('audit event PostgreSQL persistence', () => {
                 await blockerStarted
                 let writerPid = 0
                 writer = getAuthDatabase().transaction(async (transaction) => {
-                    const [pid] = await transaction.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`)
+                    const [pid] = await transaction.execute<{ pid: number }>(
+                        sql`select pg_backend_pid() as pid`,
+                    )
                     writerPid = pid!.pid
                     await current.appendAuditEventInTransactionService(transaction, {
-                        actorUserId: null, actorKind: 'system', action: 'apply',
-                        resource: 'proxy-runtime', targetId, result: 'success',
+                        actorUserId: null,
+                        actorKind: 'system',
+                        action: 'apply',
+                        resource: 'proxy-runtime',
+                        targetId,
+                        result: 'success',
                     })
                 })
                 await waitForLock(async () => {
@@ -569,14 +638,22 @@ describe('audit event PostgreSQL persistence', () => {
                     return lock!.held
                 })
                 let truncatePid = 0
-                truncation = db.transaction(async (transaction) => {
-                    const [pid] = await transaction.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`)
-                    truncatePid = pid!.pid
-                    await transaction.execute(sql`truncate rentnerproxy.audit_events`)
-                    const [state] = await transaction.execute<{ recorded: string }>(sql`select row_count::text as recorded from rentnerproxy.audit_retention_state where singleton`)
-                    expect(state?.recorded).toBe('0')
-                    throw rollback
-                }).catch((error: unknown) => { if (error !== rollback) throw error })
+                truncation = db
+                    .transaction(async (transaction) => {
+                        const [pid] = await transaction.execute<{ pid: number }>(
+                            sql`select pg_backend_pid() as pid`,
+                        )
+                        truncatePid = pid!.pid
+                        await transaction.execute(sql`truncate rentnerproxy.audit_events`)
+                        const [state] = await transaction.execute<{ recorded: string }>(
+                            sql`select row_count::text as recorded from rentnerproxy.audit_retention_state where singleton`,
+                        )
+                        expect(state?.recorded).toBe('0')
+                        throw rollback
+                    })
+                    .catch((error: unknown) => {
+                        if (error !== rollback) throw error
+                    })
                 await waitForLock(async () => {
                     const [lock] = await db.execute<{ waiting: boolean }>(sql`
                         select exists(select 1 from pg_locks where pid = ${truncatePid}
@@ -595,8 +672,12 @@ describe('audit event PostgreSQL persistence', () => {
                 expect(counts?.recorded).toBe(counts?.actual)
             } finally {
                 releaseBlocker()
-                await Promise.allSettled([blocker, writer, truncation].filter((value) => value !== undefined))
-                await db.execute(sql`delete from rentnerproxy.audit_events where target_id = ${targetId}::uuid`)
+                await Promise.allSettled(
+                    [blocker, writer, truncation].filter((value) => value !== undefined),
+                )
+                await db.execute(
+                    sql`delete from rentnerproxy.audit_events where target_id = ${targetId}::uuid`,
+                )
             }
         },
         10_000,

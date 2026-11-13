@@ -20,9 +20,12 @@ function fixture(excess = '1') {
                     const statement = new PgDialect().sqlToQuery(query).sql
                     statements.push(statement)
                     if (statement.includes('audit_retention_state')) return resolve([{ excess }])
-                    if (statement.includes('order by')) return resolve([{
-                        id: '00000000-0000-4000-8000-000000000001',
-                    }])
+                    if (statement.includes('order by'))
+                        return resolve([
+                            {
+                                id: '00000000-0000-4000-8000-000000000001',
+                            },
+                        ])
                     return resolve([])
                 }),
         }),

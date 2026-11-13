@@ -8,7 +8,9 @@ export async function generateCustomMigrations(options: {
     outputDirectory: string
     generate: (name: string) => Promise<void>
 }): Promise<void> {
-    const sources = (await readdir(options.sourceDirectory)).filter((name) => name.endsWith('.sql')).toSorted()
+    const sources = (await readdir(options.sourceDirectory))
+        .filter((name) => name.endsWith('.sql'))
+        .toSorted()
     for (const source of sources) {
         // oxlint-disable-next-line no-await-in-loop -- Each generated migration must follow its predecessor's snapshot.
         await generateSource(options, source)
@@ -21,7 +23,10 @@ async function generateSource(
 ): Promise<void> {
     const name = source.slice(0, -4)
     if (!/^[a-z][a-z0-9_]*$/u.test(name)) throw new Error('Invalid custom migration source name')
-    const content = (await readFile(join(options.sourceDirectory, source), 'utf8')).replaceAll('\r\n', '\n')
+    const content = (await readFile(join(options.sourceDirectory, source), 'utf8')).replaceAll(
+        '\r\n',
+        '\n',
+    )
     const digest = createHash('sha256').update(content).digest('hex')
     const generated = `-- Generated from CustomMigrations/${source}; sha256:${digest}\n${content}`
     const before = await readdir(options.outputDirectory)
@@ -39,7 +44,8 @@ async function generateSource(
     await options.generate(name)
     const after = await readdir(options.outputDirectory)
     const created = after.filter((file) => !before.includes(file) && file.endsWith(`_${name}.sql`))
-    if (created.length !== 1) throw new Error(`Kit did not generate exactly one custom migration: ${name}`)
+    if (created.length !== 1)
+        throw new Error(`Kit did not generate exactly one custom migration: ${name}`)
     const output = join(options.outputDirectory, created[0]!)
     const placeholder = await readFile(output, 'utf8')
     if (!isKitPlaceholder(placeholder))

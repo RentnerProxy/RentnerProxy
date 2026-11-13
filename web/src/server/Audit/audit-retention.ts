@@ -81,7 +81,9 @@ async function pruneAuditEventsInTransaction(transaction: AuthTransaction): Prom
     while (excess > 0n) {
         // Bounded ID batches avoid tuple-range selectivity estimates that can scan all retained
         // rows when many events share one timestamp. Only the obsolete prefix is traversed.
-        const limit = Number(excess < AUDIT_RETENTION_DELETE_BATCH ? excess : AUDIT_RETENTION_DELETE_BATCH)
+        const limit = Number(
+            excess < AUDIT_RETENTION_DELETE_BATCH ? excess : AUDIT_RETENTION_DELETE_BATCH,
+        )
         // oxlint-disable-next-line no-await-in-loop -- Delete each oldest batch before advancing within the same locked transaction.
         const obsolete = await transaction.execute<{ id: string }>(sql`
             select "id" from "rentnerproxy"."audit_events"
@@ -92,7 +94,10 @@ async function pruneAuditEventsInTransaction(transaction: AuthTransaction): Prom
         // oxlint-disable-next-line no-await-in-loop -- Statement triggers atomically decrement the exact count for this batch.
         await transaction.execute(sql`
             delete from "rentnerproxy"."audit_events"
-            where "id" in (${sql.join(obsolete.map(({ id }) => sql`${id}::uuid`), sql`, `)})
+            where "id" in (${sql.join(
+                obsolete.map(({ id }) => sql`${id}::uuid`),
+                sql`, `,
+            )})
         `)
         excess -= BigInt(obsolete.length)
     }
