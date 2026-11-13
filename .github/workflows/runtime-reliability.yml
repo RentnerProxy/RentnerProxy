@@ -11,6 +11,7 @@ on:
                 options:
                     - short
                     - long
+                    - background-recovery
             duration-seconds:
                 description: Optional duration bound (30 to 7200 seconds)
                 type: string
@@ -43,8 +44,12 @@ env:
 
 jobs:
     runtime-reliability:
-        name: ${{ github.event_name == 'workflow_dispatch' && inputs.profile || 'short' }} / current
-        runs-on: ubuntu-latest
+        name: ${{ github.event_name == 'workflow_dispatch' && inputs.profile || 'short' }} / current / ${{ matrix.architecture }}
+        strategy:
+            fail-fast: false
+            matrix:
+                include: ${{ fromJSON(inputs.profile == 'background-recovery' && '[{"architecture":"amd64","runner":"ubuntu-latest"},{"architecture":"arm64","runner":"ubuntu-24.04-arm"}]' || '[{"architecture":"amd64","runner":"ubuntu-latest"}]') }}
+        runs-on: ${{ matrix.runner }}
         timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs['duration-seconds'] != '' && 240 || 90 }}
         steps:
             - name: Prepare sanitized failure report
@@ -63,6 +68,25 @@ jobs:
               uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
               with:
                   bun-version: ${{ env.BUN_VERSION }}
+
+            - name: Require native architecture and fixed recovery bounds
+              env:
+                  ARCHITECTURE: ${{ matrix.architecture }}
+                  PROFILE: ${{ inputs.profile }}
+                  DURATION_SECONDS: ${{ inputs['duration-seconds'] }}
+                  ITERATIONS: ${{ inputs.iterations }}
+                  CONCURRENCY: ${{ inputs.concurrency }}
+              run: |
+                  case "$ARCHITECTURE/$(uname -m)" in
+                    amd64/x86_64|arm64/aarch64) ;;
+                    *) exit 1 ;;
+                  esac
+                  test "$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}')" = "linux/$ARCHITECTURE"
+                  if [ "$PROFILE" = background-recovery ]; then
+                    test -z "$DURATION_SECONDS"
+                    test -z "$ITERATIONS"
+                    test -z "$CONCURRENCY"
+                  fi
 
             - name: Install dependencies
               run: bun install --frozen-lockfile
@@ -84,6 +108,7 @@ jobs:
               with:
                   context: ${{ runner.temp }}/runtime-reliability-source
                   file: ${{ runner.temp }}/runtime-reliability-source/docker/production/Dockerfile
+                  platforms: linux/${{ matrix.architecture }}
                   load: true
                   push: false
                   tags: rentnerproxy-reliability-${{ env.RENTNERPROXY_SMOKE_RUN }}:current
@@ -91,11 +116,12 @@ jobs:
                       org.opencontainers.image.revision=${{ github.event.pull_request.head.sha || github.sha }}
                       io.rentnerproxy.smoke-run=${{ env.RENTNERPROXY_SMOKE_RUN }}
                   cache-from: |
-                      type=gha,version=2,scope=runtime-reliability-appliance-v1,timeout=2m
-                      type=gha,version=2,scope=production-smokes-appliance-v1,timeout=2m
-                  cache-to: type=gha,version=2,scope=runtime-reliability-appliance-v1,mode=max,timeout=2m,ignore-error=true
+                      type=gha,version=2,scope=runtime-reliability-appliance-${{ matrix.architecture }}-v1,timeout=2m
+                      type=gha,version=2,scope=production-smokes-appliance-${{ matrix.architecture }}-v1,timeout=2m
+                  cache-to: type=gha,version=2,scope=runtime-reliability-appliance-${{ matrix.architecture }}-v1,mode=max,timeout=2m,ignore-error=true
 
             - name: Run isolated runtime reliability fixture
+              if: inputs.profile != 'background-recovery'
               env:
                   PROFILE: ${{ github.event_name == 'workflow_dispatch' && inputs.profile || 'short' }}
                   DURATION_SECONDS: ${{ inputs['duration-seconds'] }}
@@ -111,6 +137,15 @@ jobs:
                   if [ -n "$SEED" ]; then args+=(--seed "$SEED"); fi
                   bun --no-env-file --no-orphans scripts/runtime-reliability/run.ts "${args[@]}"
 
+            - name: Run selected bounded background recovery cases
+              if: inputs.profile == 'background-recovery'
+              env:
+                  SEED: ${{ inputs.seed }}
+              run: |
+                  args=(--policies 100 --duration-seconds 120 --extended-recovery true --image "rentnerproxy-reliability-${RENTNERPROXY_SMOKE_RUN}:current" --report "$RUNNER_TEMP/runtime-reliability-report/report.json")
+                  if [ -n "$SEED" ]; then args+=(--seed "$SEED"); fi
+                  bun --no-env-file --no-orphans scripts/runtime-scale/background-run.ts "${args[@]}"
+
             - name: Remove this run's private Docker resources
               if: always() && steps.bun.outcome == 'success'
               run: bun --no-env-file .github/scripts/ci/production-smoke-ci.ts cleanup
@@ -119,7 +154,139 @@ jobs:
               if: always()
               uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
               with:
-                  name: runtime-reliability-current-${{ github.run_attempt }}
+                  name: ${{ inputs.profile == 'background-recovery' && format('background-recovery-{0}-{1}', matrix.architecture, github.run_attempt) || format('runtime-reliability-current-{0}', github.run_attempt) }}
                   path: ${{ runner.temp }}/runtime-reliability-report/report.json
+                  if-no-files-found: error
+                  retention-days: 30
+
+    worker-postgres-evidence:
+        name: Isolated worker PostgreSQL and history evidence
+        if: inputs.profile == 'background-recovery'
+        runs-on: ubuntu-latest
+        timeout-minutes: 25
+        steps:
+            - name: Check out exact production and historical comparison sources
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  persist-credentials: false
+                  fetch-depth: 0
+                  ref: ${{ github.sha }}
+
+            - name: Set up Bun
+              uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+              with:
+                  bun-version: ${{ env.BUN_VERSION }}
+
+            - name: Install locked fixture dependencies
+              run: bun --no-env-file install --frozen-lockfile
+
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+            - name: Prepare isolated PostgreSQL tooling
+              uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+              with:
+                  context: .
+                  file: docker/tooling/coverage/Dockerfile
+                  load: true
+                  push: false
+                  tags: rentnerproxy-worker-evidence:tooling
+                  cache-from: type=gha,version=2,scope=worker-postgres-evidence-v1,timeout=2m
+                  cache-to: type=gha,version=2,scope=worker-postgres-evidence-v1,mode=max,timeout=2m,ignore-error=true
+
+            - name: Measure actual SQL, backend CPU and IO in a fresh private database
+              env:
+                  SOURCE_SHA: ${{ github.sha }}
+              run: |
+                  mkdir -p "$RUNNER_TEMP/worker-postgres-evidence"
+                  docker run --rm --network none --name "rentnerproxy-worker-sql-${RENTNERPROXY_SMOKE_RUN}-profile" --label "io.rentnerproxy.worker-evidence=$RENTNERPROXY_SMOKE_RUN" --env "RENTNERPROXY_EVIDENCE_SOURCE_SHA=$SOURCE_SHA" --mount "type=bind,source=$GITHUB_WORKSPACE,target=/workspace,readonly" --mount "type=bind,source=$RUNNER_TEMP/worker-postgres-evidence,target=/reports" --entrypoint bash rentnerproxy-worker-evidence:tooling .github/scripts/ci/worker-postgres-evidence.sh profile /reports
+
+            - name: Verify actual competing locks and live retention cursors in a separate fresh database
+              env:
+                  SOURCE_SHA: ${{ github.sha }}
+              run: docker run --rm --network none --name "rentnerproxy-worker-sql-${RENTNERPROXY_SMOKE_RUN}-regressions" --label "io.rentnerproxy.worker-evidence=$RENTNERPROXY_SMOKE_RUN" --env "RENTNERPROXY_EVIDENCE_SOURCE_SHA=$SOURCE_SHA" --mount "type=bind,source=$GITHUB_WORKSPACE,target=/workspace,readonly" --mount "type=bind,source=$RUNNER_TEMP/worker-postgres-evidence,target=/reports" --entrypoint bash rentnerproxy-worker-evidence:tooling .github/scripts/ci/worker-postgres-evidence.sh regressions /reports
+
+            - name: Remove only this run's unfinished SQL fixtures
+              if: always()
+              run: |
+                  for mode in profile regressions; do
+                    name="rentnerproxy-worker-sql-${RENTNERPROXY_SMOKE_RUN}-$mode"
+                    owner="$(docker inspect --format '{{ index .Config.Labels "io.rentnerproxy.worker-evidence" }}' "$name" 2>/dev/null || true)"
+                    if [ -n "$owner" ] && [ "$owner" != "$RENTNERPROXY_SMOKE_RUN" ]; then exit 1; fi
+                    if [ "$owner" = "$RENTNERPROXY_SMOKE_RUN" ]; then docker rm --force "$name"; fi
+                  done
+
+            - name: Return private reports to the runner without widening permissions
+              if: always()
+              run: |
+                  reports="$RUNNER_TEMP/worker-postgres-evidence"
+                  owner="$(id -u):$(id -g)"
+                  test ! -L "$reports"
+                  for name in migrations-profile.log profile.log sql-profile.json migrations-regressions.log regressions.log; do
+                    file="$reports/$name"
+                    test ! -L "$file"
+                    if [ ! -e "$file" ]; then continue; fi
+                    test -f "$file"
+                    sudo chown --no-dereference "$owner" "$file"
+                    test -r "$file"
+                  done
+                  if [ -f "$reports/sql-profile.json" ]; then
+                    test "$(stat --format=%a "$reports/sql-profile.json")" = 600
+                    test "$(stat --format=%u:%g "$reports/sql-profile.json")" = "$owner"
+                  fi
+
+            - name: Store source-bound SQL and history evidence
+              if: always()
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+              with:
+                  name: worker-postgres-evidence-${{ github.run_attempt }}
+                  path: ${{ runner.temp }}/worker-postgres-evidence
+                  if-no-files-found: error
+                  retention-days: 30
+
+    background-evidence:
+        name: Native background recovery coverage
+        if: ${{ always() && inputs.profile == 'background-recovery' }}
+        needs: runtime-reliability
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        steps:
+            - name: Check out the exact evidence source
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  persist-credentials: false
+                  ref: ${{ github.sha }}
+
+            - name: Set up Bun
+              uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+              with:
+                  bun-version: ${{ env.BUN_VERSION }}
+
+            - name: Install locked evidence dependencies
+              run: bun --no-env-file install --frozen-lockfile
+
+            - name: Prepare incomplete coverage report
+              run: |
+                  mkdir -p "$RUNNER_TEMP/background-coverage"
+                  printf '%s\n' '{"status":"insufficient","capacity":"insufficient","failure":"native-matrix-not-completed"}' > "$RUNNER_TEMP/background-coverage/matrix.json"
+
+            - name: Read only this run's native reports
+              uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+              with:
+                  pattern: background-recovery-*-${{ github.run_attempt }}
+                  path: ${{ runner.temp }}/background-coverage/reports
+
+            - name: Verify completed faults and exact source and image bindings
+              env:
+                  SOURCE_SHA: ${{ github.sha }}
+                  ATTEMPT: ${{ github.run_attempt }}
+              run: bun --no-env-file .github/scripts/ci/background-recovery-evidence.ts "$SOURCE_SHA" "$RUNNER_TEMP/background-coverage/reports/background-recovery-amd64-$ATTEMPT/report.json" "$RUNNER_TEMP/background-coverage/reports/background-recovery-arm64-$ATTEMPT/report.json" "$RUNNER_TEMP/background-coverage/matrix.json"
+
+            - name: Store the qualified coverage and its explicit limits
+              if: always()
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+              with:
+                  name: background-recovery-coverage-${{ github.run_attempt }}
+                  path: ${{ runner.temp }}/background-coverage/matrix.json
                   if-no-files-found: error
                   retention-days: 30

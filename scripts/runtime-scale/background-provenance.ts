@@ -1,6 +1,11 @@
 import { createHash } from 'node:crypto'
 import { readFile, readdir, realpath } from 'node:fs/promises'
 import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path'
+import { BACKGROUND_FIXTURE_SOURCE_PATHS } from './background-source.config.ts'
+import {
+    RELIABILITY_FIXTURE_ARCHIVE_PATHS,
+    RELIABILITY_FIXTURE_SOURCE_PATHS,
+} from '../runtime-reliability/fixture-source.config.ts'
 
 async function collect(directory: string): Promise<string[]> {
     const entries = await readdir(directory, { withFileTypes: true })
@@ -16,7 +21,25 @@ async function collect(directory: string): Promise<string[]> {
 
 /** Hash only the explicitly staged source tree; paths stay relative and no environment or runtime state is inspected. */
 export async function backgroundSourceManifest(root: string) {
-    const paths = (await collect(root)).toSorted()
+    return manifestForPaths(root, await collect(root))
+}
+
+/** Independently rebuild the expected fixture manifest from the checked-out archive inputs and staged source allowlist. */
+export async function backgroundFixtureSourceManifest(root: string) {
+    const paths = await Promise.all(
+        RELIABILITY_FIXTURE_ARCHIVE_PATHS.map(async (path) =>
+            path === 'web/src' ? collect(join(root, path)) : [join(root, path)],
+        ),
+    )
+    return manifestForPaths(root, [
+        ...paths.flat(),
+        ...BACKGROUND_FIXTURE_SOURCE_PATHS.map((path) => join(root, path)),
+        ...RELIABILITY_FIXTURE_SOURCE_PATHS.map((path) => join(root, path)),
+    ])
+}
+
+async function manifestForPaths(root: string, sourcePaths: readonly string[]) {
+    const paths = [...new Set(sourcePaths)].toSorted()
     if (paths.length > 10_000) throw new Error('Fixture source manifest exceeds bound')
     const files = await Promise.all(
         paths.map(async (path) => ({

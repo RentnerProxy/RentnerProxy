@@ -94,6 +94,9 @@ const unhealthy: HostMonitoringOutcome = {
     durationMs: 3_000,
     httpStatus: null,
 }
+function historyFixtureId(index: number): string {
+    return '00000399-0000-4000-8000-' + String(index).padStart(12, '0')
+}
 const unknown: HostMonitoringOutcome = {
     status: 'unknown',
     code: 'runtime_unavailable',
@@ -1243,6 +1246,72 @@ describe('durable scheduled monitoring repository', () => {
                     ),
                 ).size,
             ).toBe(5)
+        },
+    )
+
+    integrationTest(
+        'history cursors remain live and duplicate-free across tied-time insertion and fair retention',
+        async () => {
+            const policy = await fixture({ sampleLimit: 10 })
+            const checkedAt = new Date()
+            await db.insert(hostCheckObservations).values(
+                Array.from({ length: 14 }, (_, index) => ({
+                    id: historyFixtureId(index + 1),
+                    policyId: policy.id,
+                    policyVersion: policy.version,
+                    status: 'healthy' as const,
+                    code: 'expected_status' as const,
+                    checkedAt,
+                })),
+            )
+            const first = await db.transaction((transaction) =>
+                readHostMonitoringHistory(transaction, policy.id, { limit: 3 }),
+            )
+            expect(first.observations.map((item) => item.id)).toEqual(
+                [14, 13, 12].map(historyFixtureId),
+            )
+            expect(first.hasMore).toBe(true)
+            const cursor = first.observations.at(-1)
+            if (!cursor) throw new Error('Owned first history page is empty')
+            await db.insert(hostCheckObservations).values({
+                id: historyFixtureId(20),
+                policyId: policy.id,
+                policyVersion: policy.version,
+                status: 'healthy',
+                code: 'expected_status',
+                checkedAt,
+            })
+            await pruneHostMonitoringHistory()
+            const second = await db.transaction((transaction) =>
+                readHostMonitoringHistory(transaction, policy.id, {
+                    limit: 3,
+                    before: { checkedAt: cursor.checkedAt, id: cursor.id },
+                }),
+            )
+            expect(second.observations.map((item) => item.id)).toEqual(
+                [11, 10, 9].map(historyFixtureId),
+            )
+            expect(second.hasMore).toBe(true)
+            const next = second.observations.at(-1)
+            if (!next) throw new Error('Owned second history page is empty')
+            const third = await db.transaction((transaction) =>
+                readHostMonitoringHistory(transaction, policy.id, {
+                    limit: 3,
+                    before: { checkedAt: next.checkedAt, id: next.id },
+                }),
+            )
+            expect(third.observations.map((item) => item.id)).toEqual(
+                [8, 7, 6].map(historyFixtureId),
+            )
+            expect(third.hasMore).toBe(false)
+            const readIds = [
+                ...first.observations,
+                ...second.observations,
+                ...third.observations,
+            ].map((item) => item.id)
+            expect(new Set(readIds).size).toBe(9)
+            expect(readIds).not.toContain(historyFixtureId(20))
+            expect(readIds).not.toContain(historyFixtureId(5))
         },
     )
 

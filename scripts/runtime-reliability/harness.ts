@@ -12,9 +12,13 @@ import { waitForSmoke } from '../smoke/wait.ts'
 import type { CommandOptions, FixtureResult, ReliabilityContext } from './Types/harness.types.ts'
 // oxlint-disable no-await-in-loop -- Fault injection, recovery probes and lifecycle changes depend on the preceding step.
 import assert from 'node:assert/strict'
+import {
+    RELIABILITY_FIXTURE_ARCHIVE_PATHS,
+    RELIABILITY_FIXTURE_SOURCE_PATHS,
+} from './fixture-source.config.ts'
 import { dockerBuildDiagnostic } from '../smoke/docker-build-diagnostics.ts'
 import { pebbleFailureCategories } from './diagnostics.ts'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { isIPv4 } from 'node:net'
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -88,13 +92,7 @@ export function createFixtureDnsAddressUpdater(domain: string, addresses: Map<st
 }
 
 export async function stageReliabilityFixtureSources(fixtureRoot: string): Promise<void> {
-    for (const relativePath of [
-        'scripts/runtime-reliability/fixture.ts',
-        'scripts/runtime-reliability/fixture-core.ts',
-        'scripts/runtime-reliability/fixture-context.ts',
-        'scripts/runtime-reliability/fixture.validation.ts',
-        'scripts/lib/request-context.ts',
-    ]) {
+    for (const relativePath of RELIABILITY_FIXTURE_SOURCE_PATHS) {
         const destination = join(fixtureRoot, relativePath)
         const contents = await readFile(join(repositoryRoot, relativePath), 'utf8')
         await mkdir(dirname(destination), { recursive: true })
@@ -707,11 +705,42 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
             ],
             { env, timeoutMs: 300_000 },
         )
-        await docker([
-            'cp',
-            join(temp, 'reliability-fixture.js'),
-            container + ':/opt/rentnerproxy/web/reliability-fixture.js',
-        ])
+        // A fresh appliance has none of the run-owned support probes installed before restore.
+        const fixtureNames = [
+            'reliability-fixture.js',
+            ...(options.backgroundTelemetry
+                ? [
+                      'background-contention-receiver.js',
+                      'background-contention-web.js',
+                      'background-capture-read.js',
+                  ]
+                : []),
+        ]
+        const expectedArtifacts = await Promise.all(
+            fixtureNames.map(async (name) => {
+                const path = join(temp, name)
+                const sha256 = createHash('sha256')
+                    .update(await readFile(path))
+                    .digest('hex')
+                await docker(['cp', path, container + ':/opt/rentnerproxy/web/' + name])
+                return { name, sha256 }
+            }),
+        )
+        const installedArtifacts = JSON.parse(
+            await docker([
+                'exec',
+                container,
+                'bun',
+                '--no-env-file',
+                '-e',
+                `console.log(JSON.stringify(await Promise.all(${JSON.stringify(fixtureNames)}.map(async name=>({name,sha256:new Bun.CryptoHasher('sha256').update(await Bun.file('/opt/rentnerproxy/web/'+name).arrayBuffer()).digest('hex')})))))`,
+            ]),
+        ) as unknown
+        assert.deepEqual(
+            installedArtifacts,
+            expectedArtifacts,
+            'Restore reinstalls the exact run-owned fixture and support probes',
+        )
         await docker(['cp', statePath, container + ':/tmp/rentnerproxy-reliability-fixture.json'])
         const fixtureStatePath = '/tmp/rentnerproxy-reliability-fixture.json'
         // The maintenance fixture runs as root; match its original private file ownership.
@@ -963,12 +992,7 @@ process.stdout.write(JSON.stringify({status:response.status, body:await response
         check('health', 'bundled Valkey is ready')
         const fixtureRoot = join(temp, 'fixture-source')
         const fixtureTsconfig = 'tsconfig.json'
-        await archive(targetSha, fixtureRoot, [
-            'web/src',
-            fixtureTsconfig,
-            'package.json',
-            'bun.lock',
-        ])
+        await archive(targetSha, fixtureRoot, [...RELIABILITY_FIXTURE_ARCHIVE_PATHS])
         await stageReliabilityFixtureSources(fixtureRoot)
         const fixtureSource = join(fixtureRoot, 'scripts/runtime-reliability', 'fixture.ts')
         const bundle = join(temp, 'reliability-fixture.js')

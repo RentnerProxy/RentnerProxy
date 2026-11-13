@@ -110,6 +110,34 @@ export function assertCertificateReplayEvidence(evidence: {
     )
 }
 
+/** Name every selected fault explicitly; selection remains separate from completed execution evidence. */
+export function backgroundFaultSelection(extendedRecovery: boolean): string[] {
+    return [
+        'policy-version',
+        'lease-expiry',
+        'host-change',
+        'host-disabled',
+        'access-policy-change',
+        'trusted-ca-change',
+        'database-lock',
+        'cancelled',
+        'duplicate-completion',
+        'notification-lease-faults',
+        'web-stop',
+        'controller-stop',
+        'postgres-pause',
+        'web-pause',
+        ...(extendedRecovery
+            ? [
+                  'interrupted-certificate-jobs',
+                  'active-work-restore',
+                  'monitoring-final-fence',
+                  'audit-cursor-replay',
+              ]
+            : []),
+    ]
+}
+
 export const backgroundSlo = {
     intervalSeconds: 60,
     dueToNetworkStartP99Ms: 55000,

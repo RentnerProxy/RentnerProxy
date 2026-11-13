@@ -5,7 +5,11 @@ import { dirname, join, resolve } from 'node:path'
 import {
     backgroundAutomationManifest,
     recheckBackgroundAutomationManifest,
+    backgroundSourceManifest,
+    backgroundFixtureSourceManifest,
 } from '../../../../../../scripts/runtime-scale/background-provenance.ts'
+import { BACKGROUND_FIXTURE_SOURCE_PATHS } from '../../../../../../scripts/runtime-scale/background-source.config.ts'
+import { RELIABILITY_FIXTURE_SOURCE_PATHS } from '../../../../../../scripts/runtime-reliability/fixture-source.config.ts'
 
 async function fixture(root: string) {
     const sources = {
@@ -29,6 +33,33 @@ async function fixture(root: string) {
     )
     return Object.keys(sources).toSorted()
 }
+
+test('expected fixture manifest matches both source staging owners and archive inputs, and excludes unrelated files', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'background-fixture-inputs-'))
+    try {
+        const paths = [
+            ...BACKGROUND_FIXTURE_SOURCE_PATHS,
+            ...RELIABILITY_FIXTURE_SOURCE_PATHS,
+            'web/src/fixture.ts',
+            'package.json',
+            'bun.lock',
+            'tsconfig.json',
+        ]
+        await Promise.all(
+            [...new Set(paths)].map(async (path) => {
+                await mkdir(dirname(join(root, path)), { recursive: true })
+                await writeFile(join(root, path), path)
+            }),
+        )
+        const staged = await backgroundSourceManifest(root)
+        await writeFile(join(root, 'unrelated.txt'), 'not a fixture input')
+        expect(await backgroundFixtureSourceManifest(root)).toEqual(staged)
+        await writeFile(join(root, 'scripts/lib/request-context.ts'), 'changed staging input')
+        expect((await backgroundFixtureSourceManifest(root)).sha256).not.toBe(staged.sha256)
+    } finally {
+        await rm(root, { recursive: true, force: true })
+    }
+})
 
 test('the actual runner closure includes both entry points and shared smoke process/wait execution', async () => {
     const manifest = await backgroundAutomationManifest(

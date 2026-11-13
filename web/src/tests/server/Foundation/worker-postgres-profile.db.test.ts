@@ -2,8 +2,9 @@
 import { SQL } from 'bun'
 import { expect, spyOn, test } from 'bun:test'
 import * as crypto from 'node:crypto'
-import { readFile } from 'node:fs/promises'
+import { open, readFile } from 'node:fs/promises'
 import { sql } from 'drizzle-orm'
+import { postgresCpuDelta, readPostgresCpuSnapshot } from '@/tests/Helpers/postgresCpu.ts'
 
 type Sample = {
     name: string
@@ -38,7 +39,7 @@ function git(...args: string[]): string {
 
 /** Stamp the actual checked-out production bytes, including uncommitted changes, independently of the requested Git revision. */
 async function sourceStamp() {
-    const paths = git('ls-files', 'web/src/server', 'web/src/db', 'web/src/config')
+    const paths = git('ls-files', 'web/src/server', 'web/src/db', 'web/src/config', 'web/src/lib')
         .split('\n')
         .filter((path) => path.endsWith('.ts'))
     const digest = crypto.createHash('sha256')
@@ -58,10 +59,15 @@ async function sourceStamp() {
             'web/src/server',
             'web/src/db',
             'web/src/config',
+            'web/src/lib',
         ),
         helperSha256: crypto
             .createHash('sha256')
             .update(await readFile(import.meta.filename))
+            .digest('hex'),
+        cpuHelperSha256: crypto
+            .createHash('sha256')
+            .update(await readFile(new URL('../../Helpers/postgresCpu.ts', import.meta.url)))
             .digest('hex'),
     }
 }
@@ -358,6 +364,11 @@ const enabled = process.env.RENTNERPROXY_POSTGRES_PROFILE === '1'
         )
             throw new Error('Profile requires its explicitly owned disposable loopback database')
         const before = await sourceStamp()
+        const expectedSource = process.env.RENTNERPROXY_POSTGRES_PROFILE_SOURCE
+        if (expectedSource) {
+            expect(before.head).toBe(expectedSource)
+            expect(before.dirtyProductionPaths).toBe('')
+        }
         const { db } = await import('@/db/index.ts')
         const observer = new SQL(url, {
             max: 1,
@@ -365,12 +376,20 @@ const enabled = process.env.RENTNERPROXY_POSTGRES_PROFILE === '1'
         })
         const restores: Array<() => void> = []
         const reports: unknown[] = []
+        const cpuProfile = process.env.RENTNERPROXY_POSTGRES_PROFILE_CPU === '1'
+        const runQueueCountersEnabled =
+            cpuProfile &&
+            (await readFile('/proc/sys/kernel/sched_schedstats', 'utf8')).trim() === '1'
         const scopeDatabase = 'worker_profile_scope_' + crypto.randomBytes(6).toString('hex')
         let scopeCreated = false
         let scopeClient: SQL | undefined
         try {
-            const [server] = await observer`select current_setting('server_version') version,
+            const [server] = await observer<
+                { version: string; max_connections: string; track_io_timing: string }[]
+            >`select current_setting('server_version') version,
                 current_setting('max_connections') max_connections, current_setting('track_io_timing') track_io_timing`
+            if (!server) throw new Error('PostgreSQL server identity unavailable')
+            expect(server.track_io_timing).toBe('on')
             const [occupied] = await observer<{ count: number }[]>`select
             (select count(*) from rentnerproxy.proxy_hosts) + (select count(*) from rentnerproxy.users) +
             (select count(*) from rentnerproxy.certificate_binding_jobs) as count`
@@ -448,7 +467,9 @@ const enabled = process.env.RENTNERPROXY_POSTGRES_PROFILE === '1'
                     lockWaitSamples: 0,
                     connectionSamples: [],
                 }
+                const cpuBefore = cpuProfile ? await readPostgresCpuSnapshot(observer) : null
                 let sampling: Promise<unknown> | undefined
+                let samplingFailed = false
                 const timer = setInterval(() => {
                     if (sampling) return
                     sampling = observer<
@@ -459,6 +480,9 @@ const enabled = process.env.RENTNERPROXY_POSTGRES_PROFILE === '1'
                         .then(([row]) => {
                             sample.connectionSamples.push(row!.connections)
                             if (row!.lock_waiters) sample.lockWaitSamples++
+                        })
+                        .catch(() => {
+                            samplingFailed = true
                         })
                         .finally(() => {
                             sampling = undefined
@@ -477,9 +501,23 @@ const enabled = process.env.RENTNERPROXY_POSTGRES_PROFILE === '1'
                 const wallMs = performance.now() - start
                 const used = process.cpuUsage(cpu)
                 await sampling
+                if (samplingFailed) throw new Error('PostgreSQL profile sampling failed')
+                const cpuAfter = cpuProfile ? await readPostgresCpuSnapshot(observer) : null
+                const backendCpu =
+                    cpuBefore && cpuAfter ? postgresCpuDelta(cpuBefore, cpuAfter) : null
+                if (backendCpu) expect(backendCpu.status).toBe('complete')
                 const [pg] = await observer`select coalesce(sum(calls),0)::float8 calls,
                 coalesce(sum(total_exec_time),0)::float8 exec_ms, coalesce(sum(rows),0)::float8 rows,
                 coalesce(sum(wal_bytes),0)::float8 wal_bytes,
+                coalesce(sum(shared_blks_hit),0)::float8 shared_blks_hit,
+                coalesce(sum(shared_blks_read),0)::float8 shared_blks_read,
+                coalesce(sum(shared_blks_written),0)::float8 shared_blks_written,
+                coalesce(sum(temp_blks_read),0)::float8 temp_blks_read,
+                coalesce(sum(temp_blks_written),0)::float8 temp_blks_written,
+                coalesce(sum(shared_blk_read_time),0)::float8 shared_read_ms,
+                coalesce(sum(shared_blk_write_time),0)::float8 shared_write_ms,
+                coalesce(sum(temp_blk_read_time),0)::float8 temp_read_ms,
+                coalesce(sum(temp_blk_write_time),0)::float8 temp_write_ms,
                 count(distinct dbid)::int database_count from pg_stat_statements
                 where dbid=${databaseOid}::oid and query not like '%pg_stat%' and query not like '%worker_profile%'
                 and query not in ('BEGIN', 'COMMIT', 'ROLLBACK')`
@@ -499,6 +537,13 @@ const enabled = process.env.RENTNERPROXY_POSTGRES_PROFILE === '1'
                     ...numeric,
                     wallMs,
                     processCpuMs: (used.user + used.system) / 1000,
+                    postgresBackendCpu: backendCpu
+                        ? {
+                              ...backendCpu,
+                              runQueueMs: runQueueCountersEnabled ? backendCpu.runQueueMs : null,
+                              runQueueCountersEnabled,
+                          }
+                        : null,
                     hydratedJsonUtf8Bytes: Buffer.byteLength(
                         JSON.stringify(rows, (_key, item: unknown) =>
                             typeof item === 'bigint' ? item.toString() : item,
@@ -815,45 +860,58 @@ const enabled = process.env.RENTNERPROXY_POSTGRES_PROFILE === '1'
             const after = await sourceStamp()
             expect(after.productionSha256).toBe(before.productionSha256)
             expect(after.head).toBe(before.head)
-            console.info(
-                JSON.stringify({
-                    kind: 'worker-postgres-profile-v2',
-                    source: before,
-                    sourceAfter: after,
-                    bun: Bun.version,
-                    postgres: server,
-                    statisticsScope: {
-                        databaseOid,
-                        resetArguments: statisticsIdentity.reset_arguments,
-                        untouchedSentinelDatabaseOid: scopeIdentity.oid,
-                        sentinelStatisticsPreserved: true,
-                    },
-                    platform: process.platform,
-                    architecture: process.arch,
-                    semantics: {
-                        singlePass: true,
-                        warmup: false,
-                        sqlQueries:
-                            'Actually awaited Drizzle SQL.unsafe queries; native BEGIN/COMMIT are separate',
-                        hydratedBytes:
-                            'UTF-8 JSON encoding of actual driver result rows, outside timing; not PostgreSQL wire or heap bytes',
-                        jsonbWrites:
-                            'Logical UTF-8 JSONB text per written row and column; not WAL or physical TOAST bytes',
-                        cpu: 'Process CPU includes instrumentation; JSON and node:crypto/Bun CryptoHasher update/digest counters cover JS entrypoints only, excluding native SQL JSON decoding',
-                        transactionTiming:
-                            'Root BEGIN arrays exclude nested SAVEPOINTs, which have separate entry/callback arrays; explicit lock completion to transaction settlement is a client-observed hold interval, not exact server lock hold',
-                        waits: '5ms sampled Lock waits and connection counts; client-minus-PG is a residual, not attributed pool/network wait. Failed SQL execution time is not attributed by pg_stat_statements',
-                        observerOverhead:
-                            'JSONB AFTER triggers add PostgreSQL CPU/WAL and retain transaction atomicity; observer SQL excluded from counters',
-                        controller:
-                            'Certificate cursor uses injected empty page/metadata; actual capture, CAS, cursor persistence and retention SQL run',
-                        capacity:
-                            'insufficient; bounded per-operation profile, no throughput or capacity claim',
-                    },
-                    operations: reports,
-                    retention,
-                }),
-            )
+            const report = {
+                kind: 'worker-postgres-profile-v3',
+                source: before,
+                sourceAfter: after,
+                bun: Bun.version,
+                postgres: server,
+                statisticsScope: {
+                    databaseOid,
+                    resetArguments: statisticsIdentity.reset_arguments,
+                    untouchedSentinelDatabaseOid: scopeIdentity.oid,
+                    sentinelStatisticsPreserved: true,
+                },
+                platform: process.platform,
+                architecture: process.arch,
+                semantics: {
+                    singlePass: true,
+                    warmup: false,
+                    sqlQueries:
+                        'Actually awaited Drizzle SQL.unsafe queries; native BEGIN/COMMIT are separate',
+                    hydratedBytes:
+                        'UTF-8 JSON encoding of actual driver result rows, outside timing; not PostgreSQL wire or heap bytes',
+                    jsonbWrites:
+                        'Logical UTF-8 JSONB text per written row and column; not WAL or physical TOAST bytes',
+                    cpu: 'Process CPU includes instrumentation; JSON and node:crypto/Bun CryptoHasher update/digest counters cover JS entrypoints only, excluding native SQL JSON decoding',
+                    transactionTiming:
+                        'Root BEGIN arrays exclude nested SAVEPOINTs, which have separate entry/callback arrays; explicit lock completion to transaction settlement is a client-observed hold interval, not exact server lock hold',
+                    waits: '5ms sampled Lock waits and connection counts; client-minus-PG is a residual, not attributed pool/network wait. Failed SQL execution time is not attributed by pg_stat_statements',
+                    postgresCpu:
+                        'Optional collocated Linux /proc backend-generation and schedstat deltas; observer and auxiliary processes excluded. Operation windows include trigger overhead and backend startup. Runqueue time stays unknown when kernel schedstats are disabled; it is never SQL lock wait.',
+                    postgresIo:
+                        'pg_stat_statements block counts and PostgreSQL 18 I/O timing with track_io_timing enabled; buffer hits do not imply physical disk reads',
+                    observerOverhead:
+                        'JSONB AFTER triggers add PostgreSQL CPU/WAL and retain transaction atomicity; observer SQL excluded from counters',
+                    controller:
+                        'Certificate cursor uses injected empty page/metadata; actual capture, CAS, cursor persistence and retention SQL run',
+                    capacity:
+                        'insufficient; bounded per-operation profile, no throughput or capacity claim',
+                },
+                operations: reports,
+                retention,
+            }
+            const text = JSON.stringify(report)
+            console.info(text)
+            const reportPath = process.env.RENTNERPROXY_POSTGRES_PROFILE_REPORT
+            if (reportPath) {
+                const file = await open(reportPath, 'wx', 0o600)
+                try {
+                    await file.writeFile(text + '\n')
+                } finally {
+                    await file.close()
+                }
+            }
         } finally {
             active = undefined
             for (const restore of restores.toReversed()) restore()

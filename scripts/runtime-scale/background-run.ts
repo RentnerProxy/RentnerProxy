@@ -13,6 +13,7 @@ import {
     backgroundResourceEvidence,
     backgroundRecoveryBaseline,
     backgroundFailureDiagnostic,
+    backgroundFaultSelection,
     backgroundSlo,
     parseBackgroundOptions,
 } from './background.ts'
@@ -25,7 +26,11 @@ import {
 } from './background-pause.ts'
 import { exerciseExtendedBackgroundRecovery } from './background-extended.ts'
 import { backgroundPolicies } from './background.ts'
-import { backgroundReceiptsSchema, backgroundSnapshotSchema } from './background.validation.ts'
+import {
+    backgroundReceiptsSchema,
+    backgroundSnapshotSchema,
+    backgroundExtendedRecoverySchema,
+} from './background.validation.ts'
 import { stageBackgroundFixtureSources } from './background-source.ts'
 import { settleBackgroundCapture } from './background-capture-settlement.ts'
 import { backgroundCaptureReadCommand } from './background-capture-read.ts'
@@ -306,22 +311,7 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
         durationSeconds: options.durationSeconds,
         contention: options.contention === true,
         extendedRecovery: options.extendedRecovery === true,
-        faults: [
-            'policy-version',
-            'lease-expiry',
-            'host-change',
-            'host-disabled',
-            'access-policy-change',
-            'trusted-ca-change',
-            'database-lock',
-            'cancelled',
-            'duplicate-completion',
-            'notification-lease-faults',
-            'web-stop',
-            'controller-stop',
-            'postgres-pause',
-            'web-pause',
-        ],
+        faults: backgroundFaultSelection(options.extendedRecovery === true),
     }
     let proxyFailures = 0
     let origin = 0
@@ -667,6 +657,8 @@ export async function runBackgroundScenarios(options: BackgroundOptions) {
     const passed =
         !failure &&
         monitoring?.status === 'met' &&
+        (!options.extendedRecovery ||
+            backgroundExtendedRecoverySchema.safeParse(extendedRecovery).success) &&
         (!options.contention || contention?.status === 'met') &&
         !receiptsOverflowed &&
         resourceEvidence.status !== 'unmet' &&
