@@ -48,18 +48,7 @@ pub(crate) fn validate_trusted_ca(
 pub(crate) fn validate_trusted_ca_pem(
     pem: &str,
 ) -> Result<ValidatedTrustedCa, TrustedCaValidationError> {
-    if pem.len() > MAX_TRUSTED_CA_PEM_BYTES
-        || !crate::pem::has_only_pem_blocks(pem, &["CERTIFICATE"], false)
-    {
-        return Err(TrustedCaValidationError::InvalidTrustedCa);
-    }
-
-    let certificates: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(pem.as_bytes())
-        .collect::<Result<_, _>>()
-        .map_err(|_| TrustedCaValidationError::InvalidTrustedCa)?;
-    if certificates.is_empty() || certificates.len() > MAX_TRUSTED_CA_CERTIFICATES {
-        return Err(TrustedCaValidationError::InvalidTrustedCa);
-    }
+    let certificates = material_certificates(pem)?;
 
     let now = OffsetDateTime::now_utc().unix_timestamp();
     let mut first_metadata = None;
@@ -116,6 +105,22 @@ pub(crate) fn validate_trusted_ca_pem(
         not_before,
         not_after,
     })
+}
+
+pub(crate) fn trusted_ca_material_fingerprint(pem: &str) -> Result<String, TrustedCaValidationError> {
+    Ok(bundle_fingerprint(&material_certificates(pem)?))
+}
+
+fn material_certificates(pem: &str) -> Result<Vec<CertificateDer<'static>>, TrustedCaValidationError> {
+    if pem.len() > MAX_TRUSTED_CA_PEM_BYTES || !crate::pem::has_only_pem_blocks(pem, &["CERTIFICATE"], false) {
+        return Err(TrustedCaValidationError::InvalidTrustedCa);
+    }
+    let certificates: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(pem.as_bytes())
+        .collect::<Result<_, _>>().map_err(|_| TrustedCaValidationError::InvalidTrustedCa)?;
+    if certificates.is_empty() || certificates.len() > MAX_TRUSTED_CA_CERTIFICATES {
+        return Err(TrustedCaValidationError::InvalidTrustedCa);
+    }
+    Ok(certificates)
 }
 
 fn bundle_fingerprint(certificates: &[CertificateDer<'_>]) -> String {

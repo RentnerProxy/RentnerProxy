@@ -16,6 +16,7 @@ async function loadDatabaseTestContext() {
     const { createSessionService } = await import('@/server/Auth/Access/sessions.service.ts')
     const { getAuthDatabase } = await import('@/server/Auth/Core/database.server.ts')
     const { listAuditEventsService } = await import('@/server/Audit/audit-reader.service.ts')
+    const { AUDIT_RETENTION_LOCK_ID } = await import('@/server/Audit/audit-retention.ts')
     const { appendAuditEventInTransactionService, appendAuditEventsInTransactionService } =
         await import('@/server/Audit/audit.service.ts')
     const { count, eq, inArray, sql } = await import('drizzle-orm')
@@ -67,6 +68,7 @@ async function loadDatabaseTestContext() {
     return {
         appendAuditEventInTransactionService,
         appendAuditEventsInTransactionService,
+        AUDIT_RETENTION_LOCK_ID,
         auditEvents,
         db,
         deleteUser,
@@ -343,6 +345,130 @@ describe('audit event PostgreSQL persistence', () => {
                 .where(eq(auditEvents.targetId, targetId))
             expect(remaining[0]?.value).toBe(0)
         },
+    )
+
+    integrationTest(
+        'managed concurrent mutations reconcile raw fixtures exactly once before commit',
+        async () => {
+            const current = await loadDatabaseTestContext()
+            const { auditEvents, count, db, getAuthDatabase, inArray, sql } = current
+            const seedTarget = crypto.randomUUID()
+            const targets = [crypto.randomUUID(), crypto.randomUUID()]
+            try {
+                await db.execute(sql`
+                    insert into "rentnerproxy"."audit_events"
+                        ("created_at", "actor_kind", "action", "resource", "target_id", "result")
+                    select now() - interval '1 day', 'system', 'apply', 'proxy-runtime', ${seedTarget}::uuid, 'success'
+                    from generate_series(1, 100001)
+                `)
+                await Promise.all(targets.map((targetId) =>
+                    getAuthDatabase().transaction(async (transaction) => {
+                        for (let index = 0; index < 20; index++) {
+                            // oxlint-disable-next-line no-await-in-loop -- Mirrors per-object audit writes within one import.
+                            await current.appendAuditEventInTransactionService(transaction, {
+                                actorUserId: null,
+                                actorKind: 'system',
+                                action: 'apply',
+                                resource: 'proxy-runtime',
+                                targetId,
+                                result: 'success',
+                            })
+                        }
+                    }),
+                ))
+                expect((await db.select({ value: count() }).from(auditEvents))[0]?.value).toBe(100_000)
+                expect((await db.select({ value: count() }).from(auditEvents)
+                    .where(inArray(auditEvents.targetId, targets)))[0]?.value).toBe(40)
+            } finally {
+                await db.delete(auditEvents).where(inArray(auditEvents.targetId, [seedTarget, ...targets]))
+            }
+        },
+        15_000,
+    )
+
+    integrationTest(
+        'managed savepoints discard rolled-back audit events and preserve atomic root rollback',
+        async () => {
+            const current = await loadDatabaseTestContext()
+            const { auditEvents, db, getAuthDatabase, inArray } = current
+            const targets = Array.from({ length: 3 }, () => crypto.randomUUID())
+            const write = (transaction: Parameters<typeof current.appendAuditEventInTransactionService>[0], targetId: string) =>
+                current.appendAuditEventInTransactionService(transaction, {
+                    actorUserId: null, actorKind: 'system', action: 'apply',
+                    resource: 'proxy-runtime', targetId, result: 'success',
+                })
+            try {
+                await getAuthDatabase().transaction(async (outer) => {
+                    await expect(outer.transaction(async (inner) => {
+                        await write(inner, targets[0]!)
+                        throw new Error('rollback savepoint')
+                    })).rejects.toThrow('rollback savepoint')
+                    await outer.transaction((inner) => write(inner, targets[1]!))
+                    await write(outer, targets[2]!)
+                })
+                const committed = await db.select({ targetId: auditEvents.targetId }).from(auditEvents)
+                    .where(inArray(auditEvents.targetId, targets))
+                expect(committed.map((row) => row.targetId).toSorted()).toEqual(targets.slice(1).toSorted())
+                await db.delete(auditEvents).where(inArray(auditEvents.targetId, targets))
+                await expect(getAuthDatabase().transaction(async (outer) => {
+                    await outer.transaction((inner) => write(inner, targets[0]!))
+                    await write(outer, targets[1]!)
+                    throw new Error('rollback root')
+                })).rejects.toThrow('rollback root')
+                expect(await db.select({ id: auditEvents.id }).from(auditEvents)
+                    .where(inArray(auditEvents.targetId, targets))).toHaveLength(0)
+            } finally {
+                await db.delete(auditEvents).where(inArray(auditEvents.targetId, targets))
+            }
+        },
+    )
+
+    integrationTest(
+        'reads hide expired rows without deletion or waiting for the audit writer lock',
+        async () => {
+            const current = await loadDatabaseTestContext()
+            const { auditEvents, db, eq, getAuthDatabase, sql } = current
+            await getAuthDatabase().transaction((transaction) => current.ensureAuthorizationRegistryInTransaction(transaction))
+            const ownerId = await current.createUser('owner')
+            const targetId = crypto.randomUUID()
+            try {
+                // Session setup must finish before the synthetic writer starts holding its lock.
+                await current.withUser(ownerId, async () => {
+                    await db.execute(sql`
+                        insert into "rentnerproxy"."audit_events"
+                            ("created_at", "actor_user_id", "actor_kind", "action", "resource", "target_id", "result")
+                        values (now() - interval '91 days', ${ownerId}::uuid, 'user', 'update', 'user', ${targetId}::uuid, 'success')
+                    `)
+                    await db.transaction(async (writer) => {
+                        await writer.execute(sql`select pg_advisory_xact_lock(${current.AUDIT_RETENTION_LOCK_ID})`)
+                        let timeout: ReturnType<typeof setTimeout> | undefined
+                        try {
+                            const result = await Promise.race([
+                                current.listAuditEventsService({
+                                    actorUserId: ownerId,
+                                    action: 'update',
+                                    resource: 'user',
+                                    from: new Date(Date.now() - 365 * 24 * 60 * 60 * 1_000).toISOString(),
+                                }),
+                                new Promise<never>((_resolve, reject) => {
+                                    timeout = setTimeout(() => reject(new Error('audit reader waited for writer lock')), 2_000)
+                                }),
+                            ])
+                            expect(result.events).toHaveLength(0)
+                            expect(result.hasMore).toBe(false)
+                        } finally {
+                            clearTimeout(timeout)
+                        }
+                    })
+                    expect(await db.select({ id: auditEvents.id }).from(auditEvents)
+                        .where(eq(auditEvents.targetId, targetId))).toHaveLength(1)
+                })
+            } finally {
+                await db.delete(auditEvents).where(eq(auditEvents.targetId, targetId))
+                await current.deleteUser(ownerId)
+            }
+        },
+        10_000,
     )
 
     integrationTest(

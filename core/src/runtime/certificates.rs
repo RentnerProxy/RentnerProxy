@@ -234,6 +234,7 @@ pub(crate) struct CertificateStore {
     index: tokio::sync::Mutex<CertificateIndex>,
     leases: tokio::sync::Mutex<BTreeSet<String>>,
     readiness: tokio::sync::Mutex<CertificateStoreReadiness>,
+    gc_cursor: tokio::sync::Mutex<super::tls_gc_cursor::MaterialCursor>,
 }
 
 mod activation;
@@ -242,6 +243,7 @@ mod dns_lifecycle;
 mod initialization;
 mod issuance;
 mod material;
+mod material_gc;
 mod material_files;
 mod persistence;
 mod provider_connections;

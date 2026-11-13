@@ -1,6 +1,7 @@
 import '@tanstack/react-start/server-only'
 
-import { and, asc, desc, eq, gte, lte, lt, or, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, gte, lte, lt, or } from 'drizzle-orm'
+import type { SQL } from 'drizzle-orm'
 
 import { PERMISSIONS } from '@/config/permissions.config.ts'
 import { auditEvents, users } from '@/db/schema.ts'
@@ -20,7 +21,7 @@ import {
 import { requirePermissionService } from '@/server/Auth/Access/authorization.service.ts'
 import { getAuthDatabase } from '@/server/Auth/Core/database.server.ts'
 import { AuthDomainError } from '@/server/Auth/Core/errors.server.ts'
-import { AUDIT_RETENTION_LOCK_ID, pruneAuditEventsInTransaction } from './audit.service.ts'
+import { AUDIT_RETENTION_DAYS } from './audit-retention.ts'
 
 const AUDIT_METADATA_MAX_BYTES = 4_096
 
@@ -36,7 +37,9 @@ function parseStoredMetadata(value: unknown): AuditMetadata {
 }
 
 function queryConditions(query: ReturnType<typeof auditEventsQuerySchema.parse>) {
-    const conditions = []
+    const conditions: (SQL | undefined)[] = [
+        gte(auditEvents.createdAt, new Date(Date.now() - AUDIT_RETENTION_DAYS * 24 * 60 * 60 * 1_000)),
+    ]
     if (query.actorUserId) conditions.push(eq(auditEvents.actorUserId, query.actorUserId))
     if (query.action) conditions.push(eq(auditEvents.action, query.action))
     if (query.resource) conditions.push(eq(auditEvents.resource, query.resource))
@@ -64,10 +67,6 @@ function queryConditions(query: ReturnType<typeof auditEventsQuerySchema.parse>)
 export async function listAuditEventsService(input: AuditEventsQuery): Promise<AuditEventsResult> {
     await requirePermissionService(PERMISSIONS.AUDIT_LOGS_VIEW)
     const query = auditEventsQuerySchema.parse(input)
-    await getAuthDatabase().transaction(async (transaction) => {
-        await transaction.execute(sql`select pg_advisory_xact_lock(${AUDIT_RETENTION_LOCK_ID})`)
-        await pruneAuditEventsInTransaction(transaction)
-    })
     return getAuthDatabase().transaction(
         async (transaction) => {
             const rows = await transaction
