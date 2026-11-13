@@ -4,11 +4,11 @@ use std::{
 };
 
 use super::super::tls_gc_cursor::{Entry, MAX_ENTRIES_PER_PASS};
-use super::recovery::candidate_is_valid;
+use super::recovery::{candidate_is_valid, remove_candidate_manifest_from_directory};
 use super::validation::{index_is_valid, read_regular_private_file};
 use super::{
     CertificateError, CertificateIndex, CertificateStore, SafeDir, StoredCertificateCandidate,
-    is_canonical_uuid_v7,
+    CertificateOperation, CertificateOperationStage, CertificateStatus, is_canonical_uuid_v7,
 };
 
 const MAX_REMOVALS_PER_PASS: usize = 64;
@@ -83,7 +83,11 @@ impl CertificateStore {
                     || durable
                         .as_ref()
                         .is_some_and(|index| index.pending_candidates.contains_key(id));
-                if !candidate.retired || pending {
+                if name == id && !candidate.retired && committed_candidate(&index, durable.as_ref(), id, &candidate) {
+                    remove_candidate_manifest_from_directory(&certificate)?;
+                    remaining -= 1;
+                    if remaining == 0 { return Ok(()); }
+                } else if !candidate.retired || pending {
                     for material in [candidate.staged.material_id, candidate.base_material_id]
                         .into_iter()
                         .flatten()
@@ -180,6 +184,21 @@ impl CertificateStore {
         }
         Ok(())
     }
+}
+
+fn committed_candidate(index: &CertificateIndex, durable: Option<&CertificateIndex>, id: &str, candidate: &StoredCertificateCandidate) -> bool {
+    let Some(material) = candidate.staged.material_id.as_ref() else { return false };
+    durable.is_some_and(|durable| [index, durable].into_iter().all(|index| {
+        !index.pending_candidates.contains_key(id)
+            && index.certificates.get(id).is_some_and(|entry| {
+                entry.material_id.as_ref() == Some(material)
+                    && entry.metadata.operation == CertificateOperation::Idle
+                    && entry.metadata.status == CertificateStatus::Valid
+                    && entry.metadata.current_operation.as_ref().is_none_or(|operation| matches!(operation.stage,
+                        CertificateOperationStage::Applied | CertificateOperationStage::Failed
+                            | CertificateOperationStage::Cancelled | CertificateOperationStage::Expired))
+            })
+    }))
 }
 
 fn remove_owned_root(root: &SafeDir, name: &str) -> Result<(), CertificateError> {

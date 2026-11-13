@@ -6,6 +6,9 @@ const UNKNOWN: &str = "0198d98a-0000-7000-8000-000000000071";
 #[path = "terminal_gc.rs"]
 mod terminal;
 
+#[path = "committed_gc.rs"]
+mod committed;
+
 #[tokio::test]
 async fn certificate_gc_recovers_uncommitted_delete_before_reclaiming_committed_tombstone() {
     let state = test_state_dir();
