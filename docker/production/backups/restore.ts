@@ -167,7 +167,9 @@ export function validationCommand(snapshot: string, temporary: string) {
         'gosu postgres createdb --host="$socket_directory" --port="$PGPORT" --username=postgres rentnerproxy',
         postgresRestoreCommand(true, snapshot),
         // Retain only numeric size evidence after the owned SQL files are cleaned up.
-        'stat --format=%s "$rendered_sql_path" "$restore_sql_path" > ' + temporary + '/sql-capacity',
+        'stat --format=%s "$rendered_sql_path" "$restore_sql_path" > ' +
+            temporary +
+            '/sql-capacity',
         'bun --no-env-file /opt/rentnerproxy/web/backup-export.js --validate-restore ' +
             snapshot +
             ' ' +
@@ -180,10 +182,19 @@ export async function validateRestoreDatabase(snapshot: string, crowdsec: string
     await validateDatabase(snapshot, 55439, crowdsec, join(dirname(crowdsec), 'socket'))
 }
 
-export async function measureRestoreCapacity(temporary: string, signal?: AbortSignal): Promise<RestoreCapacityEvidence> {
-    const footprint = await command(['du', '--summarize', '--bytes', join(temporary, 'postgres')], signal)
+export async function measureRestoreCapacity(
+    temporary: string,
+    signal?: AbortSignal,
+): Promise<RestoreCapacityEvidence> {
+    const footprint = await command(
+        ['du', '--summarize', '--bytes', join(temporary, 'postgres')],
+        signal,
+    )
     const databaseBytes = Number(/^([0-9]+)\s/u.exec(footprint)?.[1])
-    const file = await open(join(temporary, 'sql-capacity'), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+    const file = await open(
+        join(temporary, 'sql-capacity'),
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    )
     let sqlSizes: number[]
     try {
         const info = await file.stat()
@@ -193,8 +204,12 @@ export async function measureRestoreCapacity(temporary: string, signal?: AbortSi
     } finally {
         await file.close()
     }
-    if (!Number.isSafeInteger(databaseBytes) || databaseBytes <= 0 || sqlSizes.length !== 2 ||
-        sqlSizes.some((bytes) => !Number.isSafeInteger(bytes) || bytes <= 0))
+    if (
+        !Number.isSafeInteger(databaseBytes) ||
+        databaseBytes <= 0 ||
+        sqlSizes.length !== 2 ||
+        sqlSizes.some((bytes) => !Number.isSafeInteger(bytes) || bytes <= 0)
+    )
         throw new Error('restore capacity evidence unavailable')
     const sqlBytes = sqlSizes.reduce((sum, bytes) => sum + bytes, 0)
     if (!Number.isSafeInteger(sqlBytes)) throw new Error('restore capacity evidence unavailable')
@@ -323,7 +338,8 @@ export async function restoreManagedBackup(id: string, signal?: AbortSignal) {
     await phase('validating', 8)
     const metadata = verified.metadata
     const stateBytes = metadata.controllerState.bytes + metadata.crowdSecState.bytes
-    const snapshotBytes = stateBytes + metadata.postgres.bytes + metadata.applicationEncryptionKey.bytes + 65_536
+    const snapshotBytes =
+        stateBytes + metadata.postgres.bytes + metadata.applicationEncryptionKey.bytes + 65_536
     // TAR bodies are uncompressed; archive bytes bound the extracted payload. Existing
     // live data is already reflected in free space and remains present during replacement.
     await assertBackupCapacity([
@@ -348,7 +364,10 @@ export async function restoreManagedBackup(id: string, signal?: AbortSignal) {
             ['crowdsec-state.tar', verified.metadata.crowdSecState],
         ] as const)
             await snapshotBackupArtifact(
-                join(directory, name), join(snapshot, name), artifactMetadata, signal,
+                join(directory, name),
+                join(snapshot, name),
+                artifactMetadata,
+                signal,
                 backupCapacityGuard([backupRoot]),
             )
         await phase('validating', 12)

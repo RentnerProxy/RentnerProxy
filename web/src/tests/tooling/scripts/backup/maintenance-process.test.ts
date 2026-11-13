@@ -210,7 +210,8 @@ test('capped stdout fails and stops an otherwise long-running child', async () =
 test('capacity exhaustion stops a quiet command without waiting for its overall timeout', async () => {
     let checks = 0
     const result = await runMaintenanceProcess(child('setInterval(() => {}, 1000)'), {
-        cwd, timeoutMs: 5_000,
+        cwd,
+        timeoutMs: 5_000,
         checkCapacity: async () => {
             checks++
             if (checks > 1) throw new Error('synthetic exhausted disk')
@@ -228,20 +229,26 @@ test('streamed capture checks its reserve again before the next bounded write ba
     const file = await open(join(directory, 'capture'), 'wx', 0o600)
     let checks = 0
     try {
-        const result = await runMaintenanceProcess(child(
-            'process.stdout.write(Buffer.alloc(32 * 1024 * 1024)); setInterval(() => {}, 1000)',
-        ), {
-            cwd, timeoutMs: 5_000,
-            outputFile: { file, maximumBytes: BACKUP_RUNTIME_POLICY.maximumArtifactBytes },
-            checkCapacity: async () => {
-                checks++
-                if (checks > 1) throw new Error('synthetic exhausted disk')
+        const result = await runMaintenanceProcess(
+            child(
+                'process.stdout.write(Buffer.alloc(32 * 1024 * 1024)); setInterval(() => {}, 1000)',
+            ),
+            {
+                cwd,
+                timeoutMs: 5_000,
+                outputFile: { file, maximumBytes: BACKUP_RUNTIME_POLICY.maximumArtifactBytes },
+                checkCapacity: async () => {
+                    checks++
+                    if (checks > 1) throw new Error('synthetic exhausted disk')
+                },
             },
-        })
+        )
         expect(result.failed).toBe(true)
         expect(result.stopped).toBe(true)
         expect(result.artifact).toBeUndefined()
-        expect((await file.stat()).size).toBeLessThanOrEqual(BACKUP_RUNTIME_POLICY.capacityCheckBytes)
+        expect((await file.stat()).size).toBeLessThanOrEqual(
+            BACKUP_RUNTIME_POLICY.capacityCheckBytes,
+        )
     } finally {
         await file.close()
         await rm(directory, { recursive: true, force: true })
@@ -249,15 +256,23 @@ test('streamed capture checks its reserve again before the next bounded write ba
 })
 
 test('failed initial capacity admission never dispatches a command', async () => {
-    await expect(runMaintenanceProcess(['must-not-spawn'], {
-        cwd, timeoutMs: 5_000,
-        checkCapacity: async () => { throw new Error('synthetic admission rejection') },
-    })).rejects.toThrow('synthetic admission rejection')
+    await expect(
+        runMaintenanceProcess(['must-not-spawn'], {
+            cwd,
+            timeoutMs: 5_000,
+            checkCapacity: async () => {
+                throw new Error('synthetic admission rejection')
+            },
+        }),
+    ).rejects.toThrow('synthetic admission rejection')
 })
 
 test('a stalled capacity admission remains bounded before process dispatch', async () => {
-    await expect(runMaintenanceProcess(['must-not-spawn'], {
-        cwd, timeoutMs: 20,
-        checkCapacity: () => new Promise(() => {}),
-    })).rejects.toThrow('maintenance deadline exceeded')
+    await expect(
+        runMaintenanceProcess(['must-not-spawn'], {
+            cwd,
+            timeoutMs: 20,
+            checkCapacity: () => new Promise(() => {}),
+        }),
+    ).rejects.toThrow('maintenance deadline exceeded')
 })

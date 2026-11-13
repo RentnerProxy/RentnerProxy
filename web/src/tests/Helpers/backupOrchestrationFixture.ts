@@ -20,7 +20,11 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createManagedBackupEngine } from '../../../../scripts/backup/managed-jobs.ts'
 import { runMaintenanceProcess } from '../../../../scripts/backup/maintenance-process.ts'
-import { createRecoveryKey, encryptBackup, decryptBackup } from '../../../../scripts/backup/offhost/envelope.ts'
+import {
+    createRecoveryKey,
+    encryptBackup,
+    decryptBackup,
+} from '../../../../scripts/backup/offhost/envelope.ts'
 import { verifyPublishedBackup } from '../../../../scripts/backup/publication.ts'
 import { copyCoverageFixtureModules } from './coverageFixture.ts'
 
@@ -75,14 +79,16 @@ export async function runBackupOrchestrationFixture(scenario: string) {
     let sampling = Promise.resolve()
     const sampleMemory = async () => {
         const statuses = await Promise.all(
-            (await readdir('/proc')).filter((name) => /^\d+$/u.test(name)).map(async (pid) => {
-                const status = await readFile(`/proc/${pid}/status`, 'utf8').catch(() => '')
-                return {
-                    pid: Number(pid),
-                    parent: Number(/^PPid:\s+(\d+)/mu.exec(status)?.[1]),
-                    peak: Number(/^VmHWM:\s+(\d+)/mu.exec(status)?.[1] ?? 0) * 1024,
-                }
-            }),
+            (await readdir('/proc'))
+                .filter((name) => /^\d+$/u.test(name))
+                .map(async (pid) => {
+                    const status = await readFile(`/proc/${pid}/status`, 'utf8').catch(() => '')
+                    return {
+                        pid: Number(pid),
+                        parent: Number(/^PPid:\s+(\d+)/mu.exec(status)?.[1]),
+                        peak: Number(/^VmHWM:\s+(\d+)/mu.exec(status)?.[1] ?? 0) * 1024,
+                    }
+                }),
         )
         const owned = new Set([process.pid])
         let previousSize = 0
@@ -93,9 +99,11 @@ export async function runBackupOrchestrationFixture(scenario: string) {
         for (const status of statuses)
             if (owned.has(status.pid)) peakRssBytes = Math.max(peakRssBytes, status.peak)
     }
-    const memoryTimer = large ? setInterval(() => {
-        sampling = sampling.then(sampleMemory)
-    }, 100) : undefined
+    const memoryTimer = large
+        ? setInterval(() => {
+              sampling = sampling.then(sampleMemory)
+          }, 100)
+        : undefined
     const psql = [
         'gosu',
         'postgres',
@@ -400,13 +408,17 @@ export async function runBackupOrchestrationFixture(scenario: string) {
                 )
                 await chown(acknowledgement, 10002, 10002)
             }
-            await command([
-                process.execPath,
-                '--no-env-file',
-                join(code, 'docker/production/backups/export.ts'),
-                kind === 'restore' ? '--restore' : '--run',
-                request.id,
-            ], undefined, large ? 240_000 : 25_000)
+            await command(
+                [
+                    process.execPath,
+                    '--no-env-file',
+                    join(code, 'docker/production/backups/export.ts'),
+                    kind === 'restore' ? '--restore' : '--run',
+                    request.id,
+                ],
+                undefined,
+                large ? 240_000 : 25_000,
+            )
             await command([
                 process.execPath,
                 '--no-env-file',
@@ -453,7 +465,7 @@ export async function runBackupOrchestrationFixture(scenario: string) {
             cipherHashVerified =
                 encrypted.bytes === (await lstat(encryptedPath)).size &&
                 encrypted.bytes === afterExport.jobs[0]!.artifact!.bytes + 112 &&
-                encrypted.sha256 === await fileHash(encryptedPath)
+                encrypted.sha256 === (await fileHash(encryptedPath))
             await decryptBackup(encryptedPath, decryptedPath, recoveryKey)
             const decrypted = await verifyPublishedBackup(decryptedPath)
             encryptedRoundtrip =
@@ -480,7 +492,11 @@ export async function runBackupOrchestrationFixture(scenario: string) {
             await chmod(download, 0o600)
             const extracted = join(directory, 'downloaded-artifact')
             await mkdir(extracted, { mode: 0o700 })
-            await command(['tar', '--extract', '--file=' + download, '--directory=' + extracted], undefined, large ? 120_000 : 25_000)
+            await command(
+                ['tar', '--extract', '--file=' + download, '--directory=' + extracted],
+                undefined,
+                large ? 120_000 : 25_000,
+            )
             const downloaded = await verifyPublishedBackup(extracted)
             downloadVerified =
                 downloaded.metadataSha256 === afterExport.jobs[0]!.artifact!.metadataSha256 &&
@@ -540,12 +556,14 @@ export async function runBackupOrchestrationFixture(scenario: string) {
         if (large) {
             const payload = await open(payloadPath, 'r')
             try {
-                payloadVerified = (await payload.stat()).size === payloadBytes &&
-                    await fileHash(payloadPath) === payloadHash
+                payloadVerified =
+                    (await payload.stat()).size === payloadBytes &&
+                    (await fileHash(payloadPath)) === payloadHash
                 for (const sentinel of sentinels) {
                     const buffer = Buffer.alloc(sentinel.bytes.length)
                     const result = await payload.read(buffer, 0, buffer.length, sentinel.offset)
-                    payloadVerified &&= result.bytesRead === buffer.length && buffer.equals(sentinel.bytes)
+                    payloadVerified &&=
+                        result.bytesRead === buffer.length && buffer.equals(sentinel.bytes)
                 }
             } finally {
                 await payload.close()
@@ -642,16 +660,16 @@ export async function runBackupOrchestrationFixture(scenario: string) {
 async function artifactHashes(directory: string): Promise<Record<string, string>> {
     return Object.fromEntries(
         await Promise.all(
-            (await readdir(directory)).toSorted().map(async (name) => [
-                name,
-                await fileHash(join(directory, name)),
-            ]),
+            (await readdir(directory))
+                .toSorted()
+                .map(async (name) => [name, await fileHash(join(directory, name))]),
         ),
     )
 }
 
 async function fileHash(path: string): Promise<string> {
     const hash = createHash('sha256')
-    for await (const chunk of createReadStream(path, { highWaterMark: 256 * 1024 })) hash.update(chunk)
+    for await (const chunk of createReadStream(path, { highWaterMark: 256 * 1024 }))
+        hash.update(chunk)
     return hash.digest('hex')
 }

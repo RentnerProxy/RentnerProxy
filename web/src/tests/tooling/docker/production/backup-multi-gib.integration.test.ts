@@ -31,7 +31,9 @@ test.skipIf(!enabled)(
             },
         )
         const result = JSON.parse(
-            output.split('\n').find((line) => line.startsWith('MULTI_GIB_RESULT='))!
+            output
+                .split('\n')
+                .find((line) => line.startsWith('MULTI_GIB_RESULT='))!
                 .slice('MULTI_GIB_RESULT='.length),
         )
         expect(result).toMatchObject({
@@ -63,7 +65,9 @@ test.skipIf(!enabled)(
         expect(result.encryptedBytes).toBeGreaterThan(result.controllerArchiveBytes)
         expect(result.peakRssBytes).toBeGreaterThan(0)
         expect(result.peakRssBytes).toBeLessThan(512 * 1024 ** 2)
-        console.log(`Multi-GiB backup payloadBytes=${result.payloadBytes} peakRssBytes=${result.peakRssBytes}`)
+        console.log(
+            `Multi-GiB backup payloadBytes=${result.payloadBytes} peakRssBytes=${result.peakRssBytes}`,
+        )
     },
     600_000,
 )

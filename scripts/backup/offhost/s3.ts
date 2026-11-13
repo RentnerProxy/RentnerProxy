@@ -427,7 +427,9 @@ export function createS3Storage(input: OffHostS3Target, dependencies: S3Dependen
                     const length = response.headers['content-length']
                     if (!length || !/^\d+$/.test(length) || Number(length) > MAX_S3_OBJECT_BYTES)
                         throw new StorageError('FILE_LIMIT')
-                    await assertBackupCapacity([{ path: dirname(outputFile), bytes: Number(length) }])
+                    await assertBackupCapacity([
+                        { path: dirname(outputFile), bytes: Number(length) },
+                    ])
                     const checkCapacity = backupCapacityGuard([dirname(outputFile)])
                     let checkedBytes = 0
                     let bytes = 0

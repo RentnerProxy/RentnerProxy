@@ -5,11 +5,7 @@ import { CURRENT_COMPATIBILITY_PROFILE } from '../../web/src/config/compatibilit
 const digest = z.string().regex(/^[a-f0-9]{64}$/u)
 
 const artifact = z.strictObject({
-    bytes: z
-        .number()
-        .int()
-        .positive()
-        .max(BACKUP_RUNTIME_POLICY.maximumArtifactBytes),
+    bytes: z.number().int().positive().max(BACKUP_RUNTIME_POLICY.maximumArtifactBytes),
     sha256: digest,
 })
 

@@ -112,7 +112,11 @@ export async function publishProductionBackup(
         'crowdsec-state.tar',
         'metadata.json',
     ]) {
-        const file = await regularFile(join(stagingPath, name), BACKUP_RUNTIME_POLICY.maximumArtifactBytes, true)
+        const file = await regularFile(
+            join(stagingPath, name),
+            BACKUP_RUNTIME_POLICY.maximumArtifactBytes,
+            true,
+        )
         try {
             await file.sync()
         } finally {

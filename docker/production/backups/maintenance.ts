@@ -64,8 +64,12 @@ async function command(args: string[], output?: string) {
             timeoutMs: BACKUP_RUNTIME_POLICY.databaseTimeoutMs,
             maximumOutputBytes: 1_048_576,
             signal: operationSignal,
-            checkCapacity: backupCapacityGuard(output ? ['/backup'] : ['/tmp', '/var/lib/rentnerproxy']),
-            ...(file ? { outputFile: { file, maximumBytes: BACKUP_RUNTIME_POLICY.maximumArtifactBytes } } : {}),
+            checkCapacity: backupCapacityGuard(
+                output ? ['/backup'] : ['/tmp', '/var/lib/rentnerproxy'],
+            ),
+            ...(file
+                ? { outputFile: { file, maximumBytes: BACKUP_RUNTIME_POLICY.maximumArtifactBytes } }
+                : {}),
         })
         if (!result.stopped) throw new Error('Maintenance process cleanup incomplete')
         if (result.failed) throw new Error('Offline maintenance step failed', { cause: result })
@@ -156,7 +160,11 @@ async function offlineValidate() {
     await chmod(snapshot, 0o700)
     const validation = await mkdtemp('/tmp/rentnerproxy-offline-validation-')
     try {
-        const { backupId, metadata } = await snapshotProductionRestore('/backup', snapshot, operationSignal)
+        const { backupId, metadata } = await snapshotProductionRestore(
+            '/backup',
+            snapshot,
+            operationSignal,
+        )
         await assertBackupCapacity([{ path: '/tmp', bytes: metadata.crowdSecState.bytes }])
         await command(['chown', 'postgres:postgres', validation])
         await command(['bash', '-c', validationCommand(snapshot, validation)])
@@ -198,12 +206,18 @@ async function readValidationProof(path: string) {
             !/^[a-f0-9]{64}$/u.test(proof.backupId)
         )
             throw new Error('Invalid isolated validation proof')
-        if (proof.schemaVersion === 2 && (
-            !('databaseBytes' in proof) || typeof proof.databaseBytes !== 'number' ||
-            !Number.isSafeInteger(proof.databaseBytes) || proof.databaseBytes <= 0 ||
-            !('sqlBytes' in proof) || typeof proof.sqlBytes !== 'number' ||
-            !Number.isSafeInteger(proof.sqlBytes) || proof.sqlBytes <= 0
-        )) throw new Error('Invalid isolated validation proof')
+        if (
+            proof.schemaVersion === 2 &&
+            (!('databaseBytes' in proof) ||
+                typeof proof.databaseBytes !== 'number' ||
+                !Number.isSafeInteger(proof.databaseBytes) ||
+                proof.databaseBytes <= 0 ||
+                !('sqlBytes' in proof) ||
+                typeof proof.sqlBytes !== 'number' ||
+                !Number.isSafeInteger(proof.sqlBytes) ||
+                proof.sqlBytes <= 0)
+        )
+            throw new Error('Invalid isolated validation proof')
         return proof
     } finally {
         await file.close()
@@ -216,10 +230,19 @@ export async function readIsolatedValidationProof(path = '/backup/isolated-valid
 
 export async function readIsolatedValidationCapacity(path = '/backup/isolated-validation.json') {
     const proof = await readValidationProof(path)
-    if (proof.schemaVersion !== 2 || !('databaseBytes' in proof) || typeof proof.databaseBytes !== 'number' ||
-        !('sqlBytes' in proof) || typeof proof.sqlBytes !== 'number')
+    if (
+        proof.schemaVersion !== 2 ||
+        !('databaseBytes' in proof) ||
+        typeof proof.databaseBytes !== 'number' ||
+        !('sqlBytes' in proof) ||
+        typeof proof.sqlBytes !== 'number'
+    )
         throw new Error('Isolated validation must be repeated with capacity evidence')
-    return { backupId: proof.backupId, databaseBytes: proof.databaseBytes, sqlBytes: proof.sqlBytes }
+    return {
+        backupId: proof.backupId,
+        databaseBytes: proof.databaseBytes,
+        sqlBytes: proof.sqlBytes,
+    }
 }
 
 async function offlineRestore(options: readonly string[]) {
@@ -236,8 +259,13 @@ async function offlineRestore(options: readonly string[]) {
     await chmod(snapshot, 0o700)
     try {
         const capacity = await readIsolatedValidationCapacity()
-        const { metadata, backupId } = await snapshotProductionRestore('/backup', snapshot, operationSignal)
-        if (capacity.backupId !== backupId) throw new Error('Backup changed after isolated validation')
+        const { metadata, backupId } = await snapshotProductionRestore(
+            '/backup',
+            snapshot,
+            operationSignal,
+        )
+        if (capacity.backupId !== backupId)
+            throw new Error('Backup changed after isolated validation')
         assertDeploymentCompatible(
             metadata,
             deployment(),
@@ -256,7 +284,10 @@ async function offlineRestore(options: readonly string[]) {
         if (!pending && options.includes('--resume'))
             throw new Error('No interrupted restore is pending')
         operationSignal.throwIfAborted()
-        await assertRestoreCapacity(capacity, metadata.controllerState.bytes + metadata.crowdSecState.bytes)
+        await assertRestoreCapacity(
+            capacity,
+            metadata.controllerState.bytes + metadata.crowdSecState.bytes,
+        )
         if (!pending)
             await command(['/usr/local/bin/rentnerproxy-production', '--initialize-restore-target'])
         await beginProductionRestore()

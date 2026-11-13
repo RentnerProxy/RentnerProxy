@@ -22,7 +22,10 @@ export async function runMaintenanceProcess(
             await Promise.race([
                 options.checkCapacity(),
                 new Promise<never>((_, reject) => {
-                    admissionTimer = setTimeout(() => reject(new Error('maintenance deadline exceeded')), options.timeoutMs)
+                    admissionTimer = setTimeout(
+                        () => reject(new Error('maintenance deadline exceeded')),
+                        options.timeoutMs,
+                    )
                     admissionAbort = () => reject(new Error('maintenance cancelled'))
                     options.signal?.addEventListener('abort', admissionAbort, { once: true })
                     if (options.signal?.aborted) admissionAbort()
@@ -120,9 +123,12 @@ export async function runMaintenanceProcess(
         capacityTimer = setInterval(() => {
             if (checkingCapacity) return
             checkingCapacity = true
-            void Promise.resolve().then(checkCapacity).catch(reject).finally(() => {
-                checkingCapacity = false
-            })
+            void Promise.resolve()
+                .then(checkCapacity)
+                .catch(reject)
+                .finally(() => {
+                    checkingCapacity = false
+                })
         }, BACKUP_RUNTIME_POLICY.capacityCheckIntervalMs)
     })
     let cancel: (() => void) | undefined
@@ -142,7 +148,10 @@ export async function runMaintenanceProcess(
     })
     try {
         await Promise.race([
-            Promise.all([exited, stdout, stderr, input]), expired, cancelled, capacityFailed,
+            Promise.all([exited, stdout, stderr, input]),
+            expired,
+            cancelled,
+            capacityFailed,
         ])
         // A delayed timer must not turn an operation finishing after its budget into success.
         timedOut ||= performance.now() > deadline

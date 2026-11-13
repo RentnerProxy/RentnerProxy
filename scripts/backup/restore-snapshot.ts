@@ -30,7 +30,11 @@ async function readBackupFile(path: string, maximumBytes: number): Promise<Buffe
     }
 }
 
-export async function snapshotProductionRestore(inputPath: string, snapshot: string, signal?: AbortSignal) {
+export async function snapshotProductionRestore(
+    inputPath: string,
+    snapshot: string,
+    signal?: AbortSignal,
+) {
     signal?.throwIfAborted()
     const metadataBytes = await readBackupFile(join(inputPath, 'metadata.json'), 65_536)
     let metadataValue: unknown
@@ -41,7 +45,15 @@ export async function snapshotProductionRestore(inputPath: string, snapshot: str
     }
     const metadata = parseBackupMetadata(metadataValue)
     await assertBackupCapacity([
-        { path: snapshot, bytes: metadata.postgres.bytes + metadata.applicationEncryptionKey.bytes + metadata.controllerState.bytes + metadata.crowdSecState.bytes + 65_536 },
+        {
+            path: snapshot,
+            bytes:
+                metadata.postgres.bytes +
+                metadata.applicationEncryptionKey.bytes +
+                metadata.controllerState.bytes +
+                metadata.crowdSecState.bytes +
+                65_536,
+        },
     ])
     const backupId = createHash('sha256').update(metadataBytes).digest('hex')
     await writeFile(join(snapshot, 'metadata.json'), metadataBytes, { mode: 0o600, flag: 'wx' })
@@ -70,7 +82,11 @@ export async function snapshotProductionRestore(inputPath: string, snapshot: str
     }
     const controllerFile = await open(join(snapshot, stateArchiveName), 'r')
     try {
-        const controllerEntries = await validateStateArchiveFile(controllerFile, 'controller', signal)
+        const controllerEntries = await validateStateArchiveFile(
+            controllerFile,
+            'controller',
+            signal,
+        )
         await validateControllerEncryptionFile(
             controllerFile,
             controllerEntries,

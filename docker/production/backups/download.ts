@@ -22,7 +22,11 @@ const names = [
 ] as const
 
 export function backupTarHeader(name: (typeof names)[number], size: number): Buffer {
-    if (!Number.isSafeInteger(size) || size < 0 || size > BACKUP_RUNTIME_POLICY.maximumArtifactBytes)
+    if (
+        !Number.isSafeInteger(size) ||
+        size < 0 ||
+        size > BACKUP_RUNTIME_POLICY.maximumArtifactBytes
+    )
         throw new Error('invalid tar size')
     const header = Buffer.alloc(512)
     header.write(name)

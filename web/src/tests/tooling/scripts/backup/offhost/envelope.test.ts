@@ -438,14 +438,22 @@ async function abortDuringPayloadWrite(
     const controller = new AbortController()
     const probe = await open(source, 'r')
     const prototype = Object.getPrototypeOf(probe) as {
-        write: (bytes: Uint8Array, offset: number, length: number) => Promise<{
-            bytesWritten: number; buffer: Uint8Array
+        write: (
+            bytes: Uint8Array,
+            offset: number,
+            length: number,
+        ) => Promise<{
+            bytesWritten: number
+            buffer: Uint8Array
         }>
     }
     await probe.close()
     const original = prototype.write
     const write = spyOn(prototype, 'write').mockImplementation(async function (
-        this: FileHandle, bytes: Uint8Array, offset: number, length: number,
+        this: FileHandle,
+        bytes: Uint8Array,
+        offset: number,
+        length: number,
     ) {
         const result = await original.call(this, bytes, offset, length)
         // Header and key writes remain below this size. Abort after a real payload
@@ -468,14 +476,22 @@ test('interruption cleans ciphertext and private plaintext staging while preserv
             const encrypted = join(directory, 'backup.encrypted')
             const originalDump = await readFile(join(source, 'postgres.dump'))
             await abortDuringPayloadWrite(join(source, 'postgres.dump'), (signal) =>
-                assert.rejects(encryptBackup(source, encrypted, key, signal), /interrupted fixture/))
+                assert.rejects(
+                    encryptBackup(source, encrypted, key, signal),
+                    /interrupted fixture/,
+                ),
+            )
             await assert.rejects(stat(encrypted), /ENOENT/)
             assert.deepEqual(await readFile(join(source, 'postgres.dump')), originalDump)
             await assertNoStaging(directory)
             await encryptBackup(source, encrypted, key)
             const ciphertext = await readFile(encrypted)
             await abortDuringPayloadWrite(encrypted, (signal) =>
-                assert.rejects(decryptBackup(encrypted, join(directory, 'restored'), key, signal), /interrupted fixture/))
+                assert.rejects(
+                    decryptBackup(encrypted, join(directory, 'restored'), key, signal),
+                    /interrupted fixture/,
+                ),
+            )
             await assert.rejects(stat(join(directory, 'restored')), /ENOENT/)
             assert.deepEqual(await readFile(encrypted), ciphertext)
             await assertNoStaging(directory)

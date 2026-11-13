@@ -42,7 +42,8 @@ const names = [
     'crowdsec-state.tar',
 ] as const
 const limits = [
-    65_536, 65_536,
+    65_536,
+    65_536,
     BACKUP_RUNTIME_POLICY.maximumArtifactBytes,
     BACKUP_RUNTIME_POLICY.maximumArtifactBytes,
     BACKUP_RUNTIME_POLICY.maximumArtifactBytes,
@@ -184,10 +185,12 @@ export async function encryptBackup(
         const verified = await verifyPublishedBackup(directory, signal)
         await independentKey(files[1]!, key, signal)
         const lengths = await Promise.all(files.map(async (file) => (await file.stat()).size))
-        await assertBackupCapacity([{
-            path: dirname(resolve(outputFile)),
-            bytes: headerBytes + tagBytes + lengths.reduce((sum, length) => sum + length, 0),
-        }])
+        await assertBackupCapacity([
+            {
+                path: dirname(resolve(outputFile)),
+                bytes: headerBytes + tagBytes + lengths.reduce((sum, length) => sum + length, 0),
+            },
+        ])
         const checkCapacity = backupCapacityGuard([dirname(resolve(outputFile))])
         const header = Buffer.alloc(headerBytes)
         magic.copy(header)
@@ -223,8 +226,7 @@ export async function encryptBackup(
         for (const [index, file] of files.entries()) {
             const artifactHash = createHash('sha256')
             for (let offset = 0; offset < lengths[index]!; offset += chunkBytes) {
-                if (offset % BACKUP_RUNTIME_POLICY.capacityCheckBytes === 0)
-                    await checkCapacity()
+                if (offset % BACKUP_RUNTIME_POLICY.capacityCheckBytes === 0) await checkCapacity()
                 signal?.throwIfAborted()
                 const chunk = await readFileRange(
                     file,

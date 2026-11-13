@@ -172,15 +172,27 @@ export function createMaintenanceCommands(options: MaintenanceCommandOptions) {
         async bytes(args: readonly string[], operation: string, timeoutMs = 300_000) {
             return (await run(args, operation, timeoutMs)).stdout
         },
-        async file(args: readonly string[], path: string, operation: string, timeoutMs = BACKUP_RUNTIME_POLICY.captureTimeoutMs) {
+        async file(
+            args: readonly string[],
+            path: string,
+            operation: string,
+            timeoutMs = BACKUP_RUNTIME_POLICY.captureTimeoutMs,
+        ) {
             const file = await open(path, 'wx', 0o600)
             let success = false
             try {
                 await file.chmod(0o600)
-                const result = await run(args, operation, timeoutMs, undefined, {
-                    file,
-                    maximumBytes: BACKUP_RUNTIME_POLICY.maximumArtifactBytes,
-                }, backupCapacityGuard([dirname(path)]))
+                const result = await run(
+                    args,
+                    operation,
+                    timeoutMs,
+                    undefined,
+                    {
+                        file,
+                        maximumBytes: BACKUP_RUNTIME_POLICY.maximumArtifactBytes,
+                    },
+                    backupCapacityGuard([dirname(path)]),
+                )
                 if (!result.artifact) throw new Error('missing backup artifact result')
                 await file.sync()
                 success = true
