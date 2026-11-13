@@ -345,6 +345,74 @@ async fn retired_candidate_does_not_block_same_id_issue_import_or_delete() {
 }
 
 #[tokio::test]
+async fn same_process_retry_preserves_durable_retirement_after_material_repair_or_clock_rollback() {
+    for clock_rollback in [false, true] {
+        let (store, staged, directory) = retryable_candidate().await;
+        let candidate = store.index.lock().await.pending_candidates[ID].clone();
+        let active = store.get(ID).await.unwrap();
+        let active_material = store.material(ID).await.unwrap();
+        let active_bytes = std::fs::read(&active_material.fullchain_path).unwrap();
+        let candidate_material = staged.material(&store.certificates_dir().unwrap()).unwrap();
+        let candidate_bytes = std::fs::read(&candidate_material.fullchain_path).unwrap();
+        let expires = OffsetDateTime::parse(staged.stored.metadata.expires_at.as_ref().unwrap(), &Rfc3339).unwrap();
+        let failed_at = if clock_rollback { expires + time::Duration::days(1) }
+            else { invalidate_candidate(&staged, &directory, false); OffsetDateTime::now_utc() };
+        let index_path = directory.0.join("certificates").join(CERTIFICATE_INDEX_FILE);
+        let durable_index = std::fs::read(&index_path).unwrap();
+        let before = serde_json::to_value(&*store.index.lock().await).unwrap();
+        std::fs::remove_file(&index_path).unwrap();
+        std::fs::create_dir(&index_path).unwrap();
+        assert!(matches!(store.begin_candidate_activation_at(ID, false, failed_at).await,
+            Err(CertificateError::StoreUnavailable)));
+        assert_eq!(serde_json::to_value(&*store.index.lock().await).unwrap(), before);
+        assert_lease_released(&store).await;
+        let manifest = directory.0.join("certificates").join(ID).join(CANDIDATE_MANIFEST_FILE);
+        let terminal_manifest = std::fs::read(&manifest).unwrap();
+        assert!(recovery::read_candidate_manifest(&store.certificates_dir().unwrap(), ID)
+            .unwrap().unwrap().retired);
+        std::fs::write(&candidate_material.fullchain_path, candidate_bytes).unwrap();
+        let retry_at = if clock_rollback { expires - time::Duration::days(1) } else { OffsetDateTime::now_utc() };
+        assert!(matches!(store.begin_candidate_activation_at(ID, false, retry_at).await,
+            Err(CertificateError::StoreUnavailable)));
+        assert_eq!(serde_json::to_value(&*store.index.lock().await).unwrap(), before);
+        assert_eq!(std::fs::read(&manifest).unwrap(), terminal_manifest);
+        assert_lease_released(&store).await;
+        assert!(matches!(recovery::persist_candidate_manifest(&store.certificates_dir().unwrap(), ID, &candidate),
+            Err(CertificateError::StoreUnavailable)));
+        assert_eq!(std::fs::read(&manifest).unwrap(), terminal_manifest);
+        std::fs::remove_dir(&index_path).unwrap();
+        std::fs::write(index_path, durable_index).unwrap();
+        assert!(store.begin_candidate_activation_at(ID, false, retry_at).await.unwrap().is_none());
+        assert!(store.pending_candidate_ids().await.unwrap().is_empty());
+        assert_eq!(std::fs::read(&manifest).unwrap(), terminal_manifest);
+        assert_eq!(store.get(ID).await.unwrap().fingerprint, active.fingerprint);
+        assert_eq!(std::fs::read(&active_material.fullchain_path).unwrap(), active_bytes);
+        let terminal_events = store.events(None, 100).await.unwrap().events;
+        assert_eq!(terminal_events.len(), before["events"].as_array().unwrap().len() + 1);
+        assert_eq!(terminal_events.last().unwrap().kind, CertificateEventKind::Failed);
+        assert_eq!(terminal_events.last().unwrap().stage, CertificateOperationStage::Failed);
+        let terminal = recovery::read_candidate_manifest(&store.certificates_dir().unwrap(), ID).unwrap().unwrap();
+        assert_eq!(terminal_events.last().unwrap().error_code, terminal.activation.last_error_code);
+        assert_eq!(store.get(ID).await.unwrap().current_operation.unwrap().updated_at,
+            terminal.staged.metadata.current_operation.unwrap().updated_at);
+        assert!(store.begin_candidate_activation_at(ID, true, retry_at).await.unwrap().is_none());
+        assert_eq!(store.events(None, 100).await.unwrap().events, terminal_events);
+        assert_lease_released(&store).await;
+        drop(store);
+        let reopened = CertificateStore::new(directory.0.clone());
+        reopened.initialize().await.unwrap();
+        assert!(reopened.pending_candidate_ids().await.unwrap().is_empty());
+        assert_eq!(reopened.events(None, 100).await.unwrap().events, terminal_events);
+        let (_, request) = reopened.begin_renewal(ID).await.unwrap();
+        let leaf = rcgen::generate_simple_self_signed(request.domains.clone()).unwrap();
+        let replacement = reopened.stage_acme(ID, &request, leaf.cert.pem(), leaf.signing_key.serialize_pem()).await.unwrap();
+        assert!(!recovery::read_candidate_manifest(&reopened.certificates_dir().unwrap(), ID).unwrap().unwrap().retired);
+        reopened.commit_staged(&replacement).await.unwrap();
+        assert_lease_released(&reopened).await;
+    }
+}
+
+#[tokio::test]
 async fn failed_retirement_preserves_live_state_and_recovers_durable_terminal_manifest() {
     for fail_manifest in [false, true] {
         let (store, staged, directory) = retryable_candidate().await;
@@ -665,4 +733,10 @@ async fn terminal_manifest_cannot_retire_an_indexed_candidate_for_a_different_op
         Err(CertificateError::StoreUnavailable)
     ));
     assert_eq!(serde_json::to_value(&*index).unwrap(), before);
+    drop(index);
+    assert!(matches!(store.begin_candidate_activation(ID, false).await,
+        Err(CertificateError::StoreUnavailable)));
+    assert_eq!(serde_json::to_value(&*store.index.lock().await).unwrap(), before);
+    assert_eq!(recovery::read_candidate_manifest(&store.certificates_dir().unwrap(), ID).unwrap().unwrap(), manifest);
+    assert_lease_released(&store).await;
 }

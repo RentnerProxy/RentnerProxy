@@ -1,7 +1,10 @@
 use super::material_files::{CertificateValidity, validate_candidate_material};
 use super::operations;
 use super::persistence::{persist_index, report_recovery_result};
-use super::recovery::{RetirementContext, persist_candidate_manifest, retire_candidate};
+use super::recovery::{
+    RetirementContext, candidate_is_valid, persist_candidate_manifest, read_candidate_manifest,
+    retire_candidate,
+};
 use super::scheduling::{candidate_retry_deadline, next_candidate_retry_delay};
 use super::validation::utc_now;
 use super::{
@@ -84,6 +87,14 @@ impl CertificateStore {
                 return Err(error);
             }
         };
+        match self.complete_candidate_retirement(id, &candidate, &certificates_dir).await {
+            Ok(false) => {}
+            result => {
+                self.release_lease(id).await;
+                result?;
+                return Ok(None);
+            }
+        }
         let validation = validate_candidate_material(&certificates_dir, id, &candidate.staged, now);
         if matches!(validation, Ok(CertificateValidity::NotYetValid)) {
             self.release_lease(id).await;
@@ -255,6 +266,29 @@ impl CertificateStore {
         }
         drop(index);
         self.release_lease(&staged.id).await;
+    }
+
+    async fn complete_candidate_retirement(
+        &self,
+        id: &str,
+        expected: &super::StoredCertificateCandidate,
+        directory: &super::SafeDir,
+    ) -> Result<bool, CertificateError> {
+        let Some(retired) = read_candidate_manifest(directory, id)?.filter(|candidate| candidate.retired) else {
+            return Ok(false);
+        };
+        if !candidate_is_valid(id, &retired) {
+            return Err(CertificateError::StoreUnavailable);
+        }
+        let mut index = self.index.lock().await;
+        if index.pending_candidates.get(id) != Some(expected) {
+            return Err(CertificateError::OperationInProgress);
+        }
+        let mut retired_index = index.clone();
+        retire_candidate(&mut retired_index, id, &retired, RetirementContext::Live)?;
+        persist_index(directory, &retired_index)?;
+        *index = retired_index;
+        Ok(true)
     }
 
     async fn retire_invalid_candidate(
