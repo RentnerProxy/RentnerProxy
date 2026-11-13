@@ -154,6 +154,8 @@ struct CandidateActivation {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct StoredCertificateCandidate {
     version: u8,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    retired: bool,
     staged: StoredCertificate,
     #[serde(default)]
     base_material_id: Option<String>,

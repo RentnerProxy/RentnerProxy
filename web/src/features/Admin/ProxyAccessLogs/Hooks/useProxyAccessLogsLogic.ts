@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { PERMISSIONS } from '@/config/permissions.config.ts'
 import useTranslationStore from '@/shared/Language/Hooks/useTranslationStore.ts'
 import useLiveQuery from '@/shared/Live/Hooks/useLiveQuery.ts'
+import useQueryRecovery from '@/shared/Live/Hooks/useQueryRecovery.ts'
 import type { ProxyAccessLogsResult } from '@/lib/Admin/ProxyAccessLogs/Types/proxy-access-logs.types.ts'
 import {
     proxyAccessLogsQueryKeys,
@@ -76,6 +77,8 @@ export default function useProxyAccessLogsLogic({
         staleTime: Infinity,
         gcTime: 0,
     })
+    // Historical snapshots have no live subscription and own their HTTP recovery.
+    useQueryRecovery(logsQuery, canView && page > 1)
     const liveRequest = useMemo(
         () => toProxyAccessLogsQuery(filters, 0, pageSize),
         [filters, pageSize],
