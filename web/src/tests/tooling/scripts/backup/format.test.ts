@@ -1,10 +1,11 @@
 // oxlint-disable no-await-in-loop -- Differential cases reuse one fixture path sequentially.
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { ftruncateSync } from 'node:fs'
 import { mkdir, mkdtemp, open, rm, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 
-import { describe, expect, it } from 'bun:test'
+import { describe, expect, it, spyOn } from 'bun:test'
 
 import {
     assertDeploymentCompatible,
@@ -600,6 +601,47 @@ describe('encrypted controller certificate state', () => {
             /decrypt failed/u,
         )
     })
+})
+
+it('bounds archive read-ahead across headers, trailers, cancellation and truncated files', async () => {
+    const parent = resolve(import.meta.dir, '../../../../../../tmp')
+    await mkdir(parent, { recursive: true })
+    const directory = await mkdtemp(join(parent, 'file-tar-read-ahead-'))
+    const path = join(directory, 'archive.tar')
+    const records = Array.from({ length: 300 }, (_, index) => ({ name: 'fixture-' + index }))
+    const bytes = archive(records)
+    try {
+        await writeFile(path, bytes)
+        const file = await open(path, 'r+')
+        const reads = spyOn(file, 'read')
+        try {
+            assert.equal((await validateStateArchiveFile(file, 'controller')).length, 300)
+            assert.ok(reads.mock.calls.length <= 4, 'small nearby headers must share bounded reads')
+            for (const call of reads.mock.calls) assert.ok(Number(call.at(2)) <= 65_536)
+            const stop = new AbortController()
+            let progress = 0
+            await assert.rejects(validateStateArchiveFile(file, 'controller', stop.signal, () => {
+                progress++
+                if (progress === 2) stop.abort(new Error('cancel cached headers'))
+            }), /cancel cached headers/)
+            assert.equal(progress, 2)
+            await file.write(Buffer.from([255]), 0, 1, 65_536)
+            await assert.rejects(validateStateArchiveFile(file, 'controller'), /invalid state archive checksum/)
+            await file.write(bytes, 0, bytes.length, 0)
+            let truncated = false
+            await assert.rejects(validateStateArchiveFile(file, 'controller', undefined, () => {
+                if (!truncated) {
+                    truncated = true
+                    ftruncateSync(file.fd, 1024)
+                }
+            }), /truncated backup file/)
+        } finally {
+            reads.mockRestore()
+            await file.close()
+        }
+    } finally {
+        await rm(directory, { recursive: true, force: true })
+    }
 })
 
 it('matches file TAR acceptance, errors, index and encryption contracts across every byte fixture', async () => {

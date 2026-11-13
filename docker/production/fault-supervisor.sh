@@ -30,7 +30,7 @@ wait_for_controller_progress() {
         fi
         assert_children_running
         ((SECONDS < deadline)) || break
-        sleep 1
+        sleep 0.2
     done
     fatal 'timed out waiting for controller recovery progress within 60 seconds'
 }

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 import { subscribeToRealtimeEvents } from '@/lib/Live/realtimeEventsClient.ts'
-import type { LiveStatus } from '@/lib/Live/Types/realtime-events-client.types.ts'
+import type { LiveStatus, RealtimeResumeMetadata } from '@/lib/Live/Types/realtime-events-client.types.ts'
 import type { LiveTopic } from '@/lib/Live/Types/events.types.ts'
 
 export default function useLiveQuery<T>({
@@ -11,6 +11,7 @@ export default function useLiveQuery<T>({
     onData,
     onUnauthorized,
     onResume,
+    getResumeSessionVersion,
     resetKey = 0,
 }: {
     topic: LiveTopic
@@ -18,13 +19,15 @@ export default function useLiveQuery<T>({
     enabled: boolean
     onData: (data: T) => void | Promise<void>
     onUnauthorized?: () => void
-    onResume?: () => void
+    onResume?: (metadata?: RealtimeResumeMetadata) => void
+    getResumeSessionVersion?: () => string | undefined
     resetKey?: number
 }): LiveStatus {
     const [status, setStatus] = useState<LiveStatus>('inactive')
     const dataCallback = useRef(onData)
     const unauthorizedCallback = useRef(onUnauthorized)
     const resumeCallback = useRef(onResume)
+    const sessionVersionCallback = useRef(getResumeSessionVersion)
     useEffect(() => {
         dataCallback.current = onData
     }, [onData])
@@ -34,6 +37,9 @@ export default function useLiveQuery<T>({
     useEffect(() => {
         resumeCallback.current = onResume
     }, [onResume])
+    useEffect(() => {
+        sessionVersionCallback.current = getResumeSessionVersion
+    }, [getResumeSessionVersion])
     const serializedSubscription = JSON.stringify([query, resetKey])
 
     useEffect(() => {
@@ -50,7 +56,8 @@ export default function useLiveQuery<T>({
             onData: (data) => dataCallback.current(data),
             onStatus: setStatus,
             onUnauthorized: () => unauthorizedCallback.current?.(),
-            onResume: () => resumeCallback.current?.(),
+            onResume: (metadata) => resumeCallback.current?.(metadata),
+            getResumeSessionVersion: () => sessionVersionCallback.current?.(),
         })
     }, [enabled, topic, serializedSubscription])
 

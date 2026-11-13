@@ -23,6 +23,8 @@ import { crowdSecQueryKeys } from '@/lib/Admin/CrowdSec/crowdSecCache.ts'
 import useApplicationLiveSync from '@/shared/Live/Hooks/useApplicationLiveSync.ts'
 import { securityQueryKeys } from '@/lib/UserSettings/userSettingsCache.ts'
 import type { AuthenticatedUser } from '@/lib/Auth/Types/auth.types.ts'
+import withTestLanguage from '@/tests/Helpers/withTestLanguage.tsx'
+import { LIVE_SESSION_PROTOCOL_PREFIX, LIVE_WEBSOCKET_PROTOCOL } from '@/config/realtime.config.ts'
 
 if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register()
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
@@ -33,10 +35,20 @@ class FakeSocket extends EventTarget {
     static CLOSED = 3
     readyState = FakeSocket.OPEN
     closed = false
+    protocol = ''
+    sent: string[] = []
 
-    constructor(readonly url: URL) {
+    constructor(readonly url: URL, readonly protocols?: string[]) {
         super()
         FakeSocket.instances.push(this)
+    }
+
+    open() {
+        this.dispatchEvent(new Event('open'))
+    }
+
+    send(value: string) {
+        this.sent.push(value)
     }
 
     close() {
@@ -319,6 +331,36 @@ async function mountProbe() {
         ),
     )
 }
+
+test('a language update during identity validation does not strand the protected page', async () => {
+    const pending = Promise.withResolvers<void>()
+    invalidateSpy = spyOn(router, 'invalidate').mockReturnValue(pending.promise)
+    const render = (language: 'en' | 'de') =>
+        root.render(
+            withTestLanguage(
+                <RouterContextProvider router={router}>
+                    <QueryClientProvider client={queryClient}>
+                        <Probe />
+                    </QueryClientProvider>
+                </RouterContextProvider>,
+                language,
+            ),
+        )
+    await act(async () => render('en'))
+    const draft = container.querySelector<HTMLInputElement>('input')!
+    draft.value = 'keep my draft'
+    await resumeTab()
+    expectProtectedHidden()
+    await act(async () => render('de'))
+    await flush()
+    await act(async () => pending.resolve())
+    await flush()
+    expect(container.querySelector<HTMLElement>('[data-protected]')?.hidden).toBe(false)
+    expect(container.querySelector('output')).toBeNull()
+    expect(container.querySelector('input')).toBe(draft)
+    expect(draft.value).toBe('keep my draft')
+    expect(invalidateSpy).toHaveBeenCalledTimes(1)
+})
 
 test.each(['success', 'failure', 'permissions'] as const)(
     'refreshes an unchanged identity in the background and handles %s safely',
@@ -728,6 +770,89 @@ test('ordinary data events refresh queries without reloading identity or losing 
     expect(container.querySelector('input')).toBe(draft)
     expect(draft.value).toBe('preserved edit')
 })
+
+test('a verified network reconnect keeps the page visible and refreshes data even with an unchanged snapshot', async () => {
+    invalidateSpy = spyOn(router, 'invalidate').mockResolvedValue(undefined)
+    await mountProbe()
+    const sessionVersion = await identityScopeVersion(
+        JSON.stringify([principalVersion(user), confirmedContext.sessionId]),
+    )
+    const snapshot = {
+        revision: 'before',
+        userVersion: 'same-user',
+        identityVersion: 'a'.repeat(64),
+        sessionVersion,
+    }
+    await act(async () => FakeSocket.instances.at(-1)!.deliver(snapshot))
+    await flush()
+    const draft = container.querySelector<HTMLInputElement>('input')!
+    draft.value = 'keep after backup'
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-stage-mfa]')!.click())
+    queryClient.setQueryData(['session-owned'], { preserved: true })
+    queryClient.setQueryData(['backups', user.id], { state: 'running' })
+    const cached = queryClient.getQueryCache().find({ queryKey: ['session-owned'] })
+    const fetchesBeforeReconnect = activeFetches
+    await act(async () => {
+        FakeSocket.instances.at(-1)!.close()
+        await Bun.sleep(1_050)
+    })
+    const socket = FakeSocket.instances.at(-1)!
+    expect(socket.protocols).toEqual([
+        LIVE_WEBSOCKET_PROTOCOL,
+        LIVE_SESSION_PROTOCOL_PREFIX + sessionVersion,
+    ])
+    socket.protocol = LIVE_SESSION_PROTOCOL_PREFIX + sessionVersion
+    committedPending = []
+    await act(async () => socket.open())
+    await flush()
+    expect(committedPending).not.toContain(true)
+    expect(container.querySelector<HTMLElement>('[data-protected]')?.hidden).toBe(false)
+    expect(container.querySelector('input')).toBe(draft)
+    expect(draft.value).toBe('keep after backup')
+    expect(document.querySelector('[data-private-portal]')?.textContent).toBe('private-mfa-secret')
+    expect(queryClient.getQueryCache().find({ queryKey: ['session-owned'] })).toBe(cached)
+    expect(queryClient.getQueryState(['session-owned'])?.isInvalidated).toBe(true)
+    expect(queryClient.getQueryState(['backups', user.id])?.isInvalidated).toBe(false)
+    expect(activeFetches).toBe(fetchesBeforeReconnect + 1)
+    await act(async () => socket.deliver(snapshot))
+    await flush()
+    expect(activeFetches).toBe(fetchesBeforeReconnect + 1)
+    expect(invalidateSpy).not.toHaveBeenCalled()
+    expect(committedPending).not.toContain(true)
+})
+
+test.each(['missing', 'different', 'changed-context', 'unconfirmed-route'] as const)(
+    'a network reconnect with %s acknowledgement keeps private data hidden',
+    async (kind) => {
+        invalidateSpy = spyOn(router, 'invalidate').mockResolvedValue(undefined)
+        await mountProbe()
+        const sessionVersion = await identityScopeVersion(
+            JSON.stringify([principalVersion(user), confirmedContext.sessionId]),
+        )
+        await act(async () => FakeSocket.instances.at(-1)!.deliver({
+            revision: 'before',
+            userVersion: 'same-user',
+            identityVersion: 'a'.repeat(64),
+            sessionVersion,
+        }))
+        await flush()
+        await act(async () => container.querySelector<HTMLButtonElement>('[data-stage-mfa]')!.click())
+        await act(async () => {
+            FakeSocket.instances.at(-1)!.close()
+            await Bun.sleep(1_050)
+        })
+        const socket = FakeSocket.instances.at(-1)!
+        socket.protocol = kind === 'missing'
+            ? LIVE_WEBSOCKET_PROTOCOL
+            : LIVE_SESSION_PROTOCOL_PREFIX + (kind === 'different' ? 'b'.repeat(64) : sessionVersion)
+        if (kind === 'changed-context') confirmedContext = { user, sessionId: 'new-session' }
+        if (kind === 'unconfirmed-route') authMatchInvalid = true
+        await act(async () => socket.open())
+        await flush()
+        expectProtectedHidden()
+        expect(container.querySelector('output')?.textContent).toBe('Identity pending')
+    },
+)
 
 test('a reconnect with a fresh matching session proof resumes the mounted page without a route reload', async () => {
     invalidateSpy = spyOn(router, 'invalidate').mockResolvedValue(undefined)

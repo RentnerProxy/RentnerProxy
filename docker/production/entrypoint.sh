@@ -135,13 +135,14 @@ assert_children_running() {
 wait_for_command() {
     local label=$1
     shift
-    local attempt
-    for attempt in $(seq 1 60); do
+    local deadline=$((SECONDS + 60))
+    while ((SECONDS < deadline)); do
         if "$@" >/dev/null 2>&1; then
-            return
+            ((SECONDS <= deadline)) && return
+            break
         fi
         assert_children_running
-        sleep 1
+        sleep 0.2
     done
     fatal "timed out waiting for $label"
 }
@@ -388,10 +389,11 @@ wait_for_web_readiness() {
         ((budget <= 5)) || budget=5
         if timeout --signal=TERM --kill-after=1s "${budget}s" \
             bun --no-env-file "$app_directory/docker/web/healthcheck.ts" >/dev/null 2>&1; then
-            return
+            ((SECONDS <= deadline)) && return
+            break
         fi
         assert_children_running
-        sleep 1
+        sleep 0.2
     done
     fatal 'timed out waiting for web readiness within 60 seconds'
 }

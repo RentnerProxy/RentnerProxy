@@ -855,6 +855,8 @@
                 "title": "Restauration de l’appliance",
                 "description": "{{user}} restaure la sauvegarde {{backup}}. Tous les utilisateurs connectés à cette appliance sont concernés.",
                 "progress": "Progression de la restauration : {{percent}} %",
+                "lastConfirmedProgress": "Dernière progression confirmée de la restauration : {{percent}} %",
+                "reconnecting": "Reconnexion à l’appliance",
                 "complete": "Restauration et reprise des services confirmées. Retour automatique à la page précédente.",
                 "failed": "La restauration a échoué ou la reprise des services n’a pas pu être confirmée. Vérifie l’état de l’appliance avant de continuer.",
                 "connectionLost": "La connexion à l’appliance a été interrompue. En attente d’un état de restauration confirmé ; la fin n’est pas encore confirmée.",

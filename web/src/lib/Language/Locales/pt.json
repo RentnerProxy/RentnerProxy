@@ -855,6 +855,8 @@
                 "title": "A restaurar o equipamento",
                 "description": "{{user}} está a restaurar a cópia {{backup}}. Isto afeta todos os utilizadores ligados a este equipamento.",
                 "progress": "Progresso do restauro: {{percent}}%",
+                "lastConfirmedProgress": "Último progresso confirmado do restauro: {{percent}}%",
+                "reconnecting": "A restabelecer a ligação ao equipamento",
                 "complete": "Restauro e recuperação dos serviços confirmados. Regresso automático à página anterior.",
                 "failed": "O restauro falhou ou não foi possível confirmar a recuperação dos serviços. Verifica o estado do equipamento antes de continuar.",
                 "connectionLost": "A ligação ao equipamento foi interrompida. A aguardar um estado de restauro confirmado; a conclusão ainda não foi confirmada.",

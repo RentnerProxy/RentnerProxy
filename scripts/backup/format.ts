@@ -230,11 +230,18 @@ export async function validateStateArchiveFile(
     if (!info.isFile()) throw new Error('invalid state archive')
     const index = archiveIndex(info.size, kind)
     let next = index.next()
+    let bufferedOffset = 0
+    let buffered: Buffer = Buffer.alloc(0)
     while (!next.done) {
         signal?.throwIfAborted()
         const { offset, size } = next.value
-        // oxlint-disable-next-line no-await-in-loop -- Each header determines the next offset.
-        next = index.next(await readFileRange(file, offset, size))
+        if (offset < bufferedOffset || offset + size > bufferedOffset + buffered.length) {
+            bufferedOffset = offset
+            // Nearby small headers share one bounded read; large bodies remain skipped.
+            // oxlint-disable-next-line no-await-in-loop -- Each header determines the next offset.
+            buffered = await readFileRange(file, offset, Math.min(65_536, info.size - offset))
+        }
+        next = index.next(buffered.subarray(offset - bufferedOffset, offset - bufferedOffset + size))
         progress?.()
     }
     return next.value

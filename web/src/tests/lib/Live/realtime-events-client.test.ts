@@ -2,6 +2,8 @@ import { afterEach, beforeEach, expect, spyOn, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
 
 import { subscribeToRealtimeEvents } from '@/lib/Live/realtimeEventsClient.ts'
+import { LIVE_WEBSOCKET_PROTOCOL, LIVE_SESSION_PROTOCOL_PREFIX } from '@/config/realtime.config.ts'
+import type { RealtimeResumeMetadata } from '@/lib/Live/Types/realtime-events-client.types.ts'
 
 if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register()
 
@@ -12,8 +14,9 @@ class FakeSocket extends EventTarget {
     readyState = 0
     sent: string[] = []
     closed = false
+    protocol = ''
 
-    constructor(readonly url: URL) {
+    constructor(readonly url: URL, readonly protocols: string[] = []) {
         super()
         FakeSocket.instances.push(this)
     }
@@ -65,6 +68,72 @@ beforeEach(() => {
     globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket
     FakeSocket.instances = []
     cleanups = []
+})
+
+test.each(['matched', 'baseline', 'wrong'] as const)(
+    'network reconnect reports only the exact offered session proof (%s)',
+    async (selection) => {
+        let expected = 'a'.repeat(64)
+        const resumed: Array<RealtimeResumeMetadata | undefined> = []
+        cleanups.push(subscribeToRealtimeEvents({
+            topic: 'app-events', query: {}, onData: () => {},
+            getResumeSessionVersion: () => expected,
+            onResume: (metadata) => { resumed.push(metadata) },
+        }))
+        const first = FakeSocket.instances[0]!
+        expect(first.protocols).toEqual([LIVE_WEBSOCKET_PROTOCOL, LIVE_SESSION_PROTOCOL_PREFIX + expected])
+        first.open()
+        expect(resumed).toHaveLength(0)
+        first.close()
+        await Bun.sleep(1100)
+        const second = FakeSocket.instances[1]!
+        expect(second.protocols[0]).toBe(LIVE_WEBSOCKET_PROTOCOL)
+        // Proof belongs to socket creation, never a later listener/getter value.
+        expected = 'b'.repeat(64)
+        second.protocol = selection === 'baseline' ? LIVE_WEBSOCKET_PROTOCOL :
+            LIVE_SESSION_PROTOCOL_PREFIX + (selection === 'matched' ? 'a' : 'b').repeat(64)
+        first.open()
+        expect(resumed).toHaveLength(0)
+        second.open()
+        expect(resumed).toEqual([selection === 'matched' ? { sessionVersion: 'a'.repeat(64) } : undefined])
+    },
+)
+
+test.each(['invalid', 'other-topic', 'throwing'] as const)(
+    'does not offer an untrusted resume proof from a %s provider',
+    (kind) => {
+        cleanups.push(subscribeToRealtimeEvents({
+            topic: kind === 'other-topic' ? 'backups' : 'app-events',
+            query: {}, onData: () => {},
+            getResumeSessionVersion: () => {
+                if (kind === 'throwing') throw new Error('private provider failure')
+                return kind === 'invalid' ? 'A'.repeat(64) : 'a'.repeat(64)
+            },
+        }))
+        expect(FakeSocket.instances[0]!.protocols).toEqual([LIVE_WEBSOCKET_PROTOCOL])
+    },
+)
+
+test('conflicting app listeners offer only the baseline protocol; hidden resume never carries a proof', async () => {
+    const resumed: Array<RealtimeResumeMetadata | undefined> = []
+    for (const version of ['a', 'b']) {
+        cleanups.push(subscribeToRealtimeEvents({
+            topic: 'app-events', query: {}, onData: () => {},
+            getResumeSessionVersion: () => version.repeat(64),
+            onResume: (metadata) => { resumed.push(metadata) },
+        }))
+    }
+    FakeSocket.instances[0]!.open()
+    FakeSocket.instances[0]!.close()
+    await Bun.sleep(1100)
+    expect(FakeSocket.instances[1]!.protocols).toEqual([LIVE_WEBSOCKET_PROTOCOL])
+    FakeSocket.instances[1]!.open()
+    expect(resumed).toEqual([undefined, undefined])
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' })
+    document.dispatchEvent(new Event('visibilitychange'))
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(resumed).toEqual([undefined, undefined, undefined, undefined])
 })
 
 afterEach(() => {

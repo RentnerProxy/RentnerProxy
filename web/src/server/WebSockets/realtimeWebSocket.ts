@@ -7,6 +7,8 @@ import {
     LIVE_SNAPSHOT_PATH,
     LIVE_SNAPSHOT_TIMEOUT_MS,
     REALTIME_WS_PATH,
+    LIVE_WEBSOCKET_PROTOCOL,
+    LIVE_SESSION_PROTOCOL_PREFIX,
 } from '@/config/realtime.config.ts'
 import {
     isWebSocketUpgrade,
@@ -139,6 +141,7 @@ export function createLiveWebSocketRuntime(
             reservation.handshakeAbortController = waiting
             let release: (() => void) | undefined
             let authStatus: number
+            let sessionVersion: string | undefined
             const actualWork = new Set<Promise<unknown>>()
             try {
                 release = await manager.acquireResource(waiting.signal)
@@ -151,6 +154,17 @@ export function createLiveWebSocketRuntime(
                     maxPayloadBytes,
                     options.readSnapshot,
                     (work) => actualWork.add(work),
+                    (data) => {
+                        if (typeof data !== 'object' || data === null ||
+                            'maintenanceSuspended' in data || !('sessionVersion' in data) ||
+                            !('revision' in data) || typeof data.revision !== 'string' ||
+                            !('userVersion' in data) || typeof data.userVersion !== 'string' ||
+                            !('identityVersion' in data) || typeof data.identityVersion !== 'string' ||
+                            !/^[a-f0-9]{64}$/u.test(data.identityVersion)) return
+                        const version = data.sessionVersion
+                        if (typeof version === 'string' && /^[a-f0-9]{64}$/u.test(version))
+                            sessionVersion = version
+                    },
                 )
             } catch (error) {
                 if (!(error instanceof ResourceAdmissionError)) throw error
@@ -162,8 +176,20 @@ export function createLiveWebSocketRuntime(
             }
             if (shuttingDown) return { handled: true, response: statusResponse(503) }
             if (authStatus !== 200) return { handled: true, response: statusResponse(authStatus) }
+            const offered = (request.headers.get('sec-websocket-protocol') ?? '')
+                .split(',').map((value) => value.trim()).filter(Boolean)
+            const proof = sessionVersion ? LIVE_SESSION_PROTOCOL_PREFIX + sessionVersion : undefined
+            const protocol = proof && offered.includes(proof) ? proof :
+                offered.includes(LIVE_WEBSOCKET_PROTOCOL) ? LIVE_WEBSOCKET_PROTOCOL : undefined
+            // Bun otherwise echoes the first offered protocol automatically. Never
+            // let an unverified proof be accepted through that default behavior.
+            if (offered.length > 0 && !protocol)
+                return { handled: true, response: statusResponse(400) }
             try {
-                upgraded = server.upgrade(request, { data: { connection: reservation } })
+                upgraded = server.upgrade(request, {
+                    data: { connection: reservation },
+                    ...(protocol ? { headers: { 'Sec-WebSocket-Protocol': protocol } } : {}),
+                })
             } catch {
                 upgraded = false
             }

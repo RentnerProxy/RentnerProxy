@@ -834,6 +834,8 @@
                 "title": "Apparaat wordt hersteld",
                 "description": "{{user}} herstelt back-up {{backup}}. Dit heeft gevolgen voor iedereen die met dit apparaat is verbonden.",
                 "progress": "Herstelvoortgang: {{percent}}%",
+                "lastConfirmedProgress": "Laatst bevestigde herstelvoortgang: {{percent}}%",
+                "reconnecting": "Verbinding met het apparaat wordt hersteld",
                 "complete": "Herstel en hervatting van diensten bevestigd. Je keert automatisch terug naar de vorige pagina.",
                 "failed": "Het herstel is mislukt of de hervatting van diensten kon niet worden bevestigd. Controleer de apparaatstatus voordat je verdergaat.",
                 "connectionLost": "De verbinding met het apparaat is verbroken. We wachten op een bevestigde herstelstatus; voltooiing is nog niet bevestigd.",

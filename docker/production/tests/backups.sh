@@ -468,6 +468,57 @@ test_startup_admission() (
     printf 'PASS: queued catch-up waits for initial web readiness before maintenance admission\n'
 )
 
+test_readiness_polling() (
+    local role scenario status
+    for role in command web controller; do
+        for scenario in ready timeout late children_failed; do
+            status=0
+            (
+                local SECONDS=0 probes=0 sleeps=0 checks=0 app_directory=dummy-app
+                load_function "$entrypoint" wait_for_command
+                load_function "$entrypoint" wait_for_web_readiness
+                load_function "$production_directory/fault-supervisor.sh" wait_for_controller_progress
+                fatal() { exit 77; }
+                assert_children_running() {
+                    checks=$((checks + 1))
+                    [[ $scenario != children_failed ]] || fatal 'child stopped'
+                }
+                sleep() {
+                    [[ $1 == 0.2 ]] || fail 'readiness polling lost its subsecond interval'
+                    sleeps=$((sleeps + 1))
+                    SECONDS=$((sleeps / 5))
+                }
+                probe() {
+                    probes=$((probes + 1))
+                    if [[ $scenario == late ]]; then SECONDS=61; return 0; fi
+                    [[ $scenario == ready && $probes -ge 3 ]]
+                }
+                bun() { probe; }
+                gosu() { probe; }
+                timeout() {
+                    [[ $1 == --signal=TERM && $2 == --kill-after=1s ]] || fail 'readiness probe lost termination bounds'
+                    [[ $3 =~ ^[1-5]s$ ]] || fail 'readiness probe exceeded remaining budget'
+                    shift 3
+                    "$@"
+                }
+                case $role in
+                    command) wait_for_command fixture probe ;;
+                    web) wait_for_web_readiness ;;
+                    controller) wait_for_controller_progress ;;
+                esac
+                [[ $scenario == ready && $probes == 3 && $sleeps == 2 && $checks -ge 2 ]] \
+                    || fail 'readiness admitted work without live children and successful probe'
+            ) || status=$?
+            if [[ $scenario == ready ]]; then
+                ((status == 0)) || fail "$role readiness rejected a ready process"
+            else
+                ((status == 77)) || fail "$role readiness accepted $scenario"
+            fi
+        done
+    done
+    printf 'PASS: subsecond readiness polling retains deadlines and child-failure fences\n'
+)
+
 test_restore_maintenance() (
     local scratch scenario scenario_pid
     scratch=$(mktemp -d "${TMPDIR:-/tmp}/rentnerproxy-restore-maintenance.XXXXXX")
@@ -631,5 +682,6 @@ test_drain
 test_export_outcome
 test_export_interruption
 test_startup_admission
+test_readiness_polling
 test_restart_proof_reset
 test_restore_maintenance
