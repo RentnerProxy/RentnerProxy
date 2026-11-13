@@ -97,7 +97,7 @@ export async function assertMigrationHistoryComplete(outputDirectory: string): P
         !Array.isArray(journal.entries)
     )
         throw new Error('Invalid Drizzle migration journal')
-    const sqlFiles = new Set(await readdir(outputDirectory))
+    const sqlFiles = new Set((await readdir(outputDirectory)).filter((name) => name.endsWith('.sql')))
     const tags = new Set<string>()
     for (const entry of journal.entries) {
         if (
@@ -119,11 +119,16 @@ export async function assertMigrationHistoryComplete(outputDirectory: string): P
                 `Incomplete Drizzle migration history for ${entry.tag}: SQL or snapshot is missing; repair interrupted Kit output before generating`,
             )
         tags.add(entry.tag)
+        sqlFiles.delete(`${entry.tag}.sql`)
         snapshots.delete(snapshot)
     }
     if (snapshots.size > 0)
         throw new Error(
             'Incomplete Drizzle migration history: unregistered snapshot; repair interrupted Kit output before generating',
+        )
+    if (sqlFiles.size > 0)
+        throw new Error(
+            'Incomplete Drizzle migration history: unregistered SQL output; repair interrupted Kit output before generating',
         )
 }
 
