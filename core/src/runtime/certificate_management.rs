@@ -187,6 +187,23 @@ impl ProxyRuntime {
         if self.stopping.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(CertificateError::OperationInProgress);
         }
+        let preparation_guard = timeout(self.settings.lock_wait, self.apply_lock.lock())
+            .await
+            .map_err(|_| CertificateError::OperationInProgress)?;
+        if self.engine.is_some() {
+            if !self
+                .certificate_store
+                .pending_candidate_ids()
+                .await?
+                .iter()
+                .any(|candidate| candidate == id)
+            {
+                return Ok(None);
+            }
+            self.ensure_running_locked()
+                .await
+                .map_err(|_| CertificateError::RuntimeApplyFailed)?;
+        }
         let id = id.to_owned();
         let Some(staged) = self
             .storage_async(move |runtime| async move {
@@ -200,6 +217,7 @@ impl ProxyRuntime {
         else {
             return Ok(None);
         };
+        drop(preparation_guard);
         self.commit_or_reapply_staged_certificate(staged)
             .await
             .map(Some)

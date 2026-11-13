@@ -181,6 +181,7 @@ impl CertificateStore {
         }
         let candidate = StoredCertificateCandidate {
             version: CANDIDATE_MANIFEST_VERSION,
+            retired: false,
             staged: staged.stored.clone(),
             base_material_id,
             activation_operation,
