@@ -1316,6 +1316,49 @@ async fn issued_candidate_survives_load_rejection_and_restart_without_an_acme_or
 }
 
 #[tokio::test]
+async fn unusable_candidate_retirement_waits_for_confirmed_caddy_recovery() {
+    let engine = FakeCaddy::new();
+    let (runtime, settings, old) = runtime_with_issued_candidate(engine.clone()).await;
+    let before = runtime.active_config().await.unwrap();
+    let certificate_directory = settings.state_dir.join("certificates").join(CERT_ID);
+    let candidate: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(certificate_directory.join("candidate.json")).unwrap(),
+    ).unwrap();
+    let material_id = candidate["staged"]["materialId"].as_str().unwrap();
+    std::fs::write(certificate_directory.join("versions").join(material_id).join("fullchain.pem"),
+        b"invalid certificate").unwrap();
+    engine.probes.lock().await.extend(std::iter::repeat_n(Err(EngineError::TimedOut), 3));
+    engine.shutdown_uncertain.store(true, Ordering::SeqCst);
+    runtime.recover().await.unwrap();
+    runtime.recover().await.unwrap();
+    assert_eq!(runtime.recover().await, Err(RuntimeError::Unavailable));
+    assert_eq!(runtime.retry_certificate_candidate(CERT_ID, false).await,
+        Err(CertificateError::RuntimeApplyFailed));
+    let pending = runtime.certificate(CERT_ID).await.unwrap();
+    assert!(pending.candidate.is_some());
+    assert_eq!(pending.fingerprint.as_deref(), Some(old.as_str()));
+    assert_eq!(runtime.active_config().await.unwrap(), before);
+    let marker: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(certificate_directory.join("candidate.json")).unwrap(),
+    ).unwrap();
+    assert!(marker.get("retired").is_none());
+    engine.shutdown_uncertain.store(false, Ordering::SeqCst);
+    runtime.shutdown().await;
+    let reopened = ProxyRuntime::new(settings, Some(engine.clone()));
+    reopened.initialize().await;
+    let restored = reopened.active_config().await.unwrap();
+    let loads = engine.load_count.load(Ordering::SeqCst);
+    assert_eq!(reopened.retry_certificate_candidate(CERT_ID, false).await,
+        Err(CertificateError::InvalidCertificate));
+    let retired = reopened.certificate(CERT_ID).await.unwrap();
+    assert!(retired.candidate.is_none());
+    assert_eq!(retired.fingerprint.as_deref(), Some(old.as_str()));
+    assert_eq!(reopened.active_config().await.unwrap(), restored);
+    assert_eq!(engine.load_count.load(Ordering::SeqCst), loads);
+    reopened.shutdown().await;
+}
+
+#[tokio::test]
 async fn issued_candidate_survives_uncertain_load_and_probe_failure() {
     for probe_failure in [false, true] {
         let engine = FakeCaddy::new();

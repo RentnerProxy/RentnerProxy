@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "certificate_candidate_retirement.rs"]
+mod retirement;
+
 struct TestDirectory(std::path::PathBuf);
 
 impl Drop for TestDirectory {

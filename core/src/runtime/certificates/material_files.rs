@@ -126,13 +126,15 @@ pub(super) fn validate_candidate_material(
         .map_err(|_| CertificateError::StoreUnavailable)?;
     let version_dir = versions_dir
         .open_dir(material_id)
-        .map_err(|_| CertificateError::StoreUnavailable)?;
+        .map_err(|error| if error.kind() == ErrorKind::NotFound {
+            CertificateError::InvalidCertificate
+        } else { CertificateError::StoreUnavailable })?;
     let fullchain =
         read_regular_private_file(&version_dir, "fullchain.pem", MAX_CERTIFICATE_PEM_BYTES)?
-            .ok_or(CertificateError::StoreUnavailable)?;
+            .ok_or(CertificateError::InvalidCertificate)?;
     let private_key =
         read_regular_private_file(&version_dir, "private-key.pem", MAX_PRIVATE_KEY_PEM_BYTES)?
-            .ok_or(CertificateError::StoreUnavailable)?;
+            .ok_or(CertificateError::InvalidCertificate)?;
     let fullchain =
         String::from_utf8(fullchain).map_err(|_| CertificateError::InvalidCertificate)?;
     let private_key =
@@ -149,7 +151,7 @@ pub(super) fn validate_candidate_material(
         || staged.metadata.expires_at.as_deref() != Some(parsed.expires_at.as_str())
         || staged.metadata.issuer.as_deref() != Some(parsed.issuer.as_str())
     {
-        return Err(CertificateError::StoreUnavailable);
+        return Err(CertificateError::InvalidCertificate);
     }
     Ok(())
 }
