@@ -1,7 +1,4 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    io::ErrorKind,
-};
+use std::io::ErrorKind;
 
 use super::material_files::material_at;
 use super::persistence::persist_index;
@@ -10,7 +7,6 @@ use super::{
     CertificateError, CertificateMaterial, CertificateOperation, CertificateStatus,
     CertificateStore, OffsetDateTime, Rfc3339, StagedCertificate,
 };
-use crate::proxy::is_canonical_uuid_v7;
 
 impl CertificateStore {
     pub(crate) async fn covers_domains(
@@ -150,89 +146,4 @@ impl CertificateStore {
         self.release_lease(id).await;
         Ok(())
     }
-
-    pub(crate) async fn collect_garbage(&self) -> Result<(), CertificateError> {
-        let leases = self.leases.lock().await;
-        let index = self.index.lock().await;
-        let certificates_dir = self.certificates_dir()?;
-        let mut protected = BTreeMap::<String, BTreeSet<String>>::new();
-        for (id, entry) in &index.certificates {
-            if let Some(material_id) = &entry.material_id {
-                protected
-                    .entry(id.clone())
-                    .or_default()
-                    .insert(material_id.clone());
-            }
-            if let Some(candidate) = index.pending_candidates.get(id)
-                && let Some(material_id) = &candidate.staged.material_id
-            {
-                protected
-                    .entry(id.clone())
-                    .or_default()
-                    .insert(material_id.clone());
-            }
-        }
-
-        let certificate_entries = std::fs::read_dir(certificates_dir.path())
-            .map_err(|_| CertificateError::StoreUnavailable)?;
-        for certificate_entry in certificate_entries {
-            let Some(id) = child_directory_name(certificate_entry)? else {
-                continue;
-            };
-            if !is_canonical_uuid_v7(&id) || !index.certificates.contains_key(&id) {
-                continue;
-            }
-            if leases.contains(&id) {
-                continue;
-            }
-            let certificate_dir = certificates_dir
-                .open_dir(&id)
-                .map_err(|_| CertificateError::StoreUnavailable)?;
-            let versions_dir = match certificate_dir.open_dir("versions") {
-                Ok(directory) => directory,
-                Err(error) if error.kind() == ErrorKind::NotFound => continue,
-                Err(_) => return Err(CertificateError::StoreUnavailable),
-            };
-            let versions = std::fs::read_dir(versions_dir.path())
-                .map_err(|_| CertificateError::StoreUnavailable)?;
-            for version in versions {
-                let Some(version_id) = child_directory_name(version)? else {
-                    continue;
-                };
-
-                if version_id.starts_with('.')
-                    || version_id.len() != 64
-                    || !version_id.bytes().all(|byte| byte.is_ascii_hexdigit())
-                {
-                    continue;
-                }
-                if protected
-                    .get(&id)
-                    .is_some_and(|versions| versions.contains(&version_id))
-                {
-                    continue;
-                }
-                versions_dir
-                    .remove_dir_tree(&version_id)
-                    .map_err(|_| CertificateError::StoreUnavailable)?;
-            }
-        }
-        drop(index);
-        drop(leases);
-        Ok(())
-    }
-}
-
-fn child_directory_name(
-    entry: std::io::Result<std::fs::DirEntry>,
-) -> Result<Option<String>, CertificateError> {
-    let entry = entry.map_err(|_| CertificateError::StoreUnavailable)?;
-    let file_type = entry
-        .file_type()
-        .map_err(|_| CertificateError::StoreUnavailable)?;
-    Ok(if file_type.is_dir() {
-        entry.file_name().to_str().map(str::to_owned)
-    } else {
-        None
-    })
 }

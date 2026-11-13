@@ -28,6 +28,7 @@ mod state;
 mod storage;
 mod task;
 mod tls;
+mod tls_gc_cursor;
 mod trusted_cas;
 pub(crate) mod upstream_health;
 

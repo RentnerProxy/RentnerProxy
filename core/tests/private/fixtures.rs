@@ -85,6 +85,29 @@ static PRIVATE_WRITE_FAILURE_PREFIX: std::sync::OnceLock<
     std::sync::Mutex<Option<std::path::PathBuf>>,
 > = std::sync::OnceLock::new();
 
+static CANDIDATE_MANIFEST_REMOVAL_FAILURES: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::BTreeSet<std::path::PathBuf>>,
+> = std::sync::OnceLock::new();
+
+pub(crate) fn fail_next_candidate_manifest_removal(path: std::path::PathBuf) {
+    let failures = CANDIDATE_MANIFEST_REMOVAL_FAILURES.get_or_init(Default::default);
+    failures
+        .lock()
+        .expect("test failure lock must not poison")
+        .insert(path.canonicalize().unwrap());
+}
+
+pub(crate) fn should_fail_candidate_manifest_removal(path: &std::path::Path) -> bool {
+    CANDIDATE_MANIFEST_REMOVAL_FAILURES
+        .get()
+        .is_some_and(|failures| {
+            failures
+                .lock()
+                .expect("test failure lock must not poison")
+                .remove(path)
+        })
+}
+
 pub(super) fn fail_next_private_key_write_below(path: std::path::PathBuf) {
     let lock = PRIVATE_WRITE_FAILURE_PREFIX.get_or_init(|| std::sync::Mutex::new(None));
     let path = path.canonicalize().unwrap_or(path);

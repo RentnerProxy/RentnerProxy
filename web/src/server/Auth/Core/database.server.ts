@@ -2,6 +2,7 @@ import '@tanstack/react-start/server-only'
 
 import { db } from '@/db/index.ts'
 import { withCommittedApplicationChanges } from '@/server/WebSockets/committedChanges.ts'
+import { withAuditRetentionTransaction } from '@/server/Audit/audit-retention.ts'
 
 type DatabaseTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0]
 
@@ -11,7 +12,13 @@ function wrapTransaction(current: DatabaseTransaction): DatabaseTransaction {
             if (property !== 'transaction') return Reflect.get(target, property, receiver)
             return <TResult>(operation: (nested: DatabaseTransaction) => Promise<TResult>) =>
                 withCommittedApplicationChanges(
-                    (run) => target.transaction((nested) => run(wrapTransaction(nested))),
+                    (run) =>
+                        withAuditRetentionTransaction(
+                            (retain) =>
+                                target.transaction((nested) => retain(wrapTransaction(nested))),
+                            run,
+                            wrapped,
+                        ),
                     operation,
                     wrapped,
                 )
@@ -25,7 +32,11 @@ function transaction<TResult>(
     options?: Parameters<typeof db.transaction>[1],
 ): Promise<TResult> {
     return withCommittedApplicationChanges(
-        (run) => db.transaction((current) => run(wrapTransaction(current)), options),
+        (run) =>
+            withAuditRetentionTransaction(
+                (retain) => db.transaction((current) => retain(wrapTransaction(current)), options),
+                run,
+            ),
         operation,
     )
 }
