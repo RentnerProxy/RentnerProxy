@@ -658,6 +658,9 @@ describe('historical backup dependency closure', () => {
             readFile(new URL(`../../../../../${path}`, import.meta.url), 'utf8'),
         )
         expect(files.has(HISTORICAL_COMPATIBILITY_CONFIG)).toBe(true)
+        expect(files.has('web/src/config/backup-runtime.config.ts')).toBe(true)
+        expect(files.has('scripts/backup/capacity.ts')).toBe(true)
+        expect(files.has('scripts/backup/Types/capacity.types.ts')).toBe(true)
         expect(files.has('web/src/lib/ApplicationVersion/backupCompatibility.ts')).toBe(true)
         expect(files.has('web/src/lib/Environment/deployment-environment.ts')).toBe(true)
         expect(files.has('scripts/production-backup.ts')).toBe(true)
@@ -711,6 +714,14 @@ describe('historical backup dependency closure', () => {
         })
         expect(files.has(HISTORICAL_COMPATIBILITY_CONFIG)).toBe(true)
         expect(requested.filter((path) => path === HISTORICAL_COMPATIBILITY_CONFIG)).toHaveLength(1)
+        expect(files.has('web/src/config/backup-runtime.config.ts')).toBe(false)
+    })
+    test('rejects neighboring config paths outside the exact historical runtime policy', async () => {
+        await expect(
+            loadHistoricalToolClosure(async () =>
+                "import '../web/src/config/backup-download.config.ts'",
+            ),
+        ).rejects.toThrow('unsupported historical tool import')
     })
     test('full aggregate uses immutable JSON env binding and refuses partial selection', async () => {
         const workflow = Bun.YAML.parse(

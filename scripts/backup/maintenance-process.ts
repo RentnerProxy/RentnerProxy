@@ -72,15 +72,19 @@ export async function runMaintenanceProcess(
             if (options.outputFile) {
                 if (written + next.value.length > options.outputFile.maximumBytes)
                     throw new Error('backup artifact is too large')
-                for (let offset = 0; offset < next.value.length; offset += 65_536) {
+                for (let offset = 0; offset < next.value.length;) {
                     if (written - capacityCheckedAt >= BACKUP_RUNTIME_POLICY.capacityCheckBytes) {
                         await options.checkCapacity?.()
+                        options.signal?.throwIfAborted()
                         capacityCheckedAt = written
                     }
-                    const chunk = next.value.subarray(offset, offset + 65_536)
+                    const remainingBatch = BACKUP_RUNTIME_POLICY.capacityCheckBytes -
+                        (written - capacityCheckedAt)
+                    const chunk = next.value.subarray(offset, offset + Math.min(65_536, remainingBatch))
                     await writeFileChunk(options.outputFile.file, chunk)
                     hash.update(chunk)
                     written += chunk.length
+                    offset += chunk.length
                 }
             } else {
                 buffered += next.value.length

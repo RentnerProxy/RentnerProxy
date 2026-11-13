@@ -16,6 +16,7 @@ function approvedHistoricalPath(path: string): boolean {
         path === 'scripts/production-restore.ts' ||
         path === 'scripts/smoke/resources.ts' ||
         path === HISTORICAL_COMPATIBILITY_CONFIG ||
+        path === 'web/src/config/backup-runtime.config.ts' ||
         path === 'web/src/lib/ApplicationVersion/backupCompatibility.ts' ||
         path === 'web/src/lib/Environment/deployment-environment.ts' ||
         /^scripts\/backup\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\.ts$/u.test(
