@@ -375,11 +375,28 @@ export async function runBackupOrchestrationFixture(scenario: string) {
                     }
                     const cancellation = new AbortController()
                     const originalStatfs = filesystem.statfs
-                    const capacityProbe = spyOn(filesystem, 'statfs').mockImplementation((async (...args: Parameters<typeof filesystem.statfs>) => {
+                    const capacityProbe = spyOn(filesystem, 'statfs').mockImplementation((async (
+                        ...args: Parameters<typeof filesystem.statfs>
+                    ) => {
                         const result = await originalStatfs(...args)
-                        const progress = JSON.parse(await readFile(join(control, 'restore-progress.json'), 'utf8')) as { phase: string; progressPercent: number }
-                        const sessionsCaptured = Boolean(await lstat(join(storage.backupRoot, '.restore-' + operation.id, 'sessions.json')).catch(() => null))
-                        if (String(args[0]) === app && progress.phase === 'quiescing' && progress.progressPercent === 25 && sessionsCaptured) {
+                        const progress = JSON.parse(
+                            await readFile(join(control, 'restore-progress.json'), 'utf8'),
+                        ) as { phase: string; progressPercent: number }
+                        const sessionsCaptured = Boolean(
+                            await lstat(
+                                join(
+                                    storage.backupRoot,
+                                    '.restore-' + operation.id,
+                                    'sessions.json',
+                                ),
+                            ).catch(() => null),
+                        )
+                        if (
+                            String(args[0]) === app &&
+                            progress.phase === 'quiescing' &&
+                            progress.progressPercent === 25 &&
+                            sessionsCaptured
+                        ) {
                             finalTargetCapacityProbes++
                             // assertRestoreCapacity probes the target for the database
                             // and both state archives. Abort inside its final probe.
