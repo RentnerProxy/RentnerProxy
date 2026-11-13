@@ -124,11 +124,13 @@ pub(super) fn validate_candidate_material(
     let versions_dir = certificate_dir
         .open_dir("versions")
         .map_err(|_| CertificateError::StoreUnavailable)?;
-    let version_dir = versions_dir
-        .open_dir(material_id)
-        .map_err(|error| if error.kind() == ErrorKind::NotFound {
+    let version_dir = versions_dir.open_dir(material_id).map_err(|error| {
+        if error.kind() == ErrorKind::NotFound {
             CertificateError::InvalidCertificate
-        } else { CertificateError::StoreUnavailable })?;
+        } else {
+            CertificateError::StoreUnavailable
+        }
+    })?;
     let fullchain =
         read_regular_private_file(&version_dir, "fullchain.pem", MAX_CERTIFICATE_PEM_BYTES)?
             .ok_or(CertificateError::InvalidCertificate)?;

@@ -252,7 +252,12 @@ pub(super) fn retire_candidate(
         || (active.metadata.operation != CertificateOperation::Idle
             && !(matches!(context, RetirementContext::Recovery)
                 && active.metadata.operation == retired.activation_operation))
-        || candidate.staged.metadata.current_operation.as_ref().map(|op| &op.id)
+        || candidate
+            .staged
+            .metadata
+            .current_operation
+            .as_ref()
+            .map(|op| &op.id)
             != Some(&operation.id)
         || active.metadata.current_operation.as_ref().map(|op| &op.id) != Some(&operation.id)
     {
@@ -351,10 +356,16 @@ pub(super) fn candidate_is_valid(id: &str, candidate: &StoredCertificateCandidat
     let staged = &candidate.staged;
     candidate.version == CANDIDATE_MANIFEST_VERSION
         && (!candidate.retired
-            || (candidate.staged.metadata.current_operation.as_ref().is_some_and(|operation| {
-                operations::current_operation_is_valid(operation)
-                    && operation.stage == CertificateOperationStage::Failed
-            }) && candidate.activation.last_error_code.is_some()
+            || (candidate
+                .staged
+                .metadata
+                .current_operation
+                .as_ref()
+                .is_some_and(|operation| {
+                    operations::current_operation_is_valid(operation)
+                        && operation.stage == CertificateOperationStage::Failed
+                })
+                && candidate.activation.last_error_code.is_some()
                 && candidate.activation.next_attempt_at.is_none()
                 && candidate.activation.retry_delay_seconds.is_none()))
         && is_canonical_uuid_v7(id)

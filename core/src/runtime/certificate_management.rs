@@ -191,7 +191,13 @@ impl ProxyRuntime {
             .await
             .map_err(|_| CertificateError::OperationInProgress)?;
         if self.engine.is_some() {
-            if !self.certificate_store.pending_candidate_ids().await?.iter().any(|candidate| candidate == id) {
+            if !self
+                .certificate_store
+                .pending_candidate_ids()
+                .await?
+                .iter()
+                .any(|candidate| candidate == id)
+            {
                 return Ok(None);
             }
             self.ensure_running_locked()

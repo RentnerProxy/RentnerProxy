@@ -14,12 +14,14 @@ const maxCommandLength = 24_000
 const argumentLength = (value: string) => value.length * 2 + 3
 
 export function selectWebTests(paths: readonly string[], mode: TestMode): string[] {
-    return paths.filter((path) => {
-        if (!/\.test\.tsx?$/u.test(path)) return false
-        if (mode === '--database') return path.endsWith('.db.test.ts')
-        if (mode === '--fuzz') return path.endsWith('.fuzz.test.ts')
-        return !path.endsWith('.db.test.ts') && !path.endsWith('.fuzz.test.ts')
-    }).toSorted()
+    return paths
+        .filter((path) => {
+            if (!/\.test\.tsx?$/u.test(path)) return false
+            if (mode === '--database') return path.endsWith('.db.test.ts')
+            if (mode === '--fuzz') return path.endsWith('.fuzz.test.ts')
+            return !path.endsWith('.db.test.ts') && !path.endsWith('.fuzz.test.ts')
+        })
+        .toSorted()
 }
 
 async function collectTests(directory: string): Promise<string[]> {
@@ -71,10 +73,13 @@ if (import.meta.main) {
         throw new Error('Expected --unit, --database, or --fuzz.')
     }
     if (mode === '--database' && process.env.RENTNERPROXY_DATABASE_INTEGRATION !== '1') {
-        throw new Error('Database tests require an explicitly configured isolated integration database.')
+        throw new Error(
+            'Database tests require an explicitly configured isolated integration database.',
+        )
     }
-    const tests = selectWebTests(await collectTests(testRoot), mode)
-        .map((path) => `./${relative(repositoryRoot, path).replaceAll('\\', '/')}`)
+    const tests = selectWebTests(await collectTests(testRoot), mode).map(
+        (path) => `./${relative(repositoryRoot, path).replaceAll('\\', '/')}`,
+    )
     process.exitCode = await runWebTestBatches(tests, async (command) => {
         const child = Bun.spawn(command, {
             cwd: repositoryRoot,

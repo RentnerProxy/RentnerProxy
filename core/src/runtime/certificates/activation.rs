@@ -5,8 +5,8 @@ use super::recovery::{RetirementContext, persist_candidate_manifest, retire_cand
 use super::scheduling::{candidate_retry_deadline, next_candidate_retry_delay};
 use super::validation::utc_now;
 use super::{
-    CertificateError, CertificateOperation, CertificateOperationStage,
-    CertificateStatus, CertificateStore, OffsetDateTime, Rfc3339, StagedCertificate,
+    CertificateError, CertificateOperation, CertificateOperationStage, CertificateStatus,
+    CertificateStore, OffsetDateTime, Rfc3339, StagedCertificate,
 };
 
 #[cfg(test)]
@@ -76,8 +76,13 @@ impl CertificateStore {
             }
         };
         if let Err(error) = validate_candidate_material(&certificates_dir, id, &candidate.staged) {
-            if !matches!(error, CertificateError::InvalidCertificate | CertificateError::KeyMismatch
-                | CertificateError::CertificateExpired | CertificateError::DomainMismatch) {
+            if !matches!(
+                error,
+                CertificateError::InvalidCertificate
+                    | CertificateError::KeyMismatch
+                    | CertificateError::CertificateExpired
+                    | CertificateError::DomainMismatch
+            ) {
                 self.release_lease(id).await;
                 return Err(error);
             }
