@@ -122,15 +122,13 @@ pub(super) fn validate_candidate_material(
     let certificate_dir = certificates_dir
         .open_dir(id)
         .map_err(|_| CertificateError::StoreUnavailable)?;
-    let versions_dir = certificate_dir
-        .open_dir("versions")
-        .map_err(|error| {
-            if error.kind() == ErrorKind::NotFound {
-                CertificateError::InvalidCertificate
-            } else {
-                CertificateError::StoreUnavailable
-            }
-        })?;
+    let versions_dir = certificate_dir.open_dir("versions").map_err(|error| {
+        if error.kind() == ErrorKind::NotFound {
+            CertificateError::InvalidCertificate
+        } else {
+            CertificateError::StoreUnavailable
+        }
+    })?;
     let version_dir = versions_dir.open_dir(material_id).map_err(|error| {
         if error.kind() == ErrorKind::NotFound {
             CertificateError::InvalidCertificate
@@ -148,12 +146,15 @@ pub(super) fn validate_candidate_material(
         String::from_utf8(fullchain).map_err(|_| CertificateError::InvalidCertificate)?;
     let private_key =
         String::from_utf8(private_key).map_err(|_| CertificateError::InvalidCertificate)?;
-    let (parsed, validity) = ParsedCertificate::parse_at(&CertificateImportRequest {
-        certificate_pem: fullchain,
-        private_key_pem: private_key,
-        chain_pem: None,
-        required_domains: None,
-    }, now)?;
+    let (parsed, validity) = ParsedCertificate::parse_at(
+        &CertificateImportRequest {
+            certificate_pem: fullchain,
+            private_key_pem: private_key,
+            chain_pem: None,
+            required_domains: None,
+        },
+        now,
+    )?;
     if parsed.domains != staged.metadata.domains
         || staged.metadata.fingerprint.as_deref() != Some(parsed.fingerprint.as_str())
         || staged.metadata.issued_at.as_deref() != Some(parsed.issued_at.as_str())
@@ -351,24 +352,27 @@ impl ParsedCertificate {
             }
             fullchain.push_str(chain);
         }
-        Ok((Self {
-            fullchain,
-            domains,
-            issued_at: format_timestamp(not_before)?,
-            expires_at: format_timestamp(not_after)?,
-            issuer: truncate(certificate.issuer().to_string(), 512),
-            fingerprint: {
-                let digest = digest(&SHA256, leaf.as_ref());
-                let digest: &[u8] = digest.as_ref();
-                format!(
-                    "sha256:{}",
-                    digest
-                        .iter()
-                        .map(|byte| format!("{byte:02x}"))
-                        .collect::<String>()
-                )
+        Ok((
+            Self {
+                fullchain,
+                domains,
+                issued_at: format_timestamp(not_before)?,
+                expires_at: format_timestamp(not_after)?,
+                issuer: truncate(certificate.issuer().to_string(), 512),
+                fingerprint: {
+                    let digest = digest(&SHA256, leaf.as_ref());
+                    let digest: &[u8] = digest.as_ref();
+                    format!(
+                        "sha256:{}",
+                        digest
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect::<String>()
+                    )
+                },
             },
-        }, validity))
+            validity,
+        ))
     }
 }
 

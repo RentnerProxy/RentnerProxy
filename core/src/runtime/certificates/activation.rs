@@ -24,7 +24,8 @@ impl CertificateStore {
         id: &str,
         scheduled: bool,
     ) -> Result<Option<StagedCertificate>, CertificateError> {
-        self.begin_candidate_activation_at(id, scheduled, OffsetDateTime::now_utc()).await
+        self.begin_candidate_activation_at(id, scheduled, OffsetDateTime::now_utc())
+            .await
     }
 
     pub(super) async fn begin_candidate_activation_at(
