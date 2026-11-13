@@ -1,12 +1,15 @@
-use super::material_files::validate_candidate_material;
+use super::material_files::{CertificateValidity, validate_candidate_material};
 use super::operations;
 use super::persistence::{persist_index, report_recovery_result};
-use super::recovery::persist_candidate_manifest;
+use super::recovery::{
+    RetirementContext, candidate_is_valid, persist_candidate_manifest, read_candidate_manifest,
+    retire_candidate,
+};
 use super::scheduling::{candidate_retry_deadline, next_candidate_retry_delay};
 use super::validation::utc_now;
 use super::{
-    CertificateError, CertificateEventKind, CertificateOperation, CertificateOperationStage,
-    CertificateStatus, CertificateStore, OffsetDateTime, Rfc3339, StagedCertificate,
+    CertificateError, CertificateOperation, CertificateOperationStage, CertificateStatus,
+    CertificateStore, OffsetDateTime, Rfc3339, StagedCertificate,
 };
 
 #[cfg(test)]
@@ -24,8 +27,17 @@ impl CertificateStore {
         id: &str,
         scheduled: bool,
     ) -> Result<Option<StagedCertificate>, CertificateError> {
+        self.begin_candidate_activation_at(id, scheduled, OffsetDateTime::now_utc())
+            .await
+    }
+
+    pub(super) async fn begin_candidate_activation_at(
+        &self,
+        id: &str,
+        scheduled: bool,
+        now: OffsetDateTime,
+    ) -> Result<Option<StagedCertificate>, CertificateError> {
         self.acquire_lease(id).await?;
-        let now = OffsetDateTime::now_utc();
         let (candidate, active) = {
             let index = self.index.lock().await;
             let Some(candidate) = index.pending_candidates.get(id).cloned() else {
@@ -75,8 +87,36 @@ impl CertificateStore {
                 return Err(error);
             }
         };
-        if let Err(error) = validate_candidate_material(&certificates_dir, id, &candidate.staged) {
-            self.finish_candidate_attention(id, error).await;
+        match self
+            .complete_candidate_retirement(id, &candidate, &certificates_dir)
+            .await
+        {
+            Ok(false) => {}
+            result => {
+                self.release_lease(id).await;
+                result?;
+                return Ok(None);
+            }
+        }
+        let validation = validate_candidate_material(&certificates_dir, id, &candidate.staged, now);
+        if matches!(validation, Ok(CertificateValidity::NotYetValid)) {
+            self.release_lease(id).await;
+            return Err(CertificateError::CertificateExpired);
+        }
+        if let Err(error) = validation {
+            if !matches!(
+                error,
+                CertificateError::InvalidCertificate
+                    | CertificateError::KeyMismatch
+                    | CertificateError::CertificateExpired
+                    | CertificateError::DomainMismatch
+            ) {
+                self.release_lease(id).await;
+                return Err(error);
+            }
+            let retired = self.retire_invalid_candidate(id, candidate, error).await;
+            self.release_lease(id).await;
+            retired?;
             return Err(error);
         }
 
@@ -231,56 +271,59 @@ impl CertificateStore {
         self.release_lease(&staged.id).await;
     }
 
-    async fn finish_candidate_attention(&self, id: &str, error: CertificateError) {
+    async fn complete_candidate_retirement(
+        &self,
+        id: &str,
+        expected: &super::StoredCertificateCandidate,
+        directory: &super::SafeDir,
+    ) -> Result<bool, CertificateError> {
+        let Some(retired) =
+            read_candidate_manifest(directory, id)?.filter(|candidate| candidate.retired)
+        else {
+            return Ok(false);
+        };
+        if !candidate_is_valid(id, &retired) {
+            return Err(CertificateError::StoreUnavailable);
+        }
         let mut index = self.index.lock().await;
-        let Some(mut candidate) = index.pending_candidates.get(id).cloned() else {
-            drop(index);
-            self.release_lease(id).await;
-            return;
-        };
-        let Some(operation) = candidate.staged.metadata.current_operation.as_mut() else {
-            drop(index);
-            self.release_lease(id).await;
-            return;
-        };
-        operation.stage = CertificateOperationStage::NeedsAttention;
-        operation.updated_at = utc_now().unwrap_or_else(|_| operation.updated_at.clone());
+        if index.pending_candidates.get(id) != Some(expected) {
+            return Err(CertificateError::OperationInProgress);
+        }
+        let mut retired_index = index.clone();
+        retire_candidate(&mut retired_index, id, &retired, RetirementContext::Live)?;
+        persist_index(directory, &retired_index)?;
+        *index = retired_index;
+        Ok(true)
+    }
+
+    async fn retire_invalid_candidate(
+        &self,
+        id: &str,
+        mut candidate: super::StoredCertificateCandidate,
+        error: CertificateError,
+    ) -> Result<(), CertificateError> {
+        let mut index = self.index.lock().await;
+        if index.pending_candidates.get(id) != Some(&candidate) {
+            return Err(CertificateError::OperationInProgress);
+        }
+        let operation = candidate
+            .staged
+            .metadata
+            .current_operation
+            .as_mut()
+            .ok_or(CertificateError::StoreUnavailable)?;
+        operation.stage = CertificateOperationStage::Failed;
+        operation.updated_at = utc_now()?;
+        candidate.retired = true;
         candidate.activation.last_error_code = Some(error.code().to_owned());
         candidate.activation.next_attempt_at = None;
         candidate.activation.retry_delay_seconds = None;
-        index
-            .pending_candidates
-            .insert(id.to_owned(), candidate.clone());
-        let candidate_operation = candidate.staged.metadata.current_operation.clone();
-        if let Some(active) = index.certificates.get_mut(id) {
-            active.metadata.operation = CertificateOperation::Idle;
-            active.metadata.last_error_code = Some(error.code().to_owned());
-            active.metadata.last_error_at = utc_now().ok();
-            active.metadata.current_operation = candidate_operation.clone();
-            active.metadata.updated_at =
-                utc_now().unwrap_or_else(|_| active.metadata.updated_at.clone());
-        }
-        if let Ok(directory) = self.certificates_dir() {
-            report_recovery_result(
-                persist_candidate_manifest(&directory, id, &candidate),
-                "persist_candidate_manifest",
-            );
-            if let Some(operation) = candidate_operation {
-                report_recovery_result(
-                    operations::append_event(
-                        &mut index,
-                        &operation.id,
-                        id,
-                        CertificateEventKind::Failed,
-                        CertificateOperationStage::NeedsAttention,
-                        Some(error.code().to_owned()),
-                    ),
-                    "append_event",
-                );
-            }
-            report_recovery_result(persist_index(&directory, &index), "persist_index");
-        }
-        drop(index);
-        self.release_lease(id).await;
+        let mut retired_index = index.clone();
+        retire_candidate(&mut retired_index, id, &candidate, RetirementContext::Live)?;
+        let directory = self.certificates_dir()?;
+        persist_candidate_manifest(&directory, id, &candidate)?;
+        persist_index(&directory, &retired_index)?;
+        *index = retired_index;
+        Ok(())
     }
 }

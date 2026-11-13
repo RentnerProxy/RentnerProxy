@@ -1,12 +1,8 @@
 use super::*;
+use crate::tests::fixtures::TestDirectory;
 
-struct TestDirectory(std::path::PathBuf);
-
-impl Drop for TestDirectory {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+#[path = "certificate_candidate_retirement.rs"]
+mod retirement;
 
 async fn active_store() -> (CertificateStore, TestDirectory) {
     let directory = state_dir();

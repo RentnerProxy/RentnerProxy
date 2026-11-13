@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { PERMISSIONS } from '@/config/permissions.config.ts'
 import useTranslationStore from '@/shared/Language/Hooks/useTranslationStore.ts'
 import useLiveQuery from '@/shared/Live/Hooks/useLiveQuery.ts'
+import useQueryRecovery from '@/shared/Live/Hooks/useQueryRecovery.ts'
 import type {
     AuditAction,
     AuditActorOption,
@@ -49,6 +50,8 @@ export default function useAuditLogsLogic({
         enabled: canView,
         retry: false,
     })
+    // Only the first page is updated through WebSocket snapshots.
+    useQueryRecovery(auditQuery, canView && cursorStack.length > 0)
     const actorOptionsQuery = useQuery<readonly AuditActorOption[]>({
         queryKey: auditLogsQueryKeys.actors(),
         queryFn: () => getAuditActorOptionsHandler(),
