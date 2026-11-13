@@ -4,9 +4,9 @@ use std::{
 };
 
 use super::super::tls_gc_cursor::{Entry, MAX_ENTRIES_PER_PASS};
-use super::recovery::{candidate_is_valid, read_candidate_manifest};
+use super::recovery::candidate_is_valid;
 use super::validation::{index_is_valid, read_regular_private_file};
-use super::{CertificateError, CertificateIndex, CertificateStore, SafeDir, is_canonical_uuid_v7};
+use super::{CertificateError, CertificateIndex, CertificateStore, SafeDir, StoredCertificateCandidate, is_canonical_uuid_v7};
 
 const MAX_REMOVALS_PER_PASS: usize = 64;
 
@@ -37,6 +37,7 @@ impl CertificateStore {
         let mut remaining = MAX_REMOVALS_PER_PASS;
         let mut cursor = self.gc_cursor.lock().await;
         let mut manifests_checked = BTreeSet::new();
+        let mut retired_markers = BTreeSet::new();
         for _ in 0..MAX_ENTRIES_PER_PASS {
             let Some(entry) = cursor.next(&root).map_err(unavailable)? else {
                 break;
@@ -72,36 +73,33 @@ impl CertificateStore {
                 Err(error) => return Err(unavailable(error)),
             }
             let certificate = root.open_dir(&name).map_err(unavailable)?;
-            if name == id {
-                match certificate.owned_entry_metadata(super::CANDIDATE_MANIFEST_FILE) {
-                    Ok(_) => {}
-                    Err(error) if error.kind() == ErrorKind::NotFound => {}
-                    Err(error) => return Err(unavailable(error)),
-                }
-            }
-            if name == id
-                && manifests_checked.insert(id.to_owned())
-                && let Some(candidate) = read_candidate_manifest(&root, id)?
+            if manifests_checked.insert(name.clone())
+                && let Some(candidate) = candidate_manifest(&certificate, id)?
             {
-                if !candidate_is_valid(id, &candidate) {
-                    return Err(CertificateError::StoreUnavailable);
-                }
-                for material in [candidate.staged.material_id, candidate.base_material_id]
-                    .into_iter()
-                    .flatten()
+                let pending = index.pending_candidates.contains_key(id)
+                    || durable.as_ref().is_some_and(|index| index.pending_candidates.contains_key(id));
+                if !candidate.retired || pending {
+                    for material in [candidate.staged.material_id, candidate.base_material_id]
+                        .into_iter().flatten()
+                    {
+                        protected.entry(id.to_owned()).or_default().insert(material.to_ascii_lowercase());
+                    }
+                } else if !index.certificates.contains_key(id)
+                    && !durable.as_ref().is_some_and(|index| index.certificates.contains_key(id))
                 {
-                    protected
-                        .entry(id.to_owned())
-                        .or_default()
-                        .insert(material.to_ascii_lowercase());
+                    retired_markers.insert(name.clone());
                 }
             }
+            let reclaim_marker = retired_markers.contains(&name);
             if finished {
                 if !index.certificates.contains_key(id)
                     && !protected.contains_key(id)
-                    && empty_certificate_tree(&certificate)?
+                    && empty_certificate_tree(&certificate, reclaim_marker)?
                 {
-                    root.remove_dir_tree(&name).map_err(unavailable)?;
+                    remove_owned_root(&root, &name)?;
+                    remaining -= 1;
+                } else if reclaim_marker {
+                    certificate.remove_file(super::CANDIDATE_MANIFEST_FILE).map_err(unavailable)?;
                     remaining -= 1;
                 }
                 if remaining == 0 {
@@ -118,13 +116,16 @@ impl CertificateStore {
                 Ok(versions) => versions,
                 Err(error) if error.kind() == ErrorKind::NotFound => {
                     cursor.skip_directory();
-                    if deleted_id(&name).is_some() && empty_certificate_tree(&certificate)? {
-                        root.remove_dir_tree(&name).map_err(unavailable)?;
+                    if (deleted_id(&name).is_some() || reclaim_marker)
+                        && !protected.contains_key(id)
+                        && empty_certificate_tree(&certificate, reclaim_marker)? {
+                        remove_owned_root(&root, &name)?;
                         remaining -= 1;
-                        if remaining == 0 {
-                            break;
-                        }
+                    } else if reclaim_marker {
+                        certificate.remove_file(super::CANDIDATE_MANIFEST_FILE).map_err(unavailable)?;
+                        remaining -= 1;
                     }
+                    if remaining == 0 { break; }
                     continue;
                 }
                 Err(error) => return Err(unavailable(error)),
@@ -163,9 +164,35 @@ impl CertificateStore {
     }
 }
 
-fn empty_certificate_tree(directory: &SafeDir) -> Result<bool, CertificateError> {
+fn remove_owned_root(root: &SafeDir, name: &str) -> Result<(), CertificateError> {
+    let tombstone = if deleted_id(name).is_some() { name.to_owned() } else {
+        let tombstone = format!(".deleted-{name}-{}-{}", std::process::id(), super::OffsetDateTime::now_utc().unix_timestamp_nanos());
+        root.rename_dir(name, &tombstone).map_err(unavailable)?;
+        tombstone
+    };
+    root.remove_dir_tree(&tombstone).map_err(unavailable)
+}
+
+fn candidate_manifest(directory: &SafeDir, id: &str) -> Result<Option<StoredCertificateCandidate>, CertificateError> {
+    match directory.owned_entry_metadata(super::CANDIDATE_MANIFEST_FILE) {
+        Ok(_) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(unavailable(error)),
+    }
+    let bytes = read_regular_private_file(directory, super::CANDIDATE_MANIFEST_FILE, super::MAX_CANDIDATE_MANIFEST_BYTES)?
+        .ok_or(CertificateError::StoreUnavailable)?;
+    let candidate = serde_json::from_slice(&bytes).map_err(|_| CertificateError::StoreUnavailable)?;
+    if !candidate_is_valid(id, &candidate) { return Err(CertificateError::StoreUnavailable); }
+    Ok(Some(candidate))
+}
+
+fn empty_certificate_tree(directory: &SafeDir, terminal_marker: bool) -> Result<bool, CertificateError> {
     for name in names(directory)? {
         let name = name?;
+        if terminal_marker && name == super::CANDIDATE_MANIFEST_FILE {
+            directory.file_path(&name).map_err(unavailable)?;
+            continue;
+        }
         if name != "versions" {
             return Ok(false);
         }
