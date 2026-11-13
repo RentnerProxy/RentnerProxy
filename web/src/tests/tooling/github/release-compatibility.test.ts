@@ -718,8 +718,8 @@ describe('historical backup dependency closure', () => {
     })
     test('rejects neighboring config paths outside the exact historical runtime policy', async () => {
         await expect(
-            loadHistoricalToolClosure(async () =>
-                "import '../web/src/config/backup-download.config.ts'",
+            loadHistoricalToolClosure(
+                async () => "import '../web/src/config/backup-download.config.ts'",
             ),
         ).rejects.toThrow('unsupported historical tool import')
     })

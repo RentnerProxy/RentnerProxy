@@ -78,9 +78,12 @@ export async function runMaintenanceProcess(
                         options.signal?.throwIfAborted()
                         capacityCheckedAt = written
                     }
-                    const remainingBatch = BACKUP_RUNTIME_POLICY.capacityCheckBytes -
-                        (written - capacityCheckedAt)
-                    const chunk = next.value.subarray(offset, offset + Math.min(65_536, remainingBatch))
+                    const remainingBatch =
+                        BACKUP_RUNTIME_POLICY.capacityCheckBytes - (written - capacityCheckedAt)
+                    const chunk = next.value.subarray(
+                        offset,
+                        offset + Math.min(65_536, remainingBatch),
+                    )
                     await writeFileChunk(options.outputFile.file, chunk)
                     hash.update(chunk)
                     written += chunk.length
