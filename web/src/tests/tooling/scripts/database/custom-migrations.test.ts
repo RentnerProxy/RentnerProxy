@@ -259,13 +259,23 @@ describe('custom migration generation', () => {
             const original = await readFile(output, 'utf8')
             await writeHistory(options.outputDirectory, [])
             await rm(join(options.outputDirectory, 'meta/0001_snapshot.json'))
-            const journal = await readFile(join(options.outputDirectory, 'meta/_journal.json'), 'utf8')
-            await expect(generateCustomMigrations(options)).rejects.toThrow('unregistered SQL output')
+            const journal = await readFile(
+                join(options.outputDirectory, 'meta/_journal.json'),
+                'utf8',
+            )
+            await expect(generateCustomMigrations(options)).rejects.toThrow(
+                'unregistered SQL output',
+            )
             expect(calls).toEqual(['audit_v1'])
             expect(await readFile(output, 'utf8')).toBe(original)
-            expect(await readFile(join(options.outputDirectory, 'meta/_journal.json'), 'utf8')).toBe(journal)
+            expect(
+                await readFile(join(options.outputDirectory, 'meta/_journal.json'), 'utf8'),
+            ).toBe(journal)
             expect(await readdir(join(options.outputDirectory, 'meta'))).toEqual(['_journal.json'])
-            expect((await readdir(options.outputDirectory)).toSorted()).toEqual(['0001_audit_v1.sql', 'meta'])
+            expect((await readdir(options.outputDirectory)).toSorted()).toEqual([
+                '0001_audit_v1.sql',
+                'meta',
+            ])
         })
     })
 
@@ -274,7 +284,9 @@ describe('custom migration generation', () => {
             await generateCustomMigrations(options)
             const output = join(options.outputDirectory, '0002_unrelated.sql')
             await writeFile(output, 'select 456;\n')
-            await expect(generateCustomMigrations(options)).rejects.toThrow('unregistered SQL output')
+            await expect(generateCustomMigrations(options)).rejects.toThrow(
+                'unregistered SQL output',
+            )
             expect(calls).toEqual(['audit_v1'])
             expect(await readFile(output, 'utf8')).toBe('select 456;\n')
         })

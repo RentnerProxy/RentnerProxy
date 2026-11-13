@@ -97,7 +97,9 @@ export async function assertMigrationHistoryComplete(outputDirectory: string): P
         !Array.isArray(journal.entries)
     )
         throw new Error('Invalid Drizzle migration journal')
-    const sqlFiles = new Set((await readdir(outputDirectory)).filter((name) => name.endsWith('.sql')))
+    const sqlFiles = new Set(
+        (await readdir(outputDirectory)).filter((name) => name.endsWith('.sql')),
+    )
     const tags = new Set<string>()
     for (const entry of journal.entries) {
         if (
