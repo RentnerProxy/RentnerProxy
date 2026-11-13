@@ -361,26 +361,38 @@ describe('audit event PostgreSQL persistence', () => {
                     select now() - interval '1 day', 'system', 'apply', 'proxy-runtime', ${seedTarget}::uuid, 'success'
                     from generate_series(1, 100001)
                 `)
-                await Promise.all(targets.map((targetId) =>
-                    getAuthDatabase().transaction(async (transaction) => {
-                        for (let index = 0; index < 20; index++) {
-                            // oxlint-disable-next-line no-await-in-loop -- Mirrors per-object audit writes within one import.
-                            await current.appendAuditEventInTransactionService(transaction, {
-                                actorUserId: null,
-                                actorKind: 'system',
-                                action: 'apply',
-                                resource: 'proxy-runtime',
-                                targetId,
-                                result: 'success',
-                            })
-                        }
-                    }),
-                ))
-                expect((await db.select({ value: count() }).from(auditEvents))[0]?.value).toBe(100_000)
-                expect((await db.select({ value: count() }).from(auditEvents)
-                    .where(inArray(auditEvents.targetId, targets)))[0]?.value).toBe(40)
+                await Promise.all(
+                    targets.map((targetId) =>
+                        getAuthDatabase().transaction(async (transaction) => {
+                            for (let index = 0; index < 20; index++) {
+                                // oxlint-disable-next-line no-await-in-loop -- Mirrors per-object audit writes within one import.
+                                await current.appendAuditEventInTransactionService(transaction, {
+                                    actorUserId: null,
+                                    actorKind: 'system',
+                                    action: 'apply',
+                                    resource: 'proxy-runtime',
+                                    targetId,
+                                    result: 'success',
+                                })
+                            }
+                        }),
+                    ),
+                )
+                expect((await db.select({ value: count() }).from(auditEvents))[0]?.value).toBe(
+                    100_000,
+                )
+                expect(
+                    (
+                        await db
+                            .select({ value: count() })
+                            .from(auditEvents)
+                            .where(inArray(auditEvents.targetId, targets))
+                    )[0]?.value,
+                ).toBe(40)
             } finally {
-                await db.delete(auditEvents).where(inArray(auditEvents.targetId, [seedTarget, ...targets]))
+                await db
+                    .delete(auditEvents)
+                    .where(inArray(auditEvents.targetId, [seedTarget, ...targets]))
             }
         },
         15_000,
@@ -392,31 +404,50 @@ describe('audit event PostgreSQL persistence', () => {
             const current = await loadDatabaseTestContext()
             const { auditEvents, db, getAuthDatabase, inArray } = current
             const targets = Array.from({ length: 3 }, () => crypto.randomUUID())
-            const write = (transaction: Parameters<typeof current.appendAuditEventInTransactionService>[0], targetId: string) =>
+            const write = (
+                transaction: Parameters<typeof current.appendAuditEventInTransactionService>[0],
+                targetId: string,
+            ) =>
                 current.appendAuditEventInTransactionService(transaction, {
-                    actorUserId: null, actorKind: 'system', action: 'apply',
-                    resource: 'proxy-runtime', targetId, result: 'success',
+                    actorUserId: null,
+                    actorKind: 'system',
+                    action: 'apply',
+                    resource: 'proxy-runtime',
+                    targetId,
+                    result: 'success',
                 })
             try {
                 await getAuthDatabase().transaction(async (outer) => {
-                    await expect(outer.transaction(async (inner) => {
-                        await write(inner, targets[0]!)
-                        throw new Error('rollback savepoint')
-                    })).rejects.toThrow('rollback savepoint')
+                    await expect(
+                        outer.transaction(async (inner) => {
+                            await write(inner, targets[0]!)
+                            throw new Error('rollback savepoint')
+                        }),
+                    ).rejects.toThrow('rollback savepoint')
                     await outer.transaction((inner) => write(inner, targets[1]!))
                     await write(outer, targets[2]!)
                 })
-                const committed = await db.select({ targetId: auditEvents.targetId }).from(auditEvents)
+                const committed = await db
+                    .select({ targetId: auditEvents.targetId })
+                    .from(auditEvents)
                     .where(inArray(auditEvents.targetId, targets))
-                expect(committed.map((row) => row.targetId).toSorted()).toEqual(targets.slice(1).toSorted())
+                expect(committed.map((row) => row.targetId).toSorted()).toEqual(
+                    targets.slice(1).toSorted(),
+                )
                 await db.delete(auditEvents).where(inArray(auditEvents.targetId, targets))
-                await expect(getAuthDatabase().transaction(async (outer) => {
-                    await outer.transaction((inner) => write(inner, targets[0]!))
-                    await write(outer, targets[1]!)
-                    throw new Error('rollback root')
-                })).rejects.toThrow('rollback root')
-                expect(await db.select({ id: auditEvents.id }).from(auditEvents)
-                    .where(inArray(auditEvents.targetId, targets))).toHaveLength(0)
+                await expect(
+                    getAuthDatabase().transaction(async (outer) => {
+                        await outer.transaction((inner) => write(inner, targets[0]!))
+                        await write(outer, targets[1]!)
+                        throw new Error('rollback root')
+                    }),
+                ).rejects.toThrow('rollback root')
+                expect(
+                    await db
+                        .select({ id: auditEvents.id })
+                        .from(auditEvents)
+                        .where(inArray(auditEvents.targetId, targets)),
+                ).toHaveLength(0)
             } finally {
                 await db.delete(auditEvents).where(inArray(auditEvents.targetId, targets))
             }
@@ -428,7 +459,9 @@ describe('audit event PostgreSQL persistence', () => {
         async () => {
             const current = await loadDatabaseTestContext()
             const { auditEvents, db, eq, getAuthDatabase, sql } = current
-            await getAuthDatabase().transaction((transaction) => current.ensureAuthorizationRegistryInTransaction(transaction))
+            await getAuthDatabase().transaction((transaction) =>
+                current.ensureAuthorizationRegistryInTransaction(transaction),
+            )
             const ownerId = await current.createUser('owner')
             const targetId = crypto.randomUUID()
             try {
@@ -440,7 +473,9 @@ describe('audit event PostgreSQL persistence', () => {
                         values (now() - interval '91 days', ${ownerId}::uuid, 'user', 'update', 'user', ${targetId}::uuid, 'success')
                     `)
                     await db.transaction(async (writer) => {
-                        await writer.execute(sql`select pg_advisory_xact_lock(${current.AUDIT_RETENTION_LOCK_ID})`)
+                        await writer.execute(
+                            sql`select pg_advisory_xact_lock(${current.AUDIT_RETENTION_LOCK_ID})`,
+                        )
                         let timeout: ReturnType<typeof setTimeout> | undefined
                         try {
                             const result = await Promise.race([
@@ -448,10 +483,18 @@ describe('audit event PostgreSQL persistence', () => {
                                     actorUserId: ownerId,
                                     action: 'update',
                                     resource: 'user',
-                                    from: new Date(Date.now() - 365 * 24 * 60 * 60 * 1_000).toISOString(),
+                                    from: new Date(
+                                        Date.now() - 365 * 24 * 60 * 60 * 1_000,
+                                    ).toISOString(),
                                 }),
                                 new Promise<never>((_resolve, reject) => {
-                                    timeout = setTimeout(() => reject(new Error('audit reader waited for writer lock')), 2_000)
+                                    timeout = setTimeout(
+                                        () =>
+                                            reject(
+                                                new Error('audit reader waited for writer lock'),
+                                            ),
+                                        2_000,
+                                    )
                                 }),
                             ])
                             expect(result.events).toHaveLength(0)
@@ -460,8 +503,12 @@ describe('audit event PostgreSQL persistence', () => {
                             clearTimeout(timeout)
                         }
                     })
-                    expect(await db.select({ id: auditEvents.id }).from(auditEvents)
-                        .where(eq(auditEvents.targetId, targetId))).toHaveLength(1)
+                    expect(
+                        await db
+                            .select({ id: auditEvents.id })
+                            .from(auditEvents)
+                            .where(eq(auditEvents.targetId, targetId)),
+                    ).toHaveLength(1)
                 })
             } finally {
                 await db.delete(auditEvents).where(eq(auditEvents.targetId, targetId))

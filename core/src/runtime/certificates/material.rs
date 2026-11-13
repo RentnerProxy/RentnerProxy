@@ -146,5 +146,4 @@ impl CertificateStore {
         self.release_lease(id).await;
         Ok(())
     }
-
 }

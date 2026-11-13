@@ -46,9 +46,9 @@ export async function lockAuditRetentionInTransaction(transaction: AuthTransacti
     const state = retentionTransactions.get(transaction)
     if (state) {
         // Drizzle's query is lazy and re-executes on every await; cache the settled Promise instead.
-        state.lock ??= Promise.resolve(transaction.execute(
-            sql`select pg_advisory_xact_lock(${AUDIT_RETENTION_LOCK_ID})`,
-        ))
+        state.lock ??= Promise.resolve(
+            transaction.execute(sql`select pg_advisory_xact_lock(${AUDIT_RETENTION_LOCK_ID})`),
+        )
         await state.lock
     } else {
         await transaction.execute(sql`select pg_advisory_xact_lock(${AUDIT_RETENTION_LOCK_ID})`)

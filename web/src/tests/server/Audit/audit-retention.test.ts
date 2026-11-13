@@ -15,10 +15,11 @@ function fixture() {
         // Match Drizzle's lazy query, which executes anew whenever its then method is called.
         execute: (query: SQL) => ({
             // oxlint-disable-next-line unicorn/no-thenable -- Exercise the driver's actual repeatable-thenable contract.
-            then: (resolve: (rows: never[]) => unknown) => Promise.resolve().then(() => {
-                statements.push(new PgDialect().sqlToQuery(query).sql)
-                return resolve([])
-            }),
+            then: (resolve: (rows: never[]) => unknown) =>
+                Promise.resolve().then(() => {
+                    statements.push(new PgDialect().sqlToQuery(query).sql)
+                    return resolve([])
+                }),
         }),
     } as unknown as AuthTransaction
     return { statements, transaction }
@@ -121,13 +122,15 @@ describe('audit transaction retention lifecycle', () => {
 
     test('failed root callbacks discard lifecycle state before the object can be reused', async () => {
         const { transaction, statements } = fixture()
-        await expect(withAuditRetentionTransaction(
-            (run) => run(transaction),
-            async (current) => {
-                await append(current)
-                throw new Error('rollback mutation')
-            },
-        )).rejects.toThrow('rollback mutation')
+        await expect(
+            withAuditRetentionTransaction(
+                (run) => run(transaction),
+                async (current) => {
+                    await append(current)
+                    throw new Error('rollback mutation')
+                },
+            ),
+        ).rejects.toThrow('rollback mutation')
         expect(statements).toHaveLength(1)
         await append(transaction)
         expect(statements).toHaveLength(4)
@@ -144,13 +147,10 @@ describe('audit transaction retention lifecycle', () => {
         } as unknown as AuthTransaction
         let committed = false
         await expect(
-            withAuditRetentionTransaction(
-                async (run) => {
-                    await run(transaction)
-                    committed = true
-                },
-                append,
-            ),
+            withAuditRetentionTransaction(async (run) => {
+                await run(transaction)
+                committed = true
+            }, append),
         ).rejects.toThrow('retention failed')
         expect(committed).toBe(false)
     })

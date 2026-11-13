@@ -14,7 +14,8 @@ function wrapTransaction(current: DatabaseTransaction): DatabaseTransaction {
                 withCommittedApplicationChanges(
                     (run) =>
                         withAuditRetentionTransaction(
-                            (retain) => target.transaction((nested) => retain(wrapTransaction(nested))),
+                            (retain) =>
+                                target.transaction((nested) => retain(wrapTransaction(nested))),
                             run,
                             wrapped,
                         ),

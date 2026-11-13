@@ -48,5 +48,8 @@ impl MaterialCursor {
 }
 
 fn name(entry: std::fs::DirEntry) -> std::io::Result<String> {
-    entry.file_name().into_string().map_err(|_| std::io::Error::other("invalid material entry name"))
+    entry
+        .file_name()
+        .into_string()
+        .map_err(|_| std::io::Error::other("invalid material entry name"))
 }

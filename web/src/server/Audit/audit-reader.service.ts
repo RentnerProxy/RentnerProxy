@@ -38,7 +38,10 @@ function parseStoredMetadata(value: unknown): AuditMetadata {
 
 function queryConditions(query: ReturnType<typeof auditEventsQuerySchema.parse>) {
     const conditions: (SQL | undefined)[] = [
-        gte(auditEvents.createdAt, new Date(Date.now() - AUDIT_RETENTION_DAYS * 24 * 60 * 60 * 1_000)),
+        gte(
+            auditEvents.createdAt,
+            new Date(Date.now() - AUDIT_RETENTION_DAYS * 24 * 60 * 60 * 1_000),
+        ),
     ]
     if (query.actorUserId) conditions.push(eq(auditEvents.actorUserId, query.actorUserId))
     if (query.action) conditions.push(eq(auditEvents.action, query.action))

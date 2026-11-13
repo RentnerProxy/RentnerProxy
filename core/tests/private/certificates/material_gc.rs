@@ -25,8 +25,14 @@ async fn certificate_gc_recovers_uncommitted_delete_before_reclaiming_committed_
     std::fs::create_dir(&empty_tombstone).unwrap();
     std::fs::rename(root.join(ID), &backup).unwrap();
     recovered.collect_garbage().await.unwrap();
-    assert!(!backup.exists(), "committed tombstone without an indexed ID is abandoned");
-    assert!(!empty_tombstone.exists(), "a cleanup interrupted after removing versions must be retried");
+    assert!(
+        !backup.exists(),
+        "committed tombstone without an indexed ID is abandoned"
+    );
+    assert!(
+        !empty_tombstone.exists(),
+        "a cleanup interrupted after removing versions must be retried"
+    );
 }
 
 #[tokio::test]
@@ -47,7 +53,10 @@ async fn certificate_gc_cleans_only_recognized_unleased_orphan_and_staging_mater
     std::fs::create_dir(&unknown).unwrap();
     std::fs::write(unknown.join("notes"), b"keep").unwrap();
     store.collect_garbage().await.unwrap();
-    assert!(staging.exists() && version.exists(), "lease must protect the entire ID");
+    assert!(
+        staging.exists() && version.exists(),
+        "lease must protect the entire ID"
+    );
     store.discard_staged(&staged).await;
     store.collect_garbage().await.unwrap();
     assert!(!version.exists() && !staging.exists());
@@ -60,9 +69,16 @@ async fn certificate_gc_does_not_recursively_delete_unknown_files_and_retries_er
     std::fs::create_dir_all(&state).unwrap();
     let store = CertificateStore::new(state.clone());
     store.initialize().await.unwrap();
-    let version = state.join("certificates").join(UNKNOWN).join("versions").join("b".repeat(64));
+    let version = state
+        .join("certificates")
+        .join(UNKNOWN)
+        .join("versions")
+        .join("b".repeat(64));
     std::fs::create_dir_all(version.join("fullchain.pem")).unwrap();
-    assert_eq!(store.collect_garbage().await, Err(CertificateError::StoreUnavailable));
+    assert_eq!(
+        store.collect_garbage().await,
+        Err(CertificateError::StoreUnavailable)
+    );
     std::fs::remove_dir(version.join("fullchain.pem")).unwrap();
     let unowned = version.join("notes");
     std::fs::write(&unowned, b"keep").unwrap();
@@ -70,7 +86,9 @@ async fn certificate_gc_does_not_recursively_delete_unknown_files_and_retries_er
     assert!(unowned.exists());
     std::fs::remove_file(unowned).unwrap();
     std::fs::write(version.join("fullchain.pem"), b"partial").unwrap();
-    for _ in 0..4 { store.collect_garbage().await.unwrap(); }
+    for _ in 0..4 {
+        store.collect_garbage().await.unwrap();
+    }
     assert!(!version.exists());
 }
 
@@ -85,8 +103,12 @@ async fn certificate_gc_bounds_each_pass_and_advances_past_unknown_entries() {
     store.commit_staged(&staged).await.unwrap();
     let active = store.material(ID).await.unwrap().fullchain_path;
     let versions = active.parent().unwrap().parent().unwrap();
-    for n in 0..600 { std::fs::create_dir(versions.join(format!("unknown-{n}"))).unwrap(); }
-    let abandoned: Vec<_> = (0..130).map(|n| versions.join(format!("{n:064x}"))).collect();
+    for n in 0..600 {
+        std::fs::create_dir(versions.join(format!("unknown-{n}"))).unwrap();
+    }
+    let abandoned: Vec<_> = (0..130)
+        .map(|n| versions.join(format!("{n:064x}")))
+        .collect();
     for version in &abandoned {
         std::fs::create_dir(version).unwrap();
         std::fs::write(version.join("fullchain.pem"), b"abandoned").unwrap();
@@ -95,10 +117,16 @@ async fn certificate_gc_bounds_each_pass_and_advances_past_unknown_entries() {
     for _ in 0..10 {
         store.collect_garbage().await.unwrap();
         let remaining = abandoned.iter().filter(|version| version.exists()).count();
-        assert!(previous - remaining <= 64, "removal budget must apply to every pass");
+        assert!(
+            previous - remaining <= 64,
+            "removal budget must apply to every pass"
+        );
         previous = remaining;
     }
-    assert_eq!(previous, 0, "retained scan cursor must eventually reach every orphan");
+    assert_eq!(
+        previous, 0,
+        "retained scan cursor must eventually reach every orphan"
+    );
     assert!(active.exists());
     assert!((0..600).all(|n| versions.join(format!("unknown-{n}")).exists()));
 }
@@ -124,7 +152,9 @@ async fn certificate_gc_protects_durable_and_memory_material_after_uncertain_ind
     store.collect_garbage().await.unwrap();
     assert!(active_a.exists() && active_b.exists());
     std::fs::write(index_path, index_b).unwrap();
-    for _ in 0..4 { store.collect_garbage().await.unwrap(); }
+    for _ in 0..4 {
+        store.collect_garbage().await.unwrap();
+    }
     assert!(!active_a.exists() && active_b.exists());
 }
 
@@ -144,7 +174,10 @@ async fn certificate_startup_preserves_ambiguous_deletion_recovery_artifacts() {
     std::fs::rename(root.join(ID), &first).unwrap();
     std::fs::create_dir(&second).unwrap();
     let reopened = CertificateStore::new(state);
-    assert_eq!(reopened.initialize().await, Err(CertificateError::StoreUnavailable));
+    assert_eq!(
+        reopened.initialize().await,
+        Err(CertificateError::StoreUnavailable)
+    );
     assert!(first.exists() && second.exists());
 }
 
@@ -161,8 +194,12 @@ async fn certificate_gc_protects_case_insensitive_windows_material_references() 
     let material = store.material(ID).await.unwrap().fullchain_path;
     drop(store);
     let path = state.join("certificates/certificate-metadata.json");
-    let mut index: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    let hash = index["certificates"][ID]["materialId"].as_str().unwrap().to_ascii_uppercase();
+    let mut index: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let hash = index["certificates"][ID]["materialId"]
+        .as_str()
+        .unwrap()
+        .to_ascii_uppercase();
     index["certificates"][ID]["materialId"] = hash.into();
     std::fs::write(path, serde_json::to_vec(&index).unwrap()).unwrap();
     let reopened = CertificateStore::new(state);
@@ -179,15 +216,25 @@ async fn certificate_gc_rejects_links_without_touching_external_material() {
     std::fs::create_dir_all(&state).unwrap();
     let store = CertificateStore::new(state.clone());
     store.initialize().await.unwrap();
-    let version = state.join("certificates").join(UNKNOWN).join("versions").join("c".repeat(64));
+    let version = state
+        .join("certificates")
+        .join(UNKNOWN)
+        .join("versions")
+        .join("c".repeat(64));
     std::fs::create_dir_all(&version).unwrap();
     let outside = state.join("outside.pem");
     std::fs::write(&outside, b"keep").unwrap();
     std::os::unix::fs::symlink(&outside, version.join("fullchain.pem")).unwrap();
-    assert_eq!(store.collect_garbage().await, Err(CertificateError::StoreUnavailable));
+    assert_eq!(
+        store.collect_garbage().await,
+        Err(CertificateError::StoreUnavailable)
+    );
     assert_eq!(std::fs::read(&outside).unwrap(), b"keep");
     std::fs::remove_file(version.join("fullchain.pem")).unwrap();
     std::fs::hard_link(&outside, version.join("fullchain.pem")).unwrap();
-    assert_eq!(store.collect_garbage().await, Err(CertificateError::StoreUnavailable));
+    assert_eq!(
+        store.collect_garbage().await,
+        Err(CertificateError::StoreUnavailable)
+    );
     assert_eq!(std::fs::read(outside).unwrap(), b"keep");
 }

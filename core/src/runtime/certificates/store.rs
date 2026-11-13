@@ -13,7 +13,9 @@ impl CertificateStore {
             index: tokio::sync::Mutex::new(CertificateIndex::default()),
             leases: tokio::sync::Mutex::new(BTreeSet::new()),
             readiness: tokio::sync::Mutex::new(CertificateStoreReadiness::NotReady),
-            gc_cursor: tokio::sync::Mutex::new(super::super::tls_gc_cursor::MaterialCursor::default()),
+            gc_cursor: tokio::sync::Mutex::new(
+                super::super::tls_gc_cursor::MaterialCursor::default(),
+            ),
         }
     }
 
