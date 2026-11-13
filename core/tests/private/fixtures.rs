@@ -91,13 +91,21 @@ static CANDIDATE_MANIFEST_REMOVAL_FAILURES: std::sync::OnceLock<
 
 pub(crate) fn fail_next_candidate_manifest_removal(path: std::path::PathBuf) {
     let failures = CANDIDATE_MANIFEST_REMOVAL_FAILURES.get_or_init(Default::default);
-    failures.lock().expect("test failure lock must not poison").insert(path.canonicalize().unwrap());
+    failures
+        .lock()
+        .expect("test failure lock must not poison")
+        .insert(path.canonicalize().unwrap());
 }
 
 pub(crate) fn should_fail_candidate_manifest_removal(path: &std::path::Path) -> bool {
-    CANDIDATE_MANIFEST_REMOVAL_FAILURES.get().is_some_and(|failures| {
-        failures.lock().expect("test failure lock must not poison").remove(path)
-    })
+    CANDIDATE_MANIFEST_REMOVAL_FAILURES
+        .get()
+        .is_some_and(|failures| {
+            failures
+                .lock()
+                .expect("test failure lock must not poison")
+                .remove(path)
+        })
 }
 
 pub(super) fn fail_next_private_key_write_below(path: std::path::PathBuf) {

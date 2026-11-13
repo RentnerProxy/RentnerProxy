@@ -67,37 +67,64 @@ export async function assertMigrationHistoryComplete(outputDirectory: string): P
         try {
             outputs = await readdir(outputDirectory)
         } catch (outputError) {
-            if (outputError instanceof Error && 'code' in outputError && outputError.code === 'ENOENT') return
+            if (
+                outputError instanceof Error &&
+                'code' in outputError &&
+                outputError.code === 'ENOENT'
+            )
+                return
             throw outputError
         }
         if (outputs.some((name) => name.endsWith('.sql')))
-            throw new Error('Incomplete Drizzle migration history: metadata is missing for existing SQL outputs', { cause: error })
+            throw new Error(
+                'Incomplete Drizzle migration history: metadata is missing for existing SQL outputs',
+                { cause: error },
+            )
         return
     }
-    const snapshots = new Set(metadata.filter((name) => /^\d+(?:_[A-Za-z0-9_-]+)?_snapshot\.json$/u.test(name)))
+    const snapshots = new Set(
+        metadata.filter((name) => /^\d+(?:_[A-Za-z0-9_-]+)?_snapshot\.json$/u.test(name)),
+    )
     if (!metadata.includes('_journal.json'))
         throw new Error('Incomplete Drizzle migration history: metadata journal is missing')
-    const journal: unknown = JSON.parse(await readFile(join(metadataDirectory, '_journal.json'), 'utf8'))
-    if (typeof journal !== 'object' || journal === null || !('entries' in journal) || !Array.isArray(journal.entries))
+    const journal: unknown = JSON.parse(
+        await readFile(join(metadataDirectory, '_journal.json'), 'utf8'),
+    )
+    if (
+        typeof journal !== 'object' ||
+        journal === null ||
+        !('entries' in journal) ||
+        !Array.isArray(journal.entries)
+    )
         throw new Error('Invalid Drizzle migration journal')
     const sqlFiles = new Set(await readdir(outputDirectory))
     const tags = new Set<string>()
     for (const entry of journal.entries) {
-        if (typeof entry !== 'object' || entry === null || !('tag' in entry) || typeof entry.tag !== 'string')
+        if (
+            typeof entry !== 'object' ||
+            entry === null ||
+            !('tag' in entry) ||
+            typeof entry.tag !== 'string'
+        )
             throw new Error('Invalid Drizzle migration journal entry')
         const prefix = /^(\d+)_[A-Za-z0-9_-]+$/u.exec(entry.tag)?.[1]
-        if (!prefix || tags.has(entry.tag)) throw new Error('Invalid or duplicate Drizzle migration journal tag')
+        if (!prefix || tags.has(entry.tag))
+            throw new Error('Invalid or duplicate Drizzle migration journal tag')
         // Published history also contains a full-tag snapshot from an older custom migration.
         const snapshot = snapshots.has(`${prefix}_snapshot.json`)
             ? `${prefix}_snapshot.json`
             : `${entry.tag}_snapshot.json`
         if (!sqlFiles.has(`${entry.tag}.sql`) || !snapshots.has(snapshot))
-            throw new Error(`Incomplete Drizzle migration history for ${entry.tag}: SQL or snapshot is missing; repair interrupted Kit output before generating`)
+            throw new Error(
+                `Incomplete Drizzle migration history for ${entry.tag}: SQL or snapshot is missing; repair interrupted Kit output before generating`,
+            )
         tags.add(entry.tag)
         snapshots.delete(snapshot)
     }
     if (snapshots.size > 0)
-        throw new Error('Incomplete Drizzle migration history: unregistered snapshot; repair interrupted Kit output before generating')
+        throw new Error(
+            'Incomplete Drizzle migration history: unregistered snapshot; repair interrupted Kit output before generating',
+        )
 }
 
 function isKitPlaceholder(content: string): boolean {

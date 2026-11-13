@@ -375,7 +375,9 @@ pub(super) fn remove_candidate_manifest_from_directory(
         return Err(CertificateError::StoreUnavailable);
     }
     drop(path);
-    certificate_dir.remove_file(CANDIDATE_MANIFEST_FILE).map_err(|_| CertificateError::StoreUnavailable)
+    certificate_dir
+        .remove_file(CANDIDATE_MANIFEST_FILE)
+        .map_err(|_| CertificateError::StoreUnavailable)
 }
 
 pub(super) fn candidate_is_valid(id: &str, candidate: &StoredCertificateCandidate) -> bool {

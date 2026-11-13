@@ -3,7 +3,10 @@ import { mkdtemp, mkdir, readFile, readdir, rename, rm, rmdir, writeFile } from 
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-import { assertMigrationHistoryComplete, generateCustomMigrations } from '../../../../../../scripts/database/custom-migrations.ts'
+import {
+    assertMigrationHistoryComplete,
+    generateCustomMigrations,
+} from '../../../../../../scripts/database/custom-migrations.ts'
 
 async function fixture(
     operation: (
@@ -31,10 +34,13 @@ async function fixture(
                     const tag = `${String(calls.length).padStart(4, '0')}_${name}`
                     let tags: string[] = []
                     try {
-                        const journal = JSON.parse(await readFile(join(outputDirectory, 'meta/_journal.json'), 'utf8')) as { entries: { tag: string }[] }
+                        const journal = JSON.parse(
+                            await readFile(join(outputDirectory, 'meta/_journal.json'), 'utf8'),
+                        ) as { entries: { tag: string }[] }
                         tags = journal.entries.map((entry) => entry.tag)
                     } catch (error) {
-                        if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error
+                        if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT'))
+                            throw error
                     }
                     await writeHistory(outputDirectory, [...tags, tag])
                     await writeFile(
@@ -53,13 +59,20 @@ async function fixture(
 async function writeHistory(outputDirectory: string, tags: readonly string[]) {
     const metadataDirectory = join(outputDirectory, 'meta')
     await mkdir(metadataDirectory, { recursive: true })
-    await writeFile(join(metadataDirectory, '_journal.json'), JSON.stringify({
-        entries: tags.map((tag, idx) => ({ idx, tag })),
-    }))
-    await Promise.all(tags.map((tag) => writeFile(
-        join(metadataDirectory, `${tag.split('_')[0]}_snapshot.json`),
-        JSON.stringify({ id: tag }),
-    )))
+    await writeFile(
+        join(metadataDirectory, '_journal.json'),
+        JSON.stringify({
+            entries: tags.map((tag, idx) => ({ idx, tag })),
+        }),
+    )
+    await Promise.all(
+        tags.map((tag) =>
+            writeFile(
+                join(metadataDirectory, `${tag.split('_')[0]}_snapshot.json`),
+                JSON.stringify({ id: tag }),
+            ),
+        ),
+    )
 }
 
 describe('custom migration generation', () => {
@@ -134,7 +147,10 @@ describe('custom migration generation', () => {
             await generateCustomMigrations(options)
             expect(await readFile(path, 'utf8')).toEndWith('select 1;\n')
             expect(calls).toHaveLength(0)
-            expect((await readdir(options.outputDirectory)).toSorted()).toEqual(['0001_audit_v1.sql', 'meta'])
+            expect((await readdir(options.outputDirectory)).toSorted()).toEqual([
+                '0001_audit_v1.sql',
+                'meta',
+            ])
             await writeFile(path, '-- A real historical migration may contain only a comment.\n')
             await expect(generateCustomMigrations(options)).rejects.toThrow('immutable')
             expect(await readFile(path, 'utf8')).toBe(
@@ -149,10 +165,16 @@ describe('custom migration generation', () => {
             await generateCustomMigrations(options)
             await writeHistory(options.outputDirectory, ['0001_audit_v1', '0002_repair_audit_v1'])
             const paths = ['0001_audit_v1.sql', '0002_repair_audit_v1.sql']
-            const before = await Promise.all(paths.map((path) => readFile(join(options.outputDirectory, path), 'utf8')))
+            const before = await Promise.all(
+                paths.map((path) => readFile(join(options.outputDirectory, path), 'utf8')),
+            )
             await generateCustomMigrations(options)
             expect(calls).toEqual(['audit_v1', 'repair_audit_v1'])
-            expect(await Promise.all(paths.map((path) => readFile(join(options.outputDirectory, path), 'utf8')))).toEqual(before)
+            expect(
+                await Promise.all(
+                    paths.map((path) => readFile(join(options.outputDirectory, path), 'utf8')),
+                ),
+            ).toEqual(before)
             expect(before[0]).toEndWith('select 1;\n')
             expect(before[1]).toEndWith('select 2;\n')
         })
@@ -160,14 +182,20 @@ describe('custom migration generation', () => {
 
     test('rejects a newly created file whose full migration name belongs to another source', async () => {
         await fixture(async (options) => {
-            await expect(generateCustomMigrations({
-                ...options,
-                generate: async () => {
-                    await writeFile(join(options.outputDirectory, '0001_repair_audit_v1.sql'), '-- Custom SQL migration file, put your code below! --')
-                },
-            })).rejects.toThrow('exactly one')
-            expect(await readFile(join(options.outputDirectory, '0001_repair_audit_v1.sql'), 'utf8'))
-                .toBe('-- Custom SQL migration file, put your code below! --')
+            await expect(
+                generateCustomMigrations({
+                    ...options,
+                    generate: async () => {
+                        await writeFile(
+                            join(options.outputDirectory, '0001_repair_audit_v1.sql'),
+                            '-- Custom SQL migration file, put your code below! --',
+                        )
+                    },
+                }),
+            ).rejects.toThrow('exactly one')
+            expect(
+                await readFile(join(options.outputDirectory, '0001_repair_audit_v1.sql'), 'utf8'),
+            ).toBe('-- Custom SQL migration file, put your code below! --')
         })
     })
 
@@ -176,10 +204,17 @@ describe('custom migration generation', () => {
             await writeHistory(options.outputDirectory, ['0001_audit_v1'])
             const journalPath = join(options.outputDirectory, 'meta/_journal.json')
             const snapshotPath = join(options.outputDirectory, 'meta/0001_snapshot.json')
-            const before = await Promise.all([readFile(journalPath, 'utf8'), readFile(snapshotPath, 'utf8')])
-            await expect(generateCustomMigrations(options)).rejects.toThrow('Incomplete Drizzle migration history for 0001_audit_v1')
+            const before = await Promise.all([
+                readFile(journalPath, 'utf8'),
+                readFile(snapshotPath, 'utf8'),
+            ])
+            await expect(generateCustomMigrations(options)).rejects.toThrow(
+                'Incomplete Drizzle migration history for 0001_audit_v1',
+            )
             expect(calls).toHaveLength(0)
-            expect(await Promise.all([readFile(journalPath, 'utf8'), readFile(snapshotPath, 'utf8')])).toEqual(before)
+            expect(
+                await Promise.all([readFile(journalPath, 'utf8'), readFile(snapshotPath, 'utf8')]),
+            ).toEqual(before)
             expect(await readdir(options.outputDirectory)).toEqual(['meta'])
         })
     })
@@ -193,8 +228,13 @@ describe('custom migration generation', () => {
             await rm(snapshotPath)
             await writeHistory(options.outputDirectory, ['0001_audit_v1'])
             await rm(snapshotPath)
-            await writeFile(join(options.outputDirectory, '0001_audit_v1.sql'), '-- Custom SQL migration file, put your code below! --')
-            await expect(generateCustomMigrations(options)).rejects.toThrow('SQL or snapshot is missing')
+            await writeFile(
+                join(options.outputDirectory, '0001_audit_v1.sql'),
+                '-- Custom SQL migration file, put your code below! --',
+            )
+            await expect(generateCustomMigrations(options)).rejects.toThrow(
+                'SQL or snapshot is missing',
+            )
             expect(calls).toHaveLength(0)
         })
     })
@@ -203,7 +243,9 @@ describe('custom migration generation', () => {
         await fixture(async (options, calls) => {
             const output = join(options.outputDirectory, '0000_existing.sql')
             await writeFile(output, 'select 123;\n')
-            await expect(generateCustomMigrations(options)).rejects.toThrow('metadata is missing for existing SQL outputs')
+            await expect(generateCustomMigrations(options)).rejects.toThrow(
+                'metadata is missing for existing SQL outputs',
+            )
             expect(calls).toHaveLength(0)
             expect(await readFile(output, 'utf8')).toBe('select 123;\n')
             expect(await readdir(options.outputDirectory)).toEqual(['0000_existing.sql'])
@@ -212,9 +254,13 @@ describe('custom migration generation', () => {
 
     test('allows genuinely empty and absent output directories before first Kit generation', async () => {
         await fixture(async (options, calls) => {
-            await expect(assertMigrationHistoryComplete(options.outputDirectory)).resolves.toBeUndefined()
+            await expect(
+                assertMigrationHistoryComplete(options.outputDirectory),
+            ).resolves.toBeUndefined()
             await rmdir(options.outputDirectory)
-            await expect(assertMigrationHistoryComplete(options.outputDirectory)).resolves.toBeUndefined()
+            await expect(
+                assertMigrationHistoryComplete(options.outputDirectory),
+            ).resolves.toBeUndefined()
             expect(calls).toHaveLength(0)
         })
     })
