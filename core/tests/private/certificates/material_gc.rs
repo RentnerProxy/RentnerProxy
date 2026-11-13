@@ -249,5 +249,8 @@ async fn certificate_gc_rejects_links_without_touching_external_material() {
             other => panic!("unexpected cleanup result: {other:?}"),
         }
     }
-    assert!(rejected, "retained cursor must eventually revisit the hard link");
+    assert!(
+        rejected,
+        "retained cursor must eventually revisit the hard link"
+    );
 }
