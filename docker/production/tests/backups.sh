@@ -326,7 +326,7 @@ test_export_interruption() (
         trap on_shutdown_signal INT TERM
         backup_assert_state_children_running() { :; }
         timeout() {
-            [[ $* == '--signal=TERM --kill-after=5s 660s bun --no-env-file dummy-exporter --run dummy-id' ]] \
+            [[ $* == '--signal=TERM --kill-after=5s 14700s bun --no-env-file dummy-exporter --run dummy-id' ]] \
                 || fail 'export escaped the fixed command and timeout'
             exec bash -c '
                 trap '\''touch "$1/exporter-stopped"; exit 0'\'' TERM

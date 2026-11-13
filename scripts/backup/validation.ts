@@ -1,14 +1,11 @@
 import { z } from 'zod'
+import { BACKUP_RUNTIME_POLICY } from '../../web/src/config/backup-runtime.config.ts'
 import { CURRENT_COMPATIBILITY_PROFILE } from '../../web/src/config/compatibility.config.ts'
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/u)
 
 const artifact = z.strictObject({
-    bytes: z
-        .number()
-        .int()
-        .positive()
-        .max(8 * 1024 ** 3),
+    bytes: z.number().int().positive().max(BACKUP_RUNTIME_POLICY.maximumArtifactBytes),
     sha256: digest,
 })
 

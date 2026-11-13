@@ -6,6 +6,9 @@ import { join } from 'node:path'
 import { parseBackupMetadata, validateStateArchiveFile } from './format.ts'
 import { parseApplicationEncryptionKeyFile, readFileRange } from './artifact-file.ts'
 import type { BackupMetadata } from './Types/format.types.ts'
+import { BACKUP_RUNTIME_POLICY } from '../../web/src/config/backup-runtime.config.ts'
+import { stateArchiveAllocationEvidence } from './capacity.ts'
+import type { StateArchiveAllocationEvidence } from './Types/capacity.types.ts'
 
 async function regularFile(path: string, maximum: number, sync = false): Promise<FileHandle> {
     const flags = sync && process.platform === 'win32' ? constants.O_RDWR : constants.O_RDONLY
@@ -50,6 +53,8 @@ export async function verifyPublishedBackup(
     }
     const metadata = parseBackupMetadata(JSON.parse(bytes.toString('utf8')))
     let totalBytes = bytes.length
+    let controllerState: StateArchiveAllocationEvidence = { payloadBytes: 0, nodes: 5 }
+    let crowdSecState: StateArchiveAllocationEvidence = { payloadBytes: 0, nodes: 5 }
     const artifacts = [
         ['app-encryption-key', metadata.applicationEncryptionKey],
         ['postgres.dump', metadata.postgres],
@@ -75,9 +80,13 @@ export async function verifyPublishedBackup(
             if (name === 'app-encryption-key')
                 await parseApplicationEncryptionKeyFile(file, signal, progress)
             if (name === 'controller-state.tar')
-                await validateStateArchiveFile(file, 'controller', signal, progress)
+                controllerState = stateArchiveAllocationEvidence(
+                    await validateStateArchiveFile(file, 'controller', signal, progress),
+                )
             if (name === 'crowdsec-state.tar')
-                await validateStateArchiveFile(file, 'crowdsec', signal, progress)
+                crowdSecState = stateArchiveAllocationEvidence(
+                    await validateStateArchiveFile(file, 'crowdsec', signal, progress),
+                )
             totalBytes += expected.bytes
         } finally {
             await file.close()
@@ -88,6 +97,7 @@ export async function verifyPublishedBackup(
         metadata,
         metadataSha256: createHash('sha256').update(bytes).digest('hex'),
         bytes: totalBytes,
+        stateCapacity: { controllerState, crowdSecState },
     }
 }
 
@@ -95,13 +105,15 @@ export async function publishProductionBackup(
     stagingPath: string,
     finalPath: string,
     metadata: BackupMetadata,
+    signal?: AbortSignal,
 ): Promise<void> {
+    signal?.throwIfAborted()
     parseBackupMetadata(metadata)
     await writeFile(join(stagingPath, 'metadata.json'), JSON.stringify(metadata, null, 2) + '\n', {
         flag: 'wx',
         mode: 0o600,
     })
-    await verifyPublishedBackup(stagingPath)
+    await verifyPublishedBackup(stagingPath, signal)
     for (const name of [
         'app-encryption-key',
         'postgres.dump',
@@ -109,7 +121,11 @@ export async function publishProductionBackup(
         'crowdsec-state.tar',
         'metadata.json',
     ]) {
-        const file = await regularFile(join(stagingPath, name), 8 * 1024 ** 3, true)
+        const file = await regularFile(
+            join(stagingPath, name),
+            BACKUP_RUNTIME_POLICY.maximumArtifactBytes,
+            true,
+        )
         try {
             await file.sync()
         } finally {
@@ -117,5 +133,6 @@ export async function publishProductionBackup(
         }
     }
     await syncBackupDirectory(stagingPath)
+    signal?.throwIfAborted()
     await rename(stagingPath, finalPath)
 }

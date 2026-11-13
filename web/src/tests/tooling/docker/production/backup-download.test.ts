@@ -1,7 +1,17 @@
 // oxlint-disable no-await-in-loop -- Verify ordered security failure and cancellation cases.
 import { expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
-import { chmod, link, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises'
+import {
+    chmod,
+    link,
+    mkdir,
+    mkdtemp,
+    open,
+    readdir,
+    rm,
+    symlink,
+    writeFile,
+} from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
@@ -10,6 +20,8 @@ import {
 } from '../../../../../../docker/production/backups/download.ts'
 import { verifyPublishedBackup } from '../../../../../../scripts/backup/publication.ts'
 import { BACKUP_DOWNLOAD_TIMEOUTS } from '@/config/backup-download.config.ts'
+import { BACKUP_RUNTIME_POLICY } from '@/config/backup-runtime.config.ts'
+import { runMaintenanceProcess } from '../../../../../../scripts/backup/maintenance-process.ts'
 import type { ManagedBackupJob, ManagedBackupStatus } from '@/lib/Backups/Types/backups.types.ts'
 
 const id = '00000000-0000-4000-8000-000000000001'
@@ -261,8 +273,43 @@ test('tar headers are standard regular USTAR with fixed safe names and private m
     header.fill(32, 148, 156)
     expect(header.reduce((sum, byte) => sum + byte, 0)).toBe(expected)
     expect(() => backupTarHeader('metadata.json', -1)).toThrow()
-    expect(() => backupTarHeader('metadata.json', 8 * 1024 ** 3)).toThrow()
+    expect(() =>
+        backupTarHeader('postgres.dump', BACKUP_RUNTIME_POLICY.maximumArtifactBytes + 1),
+    ).toThrow()
+    const maximum = backupTarHeader('postgres.dump', BACKUP_RUNTIME_POLICY.maximumArtifactBytes)
+    expect(maximum[124]).toBe(0x80)
+    expect(maximum.readBigUInt64BE(128)).toBe(BigInt(BACKUP_RUNTIME_POLICY.maximumArtifactBytes))
 })
+
+test.skipIf(process.platform !== 'linux' || Bun.which('tar') === null)(
+    'native tar reads the inclusive 8 GiB artifact header without a numeric truncation',
+    async () => {
+        const directory = await mkdtemp(join(tmpdir(), 'backup-tar-boundary-'))
+        const path = join(directory, 'boundary.tar')
+        const file = await open(path, 'wx+', 0o600)
+        try {
+            const size = BACKUP_RUNTIME_POLICY.maximumArtifactBytes
+            await file.write(backupTarHeader('postgres.dump', size), 0, 512, 0)
+            // A sparse regular file lets tar seek over the body; no 8 GiB allocation or read is needed.
+            await file.truncate(512 + size + 1024)
+            const result = await runMaintenanceProcess(
+                ['tar', '--list', '--verbose', '--numeric-owner', '--file=' + path],
+                {
+                    cwd: directory,
+                    timeoutMs: 10_000,
+                    maximumOutputBytes: 4096,
+                },
+            )
+            expect(result.failed).toBe(false)
+            expect(result.stopped).toBe(true)
+            expect(Buffer.from(result.stdout).toString()).toContain(String(size))
+            expect(Buffer.from(result.stdout).toString()).toContain('postgres.dump')
+        } finally {
+            await file.close()
+            await rm(directory, { recursive: true, force: true })
+        }
+    },
+)
 
 test.skipIf(!linuxRoot)(
     'snapshot survives retention deletion, streams five fixed members, removes temporary names',

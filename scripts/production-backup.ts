@@ -1,5 +1,6 @@
 import type { CommandOptions } from './backup/Types/production-backup.types.ts'
 import { CURRENT_COMPATIBILITY_PROFILE } from '../web/src/config/compatibility.config.ts'
+import { BACKUP_RUNTIME_POLICY } from '../web/src/config/backup-runtime.config.ts'
 import { readDeploymentEnvironmentVariable } from '../web/src/lib/Environment/deployment-environment.ts'
 import { createMaintenanceCommands } from './backup/maintenance-commands.ts'
 import { commandOption, composeArguments, readComposeProject } from './backup/compose.ts'
@@ -186,7 +187,7 @@ async function backup(): Promise<void> {
             ],
             dumpPath,
             'create PostgreSQL dump',
-            { timeoutMs: 360_000 },
+            { timeoutMs: BACKUP_RUNTIME_POLICY.captureTimeoutMs },
         )
 
         const stateArchive = await runCommandFile(
@@ -209,7 +210,7 @@ async function backup(): Promise<void> {
             ],
             stateArchivePath,
             'archive controller state',
-            { timeoutMs: 180_000 },
+            { timeoutMs: BACKUP_RUNTIME_POLICY.captureTimeoutMs },
         )
         await validateArchive(stateArchivePath, 'controller')
 
@@ -231,7 +232,7 @@ async function backup(): Promise<void> {
             ],
             crowdSecArchivePath,
             'archive managed CrowdSec state',
-            { timeoutMs: 180_000 },
+            { timeoutMs: BACKUP_RUNTIME_POLICY.captureTimeoutMs },
         )
         await validateArchive(crowdSecArchivePath, 'crowdsec')
         const metadata: BackupMetadata = {

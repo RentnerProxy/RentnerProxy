@@ -7,6 +7,8 @@ import { z } from 'zod'
 import { readFileRange, writeFileChunk } from '../../../scripts/backup/artifact-file.ts'
 import { verifyPublishedBackup } from '../../../scripts/backup/publication.ts'
 import { BACKUP_DOWNLOAD_TIMEOUTS } from '../../../web/src/config/backup-download.config.ts'
+import { BACKUP_RUNTIME_POLICY } from '../../../web/src/config/backup-runtime.config.ts'
+import { assertBackupCapacity, backupCapacityGuard } from '../../../scripts/backup/capacity.ts'
 import { createBackupDownloadTimeout } from '../../../web/src/lib/Http/backupDownloadTimeout.ts'
 import type { ManagedBackupStatus } from '../../../web/src/lib/Backups/Types/backups.types.ts'
 import { artifactsRoot, backupRoot } from './storage.ts'
@@ -20,14 +22,25 @@ const names = [
 ] as const
 
 export function backupTarHeader(name: (typeof names)[number], size: number): Buffer {
-    if (!Number.isSafeInteger(size) || size < 0 || size >= 8 * 1024 ** 3)
+    if (
+        !Number.isSafeInteger(size) ||
+        size < 0 ||
+        size > BACKUP_RUNTIME_POLICY.maximumArtifactBytes
+    )
         throw new Error('invalid tar size')
     const header = Buffer.alloc(512)
     header.write(name)
     header.write('0000600\0', 100)
     header.write('0000000\0', 108)
     header.write('0000000\0', 116)
-    header.write(size.toString(8).padStart(11, '0') + '\0', 124)
+    if (size < 8 * 1024 ** 3) {
+        header.write(size.toString(8).padStart(11, '0') + '\0', 124)
+    } else {
+        // The format permits exactly 8 GiB; GNU base-256 keeps that boundary
+        // representable without truncating the standard 11-digit octal field.
+        header[124] = 0x80
+        header.writeBigUInt64BE(BigInt(size), 128)
+    }
     header.write('00000000000\0', 136)
     header.fill(32, 148, 156)
     header[156] = 48
@@ -170,10 +183,6 @@ export function createBackupDownload(
                 JSON.stringify(verified.metadata.source) !== JSON.stringify(job.source)
             )
                 throw new InvalidDownload()
-            const temporary = join(temporaryRoot, '.download-' + randomUUID())
-            archive = await open(temporary, 'wx+', 0o600)
-            await unlink(temporary)
-            timeout.progress()
             const expected = [
                 { bytes: inputs[0]!.info.size, sha256: verified.metadataSha256 },
                 verified.metadata.applicationEncryptionKey,
@@ -181,6 +190,17 @@ export function createBackupDownload(
                 verified.metadata.controllerState,
                 verified.metadata.crowdSecState,
             ]
+            const archiveBytes = expected.reduce(
+                (sum, artifact) => sum + 512 + Math.ceil(artifact.bytes / 512) * 512,
+                1024,
+            )
+            await assertBackupCapacity([{ path: temporaryRoot, bytes: archiveBytes }])
+            const checkCapacity = backupCapacityGuard([temporaryRoot])
+            stop.signal.throwIfAborted()
+            const temporary = join(temporaryRoot, '.download-' + randomUUID())
+            archive = await open(temporary, 'wx+', 0o600)
+            await unlink(temporary)
+            timeout.progress()
             for (const [index, input] of inputs.entries()) {
                 const artifact = expected[index]!
                 if (input.info.size !== artifact.bytes) throw new InvalidDownload()
@@ -188,6 +208,8 @@ export function createBackupDownload(
                 timeout.progress()
                 const hash = createHash('sha256')
                 for (let offset = 0; offset < artifact.bytes; offset += 65_536) {
+                    if (offset % BACKUP_RUNTIME_POLICY.capacityCheckBytes === 0)
+                        await checkCapacity()
                     stop.signal.throwIfAborted()
                     const chunk = await readFileRange(
                         input.file,

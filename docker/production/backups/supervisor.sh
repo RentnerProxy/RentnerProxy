@@ -185,8 +185,9 @@ backup_assert_consumers_stopped() {
 }
 
 backup_run_exporter() {
-    local id=$1 mode=${2:---run} index pid status=0 budget=660s
-    [[ $mode != --restore ]] || budget=1100s
+    # Four-hour operation plus five minutes to settle owned children and publish a result.
+    # Keep aligned with BACKUP_RUNTIME_POLICY.supervisorTimeoutSeconds.
+    local id=$1 mode=${2:---run} index pid status=0 budget=14700s
     start_child backup-export timeout --signal=TERM --kill-after=5s "$budget" \
         bun --no-env-file "$backup_exporter" "$mode" "$id"
     # Consumer removal leaves sparse arrays; locate the new child by its role.

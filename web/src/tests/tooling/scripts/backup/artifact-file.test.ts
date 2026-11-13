@@ -12,9 +12,10 @@ import {
     symlink,
     truncate,
     writeFile,
+    type FileHandle,
 } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
-import { test } from 'bun:test'
+import { spyOn, test } from 'bun:test'
 import {
     parseApplicationEncryptionKeyFile,
     readFileRange,
@@ -85,6 +86,67 @@ async function fixture(run: (directory: string) => Promise<void>) {
         await rm(directory, { recursive: true, force: true })
     }
 }
+
+test('snapshot cancellation removes the owned partial file and preserves its source', () =>
+    fixture(async (directory) => {
+        const source = join(directory, 'cancel-source')
+        const target = join(directory, 'cancel-target')
+        const bytes = Buffer.alloc(128 * 1024, 0x61)
+        await writeFile(source, bytes)
+        const stop = new AbortController()
+        await assert.rejects(
+            snapshotBackupArtifact(
+                source,
+                target,
+                {
+                    bytes: bytes.length,
+                    sha256: digest(bytes),
+                },
+                stop.signal,
+                async () => {
+                    stop.abort(new Error('synthetic snapshot cancellation'))
+                },
+            ),
+            /synthetic snapshot cancellation/,
+        )
+        await assert.rejects(stat(target), /ENOENT/)
+        assert.equal(digest(await readFile(source)), digest(bytes))
+    }))
+
+test('snapshot abort during the final sync removes its output and preserves the source', () =>
+    fixture(async (directory) => {
+        const source = join(directory, 'sync-source')
+        const target = join(directory, 'sync-target')
+        const bytes = Buffer.from('synthetic final snapshot chunk')
+        await writeFile(source, bytes)
+        const stop = new AbortController()
+        const probe = await open(source, 'r')
+        const prototype = Object.getPrototypeOf(probe) as { sync: () => Promise<void> }
+        await probe.close()
+        const originalSync = prototype.sync
+        const sync = spyOn(prototype, 'sync').mockImplementation(async function (this: FileHandle) {
+            await originalSync.call(this)
+            stop.abort(new Error('synthetic final sync cancellation'))
+        })
+        try {
+            await assert.rejects(
+                snapshotBackupArtifact(
+                    source,
+                    target,
+                    {
+                        bytes: bytes.length,
+                        sha256: digest(bytes),
+                    },
+                    stop.signal,
+                ),
+                /synthetic final sync cancellation/,
+            )
+        } finally {
+            sync.mockRestore()
+        }
+        await assert.rejects(stat(target), /ENOENT/)
+        assert.deepEqual(await readFile(source), bytes)
+    }))
 
 test('snapshots multi-MiB artifacts from the held source FD despite pathname replacement', () =>
     fixture(async (directory) => {

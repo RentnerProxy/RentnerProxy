@@ -6,8 +6,11 @@ import { link, open, rm } from 'node:fs/promises'
 import type { IncomingMessage } from 'node:http'
 import { request } from 'node:https'
 import { isIP } from 'node:net'
+import { dirname } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { readFileRange } from '../artifact-file'
+import { assertBackupCapacity, backupCapacityGuard } from '../capacity.ts'
+import { BACKUP_RUNTIME_POLICY } from '../../../web/src/config/backup-runtime.config.ts'
 import type { OffHostS3Target, S3Dependencies } from './Types/s3.types'
 
 export type { OffHostS3Target } from './Types/s3.types'
@@ -176,7 +179,10 @@ async function smallResponse(response: IncomingMessage): Promise<Buffer> {
 }
 
 function operationSignal(signal?: AbortSignal) {
-    return AbortSignal.any([AbortSignal.timeout(2 * 60 * 60_000), ...(signal ? [signal] : [])])
+    return AbortSignal.any([
+        AbortSignal.timeout(BACKUP_RUNTIME_POLICY.operationTimeoutMs),
+        ...(signal ? [signal] : []),
+    ])
 }
 
 export function createS3Storage(input: OffHostS3Target, dependencies: S3Dependencies = {}) {
@@ -421,6 +427,11 @@ export function createS3Storage(input: OffHostS3Target, dependencies: S3Dependen
                     const length = response.headers['content-length']
                     if (!length || !/^\d+$/.test(length) || Number(length) > MAX_S3_OBJECT_BYTES)
                         throw new StorageError('FILE_LIMIT')
+                    await assertBackupCapacity([
+                        { path: dirname(outputFile), bytes: Number(length) },
+                    ])
+                    const checkCapacity = backupCapacityGuard([dirname(outputFile)])
+                    let checkedBytes = 0
                     let bytes = 0
                     for await (const chunk of response) {
                         abort.throwIfAborted()
@@ -428,6 +439,11 @@ export function createS3Storage(input: OffHostS3Target, dependencies: S3Dependen
                         bytes += data.length
                         if (bytes > Number(length) || bytes > MAX_S3_OBJECT_BYTES)
                             throw new StorageError('FILE_LIMIT')
+                        if (bytes - checkedBytes >= BACKUP_RUNTIME_POLICY.capacityCheckBytes) {
+                            await checkCapacity()
+                            checkedBytes = bytes
+                            abort.throwIfAborted()
+                        }
                         let written = 0
                         while (written < data.length) {
                             const result = await output.write(
@@ -445,6 +461,7 @@ export function createS3Storage(input: OffHostS3Target, dependencies: S3Dependen
                 })
                 await output.sync()
                 await output.close()
+                abort.throwIfAborted()
                 // Atomic, exclusive publication: never replace an existing caller-owned file.
                 await link(temporary, outputFile)
             } catch (error) {

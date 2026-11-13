@@ -32,6 +32,8 @@ export async function snapshotBackupArtifact(
     source: string,
     target: string,
     expected: { bytes: number; sha256: string },
+    signal?: AbortSignal,
+    checkCapacity?: () => Promise<void>,
 ): Promise<void> {
     let input: FileHandle
     try {
@@ -40,7 +42,7 @@ export async function snapshotBackupArtifact(
         throw new Error('backup file is missing, invalid or too large')
     }
     try {
-        await snapshotBackupArtifactFile(input, target, expected)
+        await snapshotBackupArtifactFile(input, target, expected, signal, checkCapacity)
     } finally {
         await input.close()
     }
@@ -50,10 +52,13 @@ export async function snapshotBackupArtifactFile(
     input: FileHandle,
     target: string,
     expected: { bytes: number; sha256: string },
+    signal?: AbortSignal,
+    checkCapacity?: () => Promise<void>,
 ): Promise<void> {
     let output: FileHandle | undefined
     try {
         const info = await input.stat()
+        signal?.throwIfAborted()
         if (!info.isFile() || info.size !== expected.bytes)
             throw new Error('backup artifact size mismatch')
         output = await open(target, 'wx', 0o600)
@@ -61,6 +66,8 @@ export async function snapshotBackupArtifactFile(
         const hash = createHash('sha256')
         let offset = 0
         while (offset < expected.bytes) {
+            signal?.throwIfAborted()
+            if (offset % (16 * 1024 ** 2) === 0) await checkCapacity?.()
             const chunk = await readFileRange(
                 input,
                 offset,
@@ -77,6 +84,7 @@ export async function snapshotBackupArtifactFile(
         )
             throw new Error('backup artifact checksum mismatch')
         await output.sync()
+        signal?.throwIfAborted()
     } catch (error) {
         if (output) {
             await output.close()

@@ -5,15 +5,17 @@ import {
     link,
     mkdir,
     mkdtemp,
+    open,
     readFile,
     rename,
     rm,
     stat,
     symlink,
     writeFile,
+    type FileHandle,
 } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
-import { test } from 'bun:test'
+import { spyOn, test } from 'bun:test'
 import { parseBackupMetadata } from '../../../../../../scripts/backup/format.ts'
 import {
     publishProductionBackup,
@@ -124,6 +126,10 @@ test('publishes and verifies canonical artifacts with managed build metadata', (
         })
         assert.ok(progress > 5, 'verification must report metadata, payload and parser I/O')
         assert.deepEqual(verified.metadata, metadata)
+        assert.deepEqual(verified.stateCapacity, {
+            controllerState: { payloadBytes: 0, nodes: 5 },
+            crowdSecState: { payloadBytes: 0, nodes: 5 },
+        })
         const bytes = await readFile(join(canonical, 'metadata.json'))
         assert.equal(verified.metadataSha256, digest(bytes))
         assert.equal(
@@ -136,6 +142,32 @@ test('publishes and verifies canonical artifacts with managed build metadata', (
         )
         if (process.platform !== 'win32')
             assert.equal((await stat(join(canonical, 'metadata.json'))).mode & 0o777, 0o600)
+    }))
+
+test('cancellation during artifact fsync preserves staging without publishing a final backup', () =>
+    fixture(async (directory) => {
+        const { staging, canonical, metadata } = await staged(directory)
+        const stop = new AbortController()
+        const probe = await open(join(staging, 'app-encryption-key'), 'r')
+        const prototype = Object.getPrototypeOf(probe) as { sync: FileHandle['sync'] }
+        await probe.close()
+        const original = prototype.sync
+        const sync = spyOn(prototype, 'sync').mockImplementation(async function (this: FileHandle) {
+            await original.call(this)
+            stop.abort(new Error('synthetic fsync cancellation'))
+        })
+        try {
+            await assert.rejects(
+                publishProductionBackup(staging, canonical, metadata, stop.signal),
+                /synthetic fsync cancellation/,
+            )
+            assert.ok(sync.mock.calls.length > 0)
+            assert.equal((await stat(staging)).isDirectory(), true)
+            await assert.rejects(stat(canonical), /ENOENT/)
+            assert.deepEqual((await verifyPublishedBackup(staging)).metadata, metadata)
+        } finally {
+            sync.mockRestore()
+        }
     }))
 
 test('published artifact digest tampering fails verification', () =>

@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { open, rm, type FileHandle } from 'node:fs/promises'
-import { runMaintenanceProcess } from './maintenance-process.ts'
+import { dirname } from 'node:path'
+import { BACKUP_RUNTIME_POLICY } from '../../web/src/config/backup-runtime.config.ts'
+import { backupCapacityGuard } from './capacity.ts'
+import { MaintenanceProcessNotDispatched, runMaintenanceProcess } from './maintenance-process.ts'
 import type { MaintenanceCommandOptions } from './Types/maintenance-commands.types.ts'
 
 const ownerLabel = 'io.rentnerproxy.maintenance-run'
@@ -84,6 +87,7 @@ export function createMaintenanceCommands(options: MaintenanceCommandOptions) {
         timeoutMs: number,
         input?: Uint8Array,
         outputFile?: { file: FileHandle; maximumBytes: number },
+        checkCapacity?: () => Promise<void>,
     ) {
         if (!restartSafe)
             throw new Error(
@@ -97,17 +101,22 @@ export function createMaintenanceCommands(options: MaintenanceCommandOptions) {
             prepared.splice(index + 1, 0, '--name', name, '--label', ownerLabel + '=' + owner)
         let result: Awaited<ReturnType<typeof execute>> | undefined
         let cleanupFailed = false
+        let notDispatched = false
+        let failureCause: unknown
         try {
             result = await execute(transform(prepared), {
                 cwd: options.cwd,
                 timeoutMs,
                 ...(input === undefined ? {} : { input }),
                 ...(outputFile ? { outputFile } : {}),
+                ...(checkCapacity ? { checkCapacity } : {}),
             })
-        } catch {
+        } catch (error) {
             // Spawn/transport failures use the same sanitized operation contract.
+            notDispatched = error instanceof MaintenanceProcessNotDispatched
+            failureCause = error instanceof MaintenanceProcessNotDispatched ? error.cause : error
         } finally {
-            if (index >= 0) {
+            if (index >= 0 && !notDispatched) {
                 try {
                     await cleanup(
                         name,
@@ -126,7 +135,9 @@ export function createMaintenanceCommands(options: MaintenanceCommandOptions) {
                 ? ' Maintenance cleanup unresolved; automatic appliance startup is blocked.'
                 : ''
             if (options.operation !== 'restore' || operation !== 'restore PostgreSQL')
-                throw new Error(prefix + (cleanupFailed ? '.' + cleanupMessage : ''))
+                throw new Error(prefix + (cleanupFailed ? '.' + cleanupMessage : ''), {
+                    cause: failureCause,
+                })
             const phase = /RESTORE_PHASE=(initialize|archive|render|assemble|execute)/u.exec(
                 result?.stderr ?? '',
             )?.[1]
@@ -147,6 +158,7 @@ export function createMaintenanceCommands(options: MaintenanceCommandOptions) {
                     '.' +
                     (details.length ? ' ' + details.join('; ') + '.' : '') +
                     cleanupMessage,
+                { cause: failureCause },
             )
         }
         return result
@@ -167,15 +179,27 @@ export function createMaintenanceCommands(options: MaintenanceCommandOptions) {
         async bytes(args: readonly string[], operation: string, timeoutMs = 300_000) {
             return (await run(args, operation, timeoutMs)).stdout
         },
-        async file(args: readonly string[], path: string, operation: string, timeoutMs = 300_000) {
+        async file(
+            args: readonly string[],
+            path: string,
+            operation: string,
+            timeoutMs = BACKUP_RUNTIME_POLICY.captureTimeoutMs,
+        ) {
             const file = await open(path, 'wx', 0o600)
             let success = false
             try {
                 await file.chmod(0o600)
-                const result = await run(args, operation, timeoutMs, undefined, {
-                    file,
-                    maximumBytes: 8 * 1024 ** 3,
-                })
+                const result = await run(
+                    args,
+                    operation,
+                    timeoutMs,
+                    undefined,
+                    {
+                        file,
+                        maximumBytes: BACKUP_RUNTIME_POLICY.maximumArtifactBytes,
+                    },
+                    backupCapacityGuard([dirname(path)]),
+                )
                 if (!result.artifact) throw new Error('missing backup artifact result')
                 await file.sync()
                 success = true
