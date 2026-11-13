@@ -330,6 +330,7 @@ export default function useApplicationLiveSync(suspended = false): ApplicationLi
                 // The upgrade rechecked the current cookie and principal before
                 // acknowledging this scope. Keep the page mounted across the
                 // backup's web restart, including when its next snapshot is unchanged.
+                syncGeneration.current += 1
                 void refreshApplicationQueries(queryClient).catch(() => undefined)
                 return
             }
