@@ -35,7 +35,7 @@
         "test:fuzz": "bun --no-env-file scripts/test-web.ts --fuzz",
         "coverage:ts": "bun --no-env-file scripts/coverage/run.ts",
         "coverage:report": "bun --no-env-file scripts/coverage/summary.ts",
-        "db:generate": "drizzle-kit generate --config=drizzle.config.ts",
+        "db:generate": "bun --no-env-file scripts/database/generate.ts",
         "db:migrate": "bun web/src/db/migrate.ts",
         "db:check": "drizzle-kit check --config=drizzle.config.ts",
         "check": "bun --no-env-file --no-orphans scripts/check.ts",

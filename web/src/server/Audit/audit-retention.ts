@@ -5,6 +5,7 @@ import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts
 export const AUDIT_RETENTION_DAYS = 90
 export const AUDIT_RETENTION_LOCK_ID = 7_421_908
 const AUDIT_MAX_ROWS = 100_000
+const AUDIT_RETENTION_DELETE_BATCH = 128n
 
 type RetentionTransaction = {
     dirty: boolean
@@ -41,18 +42,21 @@ export async function withAuditRetentionTransaction<TResult>(
     }
 }
 
-/** Acquire before inserting, preserving the established application-lock / audit-lock order. */
+/** Match raw SQL's table / advisory / rows / counter order, including concurrent TRUNCATE. */
 export async function lockAuditRetentionInTransaction(transaction: AuthTransaction): Promise<void> {
     const state = retentionTransactions.get(transaction)
     if (state) {
         // Drizzle's query is lazy and re-executes on every await; cache the settled Promise instead.
-        state.lock ??= Promise.resolve(
-            transaction.execute(sql`select pg_advisory_xact_lock(${AUDIT_RETENTION_LOCK_ID})`),
-        )
+        state.lock ??= acquireAuditLock(transaction)
         await state.lock
     } else {
-        await transaction.execute(sql`select pg_advisory_xact_lock(${AUDIT_RETENTION_LOCK_ID})`)
+        await acquireAuditLock(transaction)
     }
+}
+
+async function acquireAuditLock(transaction: AuthTransaction): Promise<void> {
+    await transaction.execute(sql`lock table "rentnerproxy"."audit_events" in row exclusive mode`)
+    await transaction.execute(sql`select pg_advisory_xact_lock(${AUDIT_RETENTION_LOCK_ID})`)
 }
 
 export async function retainAuditEventsInTransaction(transaction: AuthTransaction): Promise<void> {
@@ -68,14 +72,28 @@ async function pruneAuditEventsInTransaction(transaction: AuthTransaction): Prom
         delete from "rentnerproxy"."audit_events"
         where "created_at" < ${cutoff.toISOString()}::timestamptz
     `)
-    // Find one boundary in the ordering index, then delete its suffix by index range.
-    // Exact reconciliation still visits up to 100001 index entries, once per logical transaction.
-    await transaction.execute(sql`
-        delete from "rentnerproxy"."audit_events"
-        where ("created_at", "id") <= (
-            select "created_at", "id" from "rentnerproxy"."audit_events"
-            order by "created_at" desc, "id" desc
-            offset ${AUDIT_MAX_ROWS} limit 1
-        )
+    const [state] = await transaction.execute<{ excess: string }>(sql`
+        select greatest("row_count" - ${AUDIT_MAX_ROWS}, 0)::text as "excess"
+        from "rentnerproxy"."audit_retention_state" where "singleton"
     `)
+    if (!state) throw new Error('Audit retention cardinality state is missing')
+    let excess = BigInt(state.excess)
+    while (excess > 0n) {
+        // Bounded ID batches avoid tuple-range selectivity estimates that can scan all retained
+        // rows when many events share one timestamp. Only the obsolete prefix is traversed.
+        const limit = Number(excess < AUDIT_RETENTION_DELETE_BATCH ? excess : AUDIT_RETENTION_DELETE_BATCH)
+        // oxlint-disable-next-line no-await-in-loop -- Delete each oldest batch before advancing within the same locked transaction.
+        const obsolete = await transaction.execute<{ id: string }>(sql`
+            select "id" from "rentnerproxy"."audit_events"
+            order by "created_at", "id" limit ${limit}
+        `)
+        if (obsolete.length !== limit)
+            throw new Error('Audit retention cardinality does not match stored events')
+        // oxlint-disable-next-line no-await-in-loop -- Statement triggers atomically decrement the exact count for this batch.
+        await transaction.execute(sql`
+            delete from "rentnerproxy"."audit_events"
+            where "id" in (${sql.join(obsolete.map(({ id }) => sql`${id}::uuid`), sql`, `)})
+        `)
+        excess -= BigInt(obsolete.length)
+    }
 }

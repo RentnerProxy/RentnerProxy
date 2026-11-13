@@ -9,15 +9,20 @@ import {
     withAuditRetentionTransaction,
 } from '@/server/Audit/audit-retention.ts'
 
-function fixture() {
+function fixture(excess = '1') {
     const statements: string[] = []
     const transaction = {
         // Match Drizzle's lazy query, which executes anew whenever its then method is called.
         execute: (query: SQL) => ({
             // oxlint-disable-next-line unicorn/no-thenable -- Exercise the driver's actual repeatable-thenable contract.
-            then: (resolve: (rows: never[]) => unknown) =>
+            then: (resolve: (rows: unknown[]) => unknown) =>
                 Promise.resolve().then(() => {
-                    statements.push(new PgDialect().sqlToQuery(query).sql)
+                    const statement = new PgDialect().sqlToQuery(query).sql
+                    statements.push(statement)
+                    if (statement.includes('audit_retention_state')) return resolve([{ excess }])
+                    if (statement.includes('order by')) return resolve([{
+                        id: '00000000-0000-4000-8000-000000000001',
+                    }])
                     return resolve([])
                 }),
         }),
@@ -43,14 +48,16 @@ describe('audit transaction retention lifecycle', () => {
             },
             async (current) => {
                 await Promise.all(Array.from({ length: 50 }, () => append(current)))
-                expect(statements).toHaveLength(1)
+                expect(statements).toHaveLength(2)
+                expect(statements[0]).toContain('lock table')
+                expect(statements[1]).toContain('pg_advisory_xact_lock')
                 expect(committed).toBe(false)
                 return 'imported'
             },
         )
         expect(result).toBe('imported')
         expect(committed).toBe(true)
-        expect(statements).toHaveLength(3)
+        expect(statements).toHaveLength(6)
     })
 
     test('released savepoints promote work and failed releases or callbacks do not', async () => {
@@ -83,12 +90,12 @@ describe('audit transaction retention lifecycle', () => {
                     append,
                     parent,
                 )
-                expect(released.statements).toHaveLength(1)
+                expect(released.statements).toHaveLength(2)
             },
         )
-        expect(outer.statements).toHaveLength(3)
-        expect(failedRelease.statements).toHaveLength(1)
-        expect(failedCallback.statements).toHaveLength(1)
+        expect(outer.statements).toHaveLength(6)
+        expect(failedRelease.statements).toHaveLength(2)
+        expect(failedCallback.statements).toHaveLength(2)
     })
 
     test('rolled-back savepoints alone leave no root retention work', async () => {
@@ -115,9 +122,9 @@ describe('audit transaction retention lifecycle', () => {
     test('unmanaged appends reconcile immediately, without cached state', async () => {
         const { transaction, statements } = fixture()
         await append(transaction)
-        expect(statements).toHaveLength(3)
-        await append(transaction)
         expect(statements).toHaveLength(6)
+        await append(transaction)
+        expect(statements).toHaveLength(12)
     })
 
     test('failed root callbacks discard lifecycle state before the object can be reused', async () => {
@@ -131,9 +138,17 @@ describe('audit transaction retention lifecycle', () => {
                 },
             ),
         ).rejects.toThrow('rollback mutation')
-        expect(statements).toHaveLength(1)
+        expect(statements).toHaveLength(2)
+        await append(transaction)
+        expect(statements).toHaveLength(8)
+    })
+
+    test('no overflow skips all event ordering traversal and overflow deletion', async () => {
+        const { transaction, statements } = fixture('0')
         await append(transaction)
         expect(statements).toHaveLength(4)
+        expect(statements.some((statement) => statement.includes('order by'))).toBe(false)
+        expect(statements.filter((statement) => statement.includes('delete from'))).toHaveLength(1)
     })
 
     test('retention errors reject the mutation before commit', async () => {
