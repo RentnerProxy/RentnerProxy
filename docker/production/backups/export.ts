@@ -38,7 +38,7 @@ async function capture(
         const result = await runMaintenanceProcess(args, {
             cwd: '/',
             timeoutMs: BACKUP_RUNTIME_POLICY.captureTimeoutMs,
-            checkCapacity: backupCapacityGuard([artifactsRoot]),
+            checkCapacity: backupCapacityGuard([artifactsRoot, '/var/lib/rentnerproxy']),
             signal,
             env: { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: '/tmp', LC_ALL: 'C' },
             outputFile: { file, maximumBytes },
@@ -66,7 +66,7 @@ export async function exportManagedBackup(id: string, signal?: AbortSignal): Pro
     const stagingPath = join(artifactsRoot, '.staging-' + id)
     if ((await readdir(artifactsRoot)).length >= 64)
         throw new Error('backup artifact capacity unavailable')
-    await backupCapacityGuard([artifactsRoot])()
+    await backupCapacityGuard([artifactsRoot, '/var/lib/rentnerproxy'])()
     await mkdir(stagingPath, { mode: 0o700 })
     try {
         const key = await capture(
