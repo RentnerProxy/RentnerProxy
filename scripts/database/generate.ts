@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url'
 
-import { generateCustomMigrations } from './custom-migrations.ts'
+import { assertMigrationHistoryComplete, generateCustomMigrations } from './custom-migrations.ts'
 
 const repositoryRoot = fileURLToPath(new URL('../..', import.meta.url))
 
@@ -19,9 +19,11 @@ async function generate(argumentsList: readonly string[]): Promise<void> {
     if ((await command.exited) !== 0) throw new Error('Drizzle migration generation failed')
 }
 
+const outputDirectory = fileURLToPath(new URL('../../web/drizzle', import.meta.url))
+await assertMigrationHistoryComplete(outputDirectory)
 await generate(process.argv.slice(2))
 await generateCustomMigrations({
     sourceDirectory: fileURLToPath(new URL('../../web/src/db/CustomMigrations', import.meta.url)),
-    outputDirectory: fileURLToPath(new URL('../../web/drizzle', import.meta.url)),
+    outputDirectory,
     generate: (name) => generate(['--custom', `--name=${name}`]),
 })
