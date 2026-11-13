@@ -6,6 +6,7 @@ const serviceScript = `
     import { mock } from 'bun:test'
     let queries = 0
     let actorQueries = 0
+    let writes = 0
     let denied = true
     mock.module('./server/Auth/Access/authorization.service.ts', () => ({
         requirePermissionService: async () => {
@@ -30,8 +31,8 @@ const serviceScript = `
                 limit() { return Promise.resolve([]) },
             }
             return work({
-                execute: async () => [],
-                delete: () => ({ where: async () => [] }),
+                execute: async () => { writes++; throw new Error('audit reads must not execute retention SQL') },
+                delete: () => { writes++; throw new Error('audit reads must not delete') },
                 select: () => query,
             })
         }, select: () => {
@@ -51,7 +52,7 @@ const serviceScript = `
     denied = false
     const authorizedResult = await listAuditEventsService({})
     const actorOptions = await listAuditActorOptionsService()
-    console.log(JSON.stringify({ deniedResult, deniedQueries, deniedActorResult, deniedActorQueries, actorOptions, authorizedResult, queries, actorQueries }))
+    console.log(JSON.stringify({ deniedResult, deniedQueries, deniedActorResult, deniedActorQueries, actorOptions, authorizedResult, queries, actorQueries, writes }))
 `
 
 describe('audit viewer authorization', () => {
@@ -68,12 +69,14 @@ describe('audit viewer authorization', () => {
             readonly authorizedResult: { readonly events: readonly unknown[] }
             readonly queries: number
             readonly actorQueries: number
+            readonly writes: number
         }
         expect(output.deniedResult).toBe('permission denied')
         expect(output.deniedQueries).toBe(0)
         expect(output.deniedActorResult).toBe('permission denied')
         expect(output.deniedActorQueries).toBe(0)
-        expect(output.queries).toBe(2)
+        expect(output.queries).toBe(1)
+        expect(output.writes).toBe(0)
         expect(output.actorQueries).toBe(1)
         expect(output.actorOptions).toEqual([
             { id: '0198d98a-0000-7000-8000-000000000001', displayName: 'Alice Admin' },

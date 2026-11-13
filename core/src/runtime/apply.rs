@@ -28,9 +28,11 @@ impl ProxyRuntime {
             if sequence != runtime.apply_sequence.load(Ordering::SeqCst) {
                 return Err(RuntimeError::Busy);
             }
-            runtime
+            let result = runtime
                 .apply_locked(configuration, None, Some(sequence))
-                .await
+                .await;
+            runtime.collect_tls_garbage_locked().await;
+            result
         })
         .await
         .unwrap_or_else(|error| {

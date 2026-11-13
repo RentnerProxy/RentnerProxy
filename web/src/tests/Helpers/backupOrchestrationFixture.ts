@@ -193,9 +193,10 @@ export async function runBackupOrchestrationFixture(scenario: string) {
             .join(',')
         await command(
             psql,
-            'CREATE SCHEMA rentnerproxy; CREATE SCHEMA drizzle; CREATE TABLE drizzle.__drizzle_migrations(id serial PRIMARY KEY,hash text NOT NULL,created_at bigint);\n' +
+            // Mirror Drizzle's atomic migration application, including transaction-scoped locks.
+            'BEGIN;\nCREATE SCHEMA rentnerproxy; CREATE SCHEMA drizzle; CREATE TABLE drizzle.__drizzle_migrations(id serial PRIMARY KEY,hash text NOT NULL,created_at bigint);\n' +
                 migrationBodies.join('\n') +
-                `\nINSERT INTO drizzle.__drizzle_migrations(hash,created_at) VALUES ${records};`,
+                `\nINSERT INTO drizzle.__drizzle_migrations(hash,created_at) VALUES ${records};\nCOMMIT;`,
         )
         await command(
             psql,
