@@ -359,17 +359,25 @@ pub(super) fn remove_candidate_manifest(
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
         Err(_) => return Err(CertificateError::StoreUnavailable),
     };
+    remove_candidate_manifest_from_directory(&certificate_dir)
+}
+
+pub(super) fn remove_candidate_manifest_from_directory(
+    certificate_dir: &SafeDir,
+) -> Result<(), CertificateError> {
     let path = match certificate_dir.file_path(CANDIDATE_MANIFEST_FILE) {
         Ok(path) => path,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
         Err(_) => return Err(CertificateError::StoreUnavailable),
     };
-    std::fs::remove_file(path).map_err(|_| CertificateError::StoreUnavailable)?;
-    #[cfg(unix)]
+    #[cfg(test)]
+    if crate::tests::fixtures::should_fail_candidate_manifest_removal(&path) {
+        return Err(CertificateError::StoreUnavailable);
+    }
+    drop(path);
     certificate_dir
-        .sync()
-        .map_err(|_| CertificateError::StoreUnavailable)?;
-    Ok(())
+        .remove_file(CANDIDATE_MANIFEST_FILE)
+        .map_err(|_| CertificateError::StoreUnavailable)
 }
 
 pub(super) fn candidate_is_valid(id: &str, candidate: &StoredCertificateCandidate) -> bool {

@@ -31,6 +31,8 @@ use tokio::sync::{Mutex, Notify};
 mod fault_isolation;
 #[path = "runtime/recovery.rs"]
 mod recovery;
+#[path = "runtime/tls_garbage_collection.rs"]
+mod tls_garbage_collection;
 const HOST_ID: &str = "00000000-0000-0000-0000-000000000000";
 const CERT_ID: &str = "0198d98a-0000-7000-8000-000000000010";
 static NEXT: AtomicU64 = AtomicU64::new(0);

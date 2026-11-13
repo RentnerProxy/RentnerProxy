@@ -65,6 +65,21 @@ impl SafeDir {
         &self.path
     }
 
+    pub(super) fn owned_entry_metadata(&self, component: &str) -> std::io::Result<fs::Metadata> {
+        let metadata = fs::symlink_metadata(self.child_path(component)?)?;
+        if is_link(&metadata) {
+            return Err(invalid_state_path());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if metadata.is_file() && metadata.nlink() != 1 {
+                return Err(invalid_state_path());
+            }
+        }
+        Ok(metadata)
+    }
+
     pub(super) fn open_dir(&self, component: &str) -> std::io::Result<Self> {
         let path = self.resolved_child_path(component)?;
         let metadata = fs::symlink_metadata(&path)?;

@@ -12,10 +12,12 @@ import { getAuthDatabase } from '@/server/Auth/Core/database.server.ts'
 import type { AuthTransaction } from '@/server/Auth/Core/Types/database.types.ts'
 import { AuthDomainError } from '@/server/Auth/Core/errors.server.ts'
 import { markAuditedApplicationMutation } from '@/server/WebSockets/committedChanges.ts'
+import {
+    lockAuditRetentionInTransaction,
+    retainAuditEventsInTransaction,
+} from './audit-retention.ts'
 
-const AUDIT_RETENTION_DAYS = 90
-const AUDIT_MAX_ROWS = 100_000
-export const AUDIT_RETENTION_LOCK_ID = 7_421_908
+export { AUDIT_RETENTION_LOCK_ID } from './audit-retention.ts'
 const AUDIT_METADATA_MAX_BYTES = 4_096
 
 /** Validate the audit allowlist and encoded size before any row is written. */
@@ -51,7 +53,7 @@ export async function appendAuditEventInTransactionService(
 ): Promise<void> {
     const parsed = parseEventInput(input)
 
-    await transaction.execute(sql`select pg_advisory_xact_lock(${AUDIT_RETENTION_LOCK_ID})`)
+    await lockAuditRetentionInTransaction(transaction)
     await transaction.insert(auditEvents).values({
         actorUserId: parsed.actorUserId,
         actorKind: parsed.actorKind,
@@ -61,7 +63,7 @@ export async function appendAuditEventInTransactionService(
         result: parsed.result,
         metadata: metadataValue(parsed.metadata),
     })
-    await pruneAuditEventsInTransaction(transaction)
+    await retainAuditEventsInTransaction(transaction)
     markAuditedApplicationMutation(transaction, parsed)
 }
 
@@ -73,7 +75,7 @@ export async function appendAuditEventsInTransactionService(
     if (inputs.length === 0) return
     if (inputs.length > 500) throw new AuthDomainError('invalid_input', 'Audit batch is too large.')
     const events = inputs.map(parseEventInput)
-    await transaction.execute(sql`select pg_advisory_xact_lock(${AUDIT_RETENTION_LOCK_ID})`)
+    await lockAuditRetentionInTransaction(transaction)
     await transaction.insert(auditEvents).values(
         events.map((event) => ({
             actorUserId: event.actorUserId,
@@ -85,7 +87,7 @@ export async function appendAuditEventsInTransactionService(
             metadata: metadataValue(event.metadata),
         })),
     )
-    await pruneAuditEventsInTransaction(transaction)
+    await retainAuditEventsInTransaction(transaction)
     for (const event of events) markAuditedApplicationMutation(transaction, event)
 }
 
@@ -95,23 +97,4 @@ export async function recordAuditEventBestEffortService(input: AuditEventInput):
             await appendAuditEventInTransactionService(transaction, input)
         })
     } catch {}
-}
-
-export async function pruneAuditEventsInTransaction(transaction: AuthTransaction): Promise<void> {
-    const cutoff = new Date(Date.now() - AUDIT_RETENTION_DAYS * 24 * 60 * 60 * 1_000)
-    // Expired rows are a suffix of the same ordering used by the row cap.
-    await transaction.execute(sql`
-        delete from "rentnerproxy"."audit_events" as events
-        using (
-            select "id" from "rentnerproxy"."audit_events"
-            where "created_at" < ${cutoff.toISOString()}::timestamptz
-            union
-            select "id" from (
-                select "id" from "rentnerproxy"."audit_events"
-                order by "created_at" desc, "id" desc
-                offset ${AUDIT_MAX_ROWS}
-            ) as overflow
-        ) as obsolete
-        where events."id" = obsolete."id"
-    `)
 }

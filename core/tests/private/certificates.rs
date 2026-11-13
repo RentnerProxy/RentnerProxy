@@ -13,6 +13,9 @@ use super::fixtures::fail_next_private_key_write_below;
 
 static STORE_TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+#[path = "certificates/material_gc.rs"]
+mod material_gc;
+
 #[tokio::test]
 async fn retry_attempt_history_continues_after_backoff_has_reached_its_cap() {
     let state_dir = test_state_dir();

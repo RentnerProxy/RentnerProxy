@@ -144,6 +144,7 @@ impl ProxyRuntime {
         state.engine_available = true;
         drop(state);
         *self.active_configuration.lock().await = configuration;
+        self.collect_tls_garbage_locked().await;
         Ok(())
     }
 
@@ -297,7 +298,9 @@ impl ProxyRuntime {
         } else {
             self.recovery_health.probe_verified();
         }
-        self.ensure_running_locked().await
+        self.ensure_running_locked().await?;
+        self.collect_tls_garbage_locked().await;
+        Ok(())
     }
 
     /// Replaces an unavailable engine only after its prior child is confirmed stopped.

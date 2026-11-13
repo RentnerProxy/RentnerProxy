@@ -58,6 +58,7 @@ impl CertificateStore {
             *self.readiness.lock().await = CertificateStoreReadiness::Corrupt;
             return Err(CertificateError::StoreUnavailable);
         }
+        super::material_gc::restore_interrupted_deletions(&certificates_dir, &index)?;
         let recovered_candidate_state =
             match reconcile_candidate_manifests(&certificates_dir, &mut index) {
                 Ok(changed) => changed,

@@ -32,8 +32,8 @@ pub(crate) use revision::revision_for_hosts;
 pub(crate) use revision::revision_from_config;
 use revision::{canonicalize_configuration, revision_for_canonical_configuration};
 pub(crate) use trusted_ca::{
-    MAX_TRUSTED_CA_PEM_BYTES, TrustedCaValidationRequest, validate_trusted_ca,
-    validate_trusted_ca_pem,
+    MAX_TRUSTED_CA_PEM_BYTES, TrustedCaValidationRequest, trusted_ca_material_fingerprint,
+    validate_trusted_ca, validate_trusted_ca_pem,
 };
 pub(crate) use upstream_pool::configuration_version;
 use upstream_pool::has_valid_upstream_pool;

@@ -232,6 +232,20 @@
       "when": 1793659707260,
       "tag": "0032_worried_landau",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1794534597055,
+      "tag": "0033_needy_the_hand",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1794534597358,
+      "tag": "0034_audit_retention_cardinality_v1",
+      "breakpoints": true
     }
   ]
 }
