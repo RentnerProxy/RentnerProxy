@@ -3,7 +3,10 @@ import { join, resolve } from 'node:path'
 import { watch } from 'node:fs'
 import { mkdir, mkdtemp, open, readFile, rm } from 'node:fs/promises'
 import { BACKUP_RUNTIME_POLICY } from '../../../../config/backup-runtime.config.ts'
-import { MaintenanceProcessNotDispatched, runMaintenanceProcess } from '../../../../../../scripts/backup/maintenance-process.ts'
+import {
+    MaintenanceProcessNotDispatched,
+    runMaintenanceProcess,
+} from '../../../../../../scripts/backup/maintenance-process.ts'
 
 const cwd = resolve(import.meta.dir, '../../../../../..')
 const child = (script: string) => [process.execPath, '--no-env-file', '-e', script]
@@ -196,8 +199,13 @@ test('pre-aborted maintenance never attempts process dispatch', async () => {
 test('spawn exceptions never carry positive pre-dispatch evidence', async () => {
     let failure: unknown
     try {
-        await runMaintenanceProcess(['nonexistent-maintenance-command-fixture'], { cwd, timeoutMs: 5_000 })
-    } catch (error) { failure = error }
+        await runMaintenanceProcess(['nonexistent-maintenance-command-fixture'], {
+            cwd,
+            timeoutMs: 5_000,
+        })
+    } catch (error) {
+        failure = error
+    }
     expect(failure).toBeInstanceOf(Error)
     expect(failure).not.toBeInstanceOf(MaintenanceProcessNotDispatched)
 })

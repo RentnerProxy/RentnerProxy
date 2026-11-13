@@ -1,15 +1,25 @@
 import { stat, statfs } from 'node:fs/promises'
 import { BACKUP_RUNTIME_POLICY } from '../../web/src/config/backup-runtime.config.ts'
-import type { BackupCapacityProbe, BackupCapacityRequirement, StateArchiveAllocationEvidence } from './Types/capacity.types.ts'
+import type {
+    BackupCapacityProbe,
+    BackupCapacityRequirement,
+    StateArchiveAllocationEvidence,
+} from './Types/capacity.types.ts'
 import type { StateArchiveFileEntry } from './Types/format.types.ts'
 
 const probeCapacity: BackupCapacityProbe = async (path) => {
     const [info, space] = await Promise.all([stat(path), statfs(path)])
-    return { device: info.dev, availableBytes: space.bavail * space.bsize, allocationUnitBytes: space.bsize }
+    return {
+        device: info.dev,
+        availableBytes: space.bavail * space.bsize,
+        allocationUnitBytes: space.bsize,
+    }
 }
 
 /** Count unique extracted paths and implicit parents without reading file bodies. */
-export function stateArchiveAllocationEvidence(entries: readonly StateArchiveFileEntry[]): StateArchiveAllocationEvidence {
+export function stateArchiveAllocationEvidence(
+    entries: readonly StateArchiveFileEntry[],
+): StateArchiveAllocationEvidence {
     let payloadBytes = 0
     // Include the extraction root and small restore-created pause/ownership paths.
     let nodes = 5
@@ -28,13 +38,22 @@ export function stateArchiveAllocationEvidence(entries: readonly StateArchiveFil
         if (!entry.directory) payloadBytes += entry.size
         const name = entry.name
         let common = 0
-        while (common < previous.length && common < name.length && previous[common] === name[common]) common++
-        const sharedParent = common === previous.length && name[common] === '/'
-            ? common
-            : name.lastIndexOf('/', common - 1)
+        while (
+            common < previous.length &&
+            common < name.length &&
+            previous[common] === name[common]
+        )
+            common++
+        const sharedParent =
+            common === previous.length && name[common] === '/'
+                ? common
+                : name.lastIndexOf('/', common - 1)
         for (let index = 0; index < name.length; index++)
-            if ((name[index] === '/' || index === name.length - 1) &&
-                (name[index] === '/' ? index : index + 1) > sharedParent) nodes++
+            if (
+                (name[index] === '/' || index === name.length - 1) &&
+                (name[index] === '/' ? index : index + 1) > sharedParent
+            )
+                nodes++
         previous = name
     }
     if (!Number.isSafeInteger(payloadBytes) || payloadBytes < 0 || !Number.isSafeInteger(nodes))
@@ -42,10 +61,18 @@ export function stateArchiveAllocationEvidence(entries: readonly StateArchiveFil
     return { payloadBytes, nodes }
 }
 
-export function stateArchiveAllocationBytes(evidence: StateArchiveAllocationEvidence, allocationUnitBytes: number): number {
-    if (!Number.isSafeInteger(evidence.payloadBytes) || evidence.payloadBytes < 0 ||
-        !Number.isSafeInteger(evidence.nodes) || evidence.nodes < 1 ||
-        !Number.isSafeInteger(allocationUnitBytes) || allocationUnitBytes <= 0)
+export function stateArchiveAllocationBytes(
+    evidence: StateArchiveAllocationEvidence,
+    allocationUnitBytes: number,
+): number {
+    if (
+        !Number.isSafeInteger(evidence.payloadBytes) ||
+        evidence.payloadBytes < 0 ||
+        !Number.isSafeInteger(evidence.nodes) ||
+        evidence.nodes < 1 ||
+        !Number.isSafeInteger(allocationUnitBytes) ||
+        allocationUnitBytes <= 0
+    )
         throw new Error('invalid state archive capacity evidence')
     // One unit covers file tail rounding; another covers inode/directory allocation.
     // Keep at least 4 KiB of metadata allowance even on filesystems with smaller units.
@@ -64,12 +91,15 @@ export async function assertBackupCapacity(
             if (!Number.isSafeInteger(bytes) || bytes < 0)
                 throw new Error('invalid backup capacity requirement')
             const space = await probe(path)
-            const requiredBytes = bytes + (archive ? stateArchiveAllocationBytes(archive, space.allocationUnitBytes ?? 0) : 0)
+            const requiredBytes =
+                bytes +
+                (archive ? stateArchiveAllocationBytes(archive, space.allocationUnitBytes ?? 0) : 0)
             if (!Number.isFinite(space.availableBytes) || space.availableBytes < 0)
                 throw new Error('backup capacity unavailable')
             const previous = devices.get(space.device)
             devices.set(space.device, {
-                required: (previous?.required ?? BACKUP_RUNTIME_POLICY.diskReserveBytes) + requiredBytes,
+                required:
+                    (previous?.required ?? BACKUP_RUNTIME_POLICY.diskReserveBytes) + requiredBytes,
                 available: Math.min(previous?.available ?? Infinity, space.availableBytes),
             })
         }),

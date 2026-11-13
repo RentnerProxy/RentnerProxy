@@ -92,7 +92,8 @@ function fixture(
 
 describe('owned maintenance commands', () => {
     test.each(['capacity', 'cancellation', 'deadline'] as const)(
-        'a proven pre-dispatch %s rejection preserves restart admission and the original cause', async (mode) => {
+        'a proven pre-dispatch %s rejection preserves restart admission and the original cause',
+        async (mode) => {
             const cwd = resolve(import.meta.dir, '../../../../../..')
             await mkdir(join(cwd, 'tmp'), { recursive: true })
             const directory = await mkdtemp(join(cwd, 'tmp', 'maintenance-admission-'))
@@ -100,7 +101,8 @@ describe('owned maintenance commands', () => {
             const reason = new Error('private synthetic admission failure')
             const calls: string[][] = []
             const commands = createMaintenanceCommands({
-                cwd, operation: 'backup',
+                cwd,
+                operation: 'backup',
                 process: async (args, options) => {
                     calls.push([...args])
                     if (!args.includes('--name')) return result('started')
@@ -108,9 +110,12 @@ describe('owned maintenance commands', () => {
                         ...options,
                         timeoutMs: mode === 'deadline' ? 20 : options.timeoutMs,
                         ...(mode === 'cancellation' ? { signal: AbortSignal.abort(reason) } : {}),
-                        checkCapacity: mode === 'deadline'
-                            ? () => new Promise(() => {})
-                            : async () => { throw reason },
+                        checkCapacity:
+                            mode === 'deadline'
+                                ? () => new Promise(() => {})
+                                : async () => {
+                                      throw reason
+                                  },
                     })
                 },
             })
@@ -118,17 +123,23 @@ describe('owned maintenance commands', () => {
                 let failure: unknown
                 try {
                     await commands.file(['docker', 'run', '--rm', 'fixture'], output, 'dump')
-                } catch (error) { failure = error }
+                } catch (error) {
+                    failure = error
+                }
                 expect(failure).toBeInstanceOf(Error)
                 expect((failure as Error).message).toBe('production backup operation failed: dump')
                 if (mode === 'deadline')
-                    expect((failure as Error).cause).toMatchObject({ message: 'maintenance deadline exceeded' })
+                    expect((failure as Error).cause).toMatchObject({
+                        message: 'maintenance deadline exceeded',
+                    })
                 else expect((failure as Error).cause).toBe(reason)
                 expect(calls).toHaveLength(1)
                 expect(calls[0]).toContain('--name')
                 await expect(stat(output)).rejects.toMatchObject({ code: 'ENOENT' })
                 commands.assertRestartSafe()
-                expect(await commands.text(['docker', 'compose', 'start', 'rentnerproxy'], 'restart')).toBe('started')
+                expect(
+                    await commands.text(['docker', 'compose', 'start', 'rentnerproxy'], 'restart'),
+                ).toBe('started')
                 expect(calls).toHaveLength(2)
             } finally {
                 await rm(directory, { recursive: true, force: true })
@@ -140,16 +151,20 @@ describe('owned maintenance commands', () => {
         const reason = new Error('Maintenance process was not dispatched')
         const calls: string[][] = []
         const commands = createMaintenanceCommands({
-            cwd: '/fixture', operation: 'backup',
+            cwd: '/fixture',
+            operation: 'backup',
             process: async (args) => {
                 calls.push([...args])
                 if (args.includes('--name')) throw reason
                 return result()
             },
         })
-        await expect(commands.bytes(['docker', 'run', '--rm', 'fixture'], 'dump')).rejects.toMatchObject({
+        await expect(
+            commands.bytes(['docker', 'run', '--rm', 'fixture'], 'dump'),
+        ).rejects.toMatchObject({
             cause: reason,
-            message: 'production backup operation failed: dump. Maintenance cleanup unresolved; automatic appliance startup is blocked.',
+            message:
+                'production backup operation failed: dump. Maintenance cleanup unresolved; automatic appliance startup is blocked.',
         })
         expect(calls).toHaveLength(2)
         expect(calls[1]?.slice(0, 3)).toEqual(['docker', 'container', 'ls'])
@@ -160,19 +175,27 @@ describe('owned maintenance commands', () => {
         let checks = 0
         const calls: string[][] = []
         const commands = createMaintenanceCommands({
-            cwd: resolve(import.meta.dir, '../../../../../..'), operation: 'backup',
+            cwd: resolve(import.meta.dir, '../../../../../..'),
+            operation: 'backup',
             process: async (args, options) => {
                 calls.push([...args])
                 if (!args.includes('--name')) return result()
-                return runMaintenanceProcess([process.execPath, '--no-env-file', '-e', 'setInterval(() => {}, 1000)'], {
-                    ...options, timeoutMs: 5_000,
-                    checkCapacity: async () => {
-                        if (++checks > 1) throw new Error('synthetic post-dispatch disk exhaustion')
+                return runMaintenanceProcess(
+                    [process.execPath, '--no-env-file', '-e', 'setInterval(() => {}, 1000)'],
+                    {
+                        ...options,
+                        timeoutMs: 5_000,
+                        checkCapacity: async () => {
+                            if (++checks > 1)
+                                throw new Error('synthetic post-dispatch disk exhaustion')
+                        },
                     },
-                })
+                )
             },
         })
-        await expect(commands.bytes(['docker', 'run', '--rm', 'fixture'], 'dump')).rejects.toThrow('cleanup unresolved')
+        await expect(commands.bytes(['docker', 'run', '--rm', 'fixture'], 'dump')).rejects.toThrow(
+            'cleanup unresolved',
+        )
         expect(checks).toBe(2)
         expect(calls[1]?.slice(0, 3)).toEqual(['docker', 'container', 'ls'])
         expect(() => commands.assertRestartSafe()).toThrow('startup is blocked')

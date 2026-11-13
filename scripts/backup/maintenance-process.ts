@@ -9,7 +9,9 @@ import { BACKUP_RUNTIME_POLICY } from '../../web/src/config/backup-runtime.confi
 
 export class MaintenanceProcessNotDispatched extends Error {
     constructor(cause: unknown) {
-        super(cause instanceof Error ? cause.message : 'Maintenance process was not dispatched', { cause })
+        super(cause instanceof Error ? cause.message : 'Maintenance process was not dispatched', {
+            cause,
+        })
         this.name = 'MaintenanceProcessNotDispatched'
     }
 }
@@ -34,7 +36,8 @@ export async function runMaintenanceProcess(
                             () => reject(new Error('maintenance deadline exceeded')),
                             options.timeoutMs,
                         )
-                        admissionAbort = () => reject(options.signal?.reason ?? new Error('maintenance cancelled'))
+                        admissionAbort = () =>
+                            reject(options.signal?.reason ?? new Error('maintenance cancelled'))
                         options.signal?.addEventListener('abort', admissionAbort, { once: true })
                         if (options.signal?.aborted) admissionAbort()
                     }),

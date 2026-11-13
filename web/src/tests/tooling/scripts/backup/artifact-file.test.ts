@@ -129,10 +129,18 @@ test('snapshot abort during the final sync removes its output and preserves the 
             stop.abort(new Error('synthetic final sync cancellation'))
         })
         try {
-            await assert.rejects(snapshotBackupArtifact(source, target, {
-                bytes: bytes.length,
-                sha256: digest(bytes),
-            }, stop.signal), /synthetic final sync cancellation/)
+            await assert.rejects(
+                snapshotBackupArtifact(
+                    source,
+                    target,
+                    {
+                        bytes: bytes.length,
+                        sha256: digest(bytes),
+                    },
+                    stop.signal,
+                ),
+                /synthetic final sync cancellation/,
+            )
         } finally {
             sync.mockRestore()
         }

@@ -165,7 +165,9 @@ async function offlineValidate() {
             snapshot,
             operationSignal,
         )
-        await assertBackupCapacity([{ path: '/tmp', bytes: 0, archive: stateCapacity.crowdSecState }])
+        await assertBackupCapacity([
+            { path: '/tmp', bytes: 0, archive: stateCapacity.crowdSecState },
+        ])
         await command(['chown', 'postgres:postgres', validation])
         await command(['bash', '-c', validationCommand(snapshot, validation)])
         const capacity = await measureRestoreCapacity(validation, operationSignal)
@@ -284,10 +286,7 @@ async function offlineRestore(options: readonly string[]) {
         if (!pending && options.includes('--resume'))
             throw new Error('No interrupted restore is pending')
         operationSignal.throwIfAborted()
-        await assertRestoreCapacity(
-            capacity,
-            stateCapacity,
-        )
+        await assertRestoreCapacity(capacity, stateCapacity)
         if (!pending)
             await command(['/usr/local/bin/rentnerproxy-production', '--initialize-restore-target'])
         await beginProductionRestore()

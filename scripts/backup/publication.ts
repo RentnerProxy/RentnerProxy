@@ -80,9 +80,13 @@ export async function verifyPublishedBackup(
             if (name === 'app-encryption-key')
                 await parseApplicationEncryptionKeyFile(file, signal, progress)
             if (name === 'controller-state.tar')
-                controllerState = stateArchiveAllocationEvidence(await validateStateArchiveFile(file, 'controller', signal, progress))
+                controllerState = stateArchiveAllocationEvidence(
+                    await validateStateArchiveFile(file, 'controller', signal, progress),
+                )
             if (name === 'crowdsec-state.tar')
-                crowdSecState = stateArchiveAllocationEvidence(await validateStateArchiveFile(file, 'crowdsec', signal, progress))
+                crowdSecState = stateArchiveAllocationEvidence(
+                    await validateStateArchiveFile(file, 'crowdsec', signal, progress),
+                )
             totalBytes += expected.bytes
         } finally {
             await file.close()

@@ -53,7 +53,10 @@ import {
     writePrivateJson,
 } from './storage.ts'
 import type { ManagedBackupMaintenance } from '../../../web/src/lib/Backups/Types/backups.types.ts'
-import type { RestoreCapacityEvidence, StateArchiveCapacityEvidence } from '../../../scripts/backup/Types/capacity.types.ts'
+import type {
+    RestoreCapacityEvidence,
+    StateArchiveCapacityEvidence,
+} from '../../../scripts/backup/Types/capacity.types.ts'
 
 export const maintenanceRoot = '/run/rentnerproxy/maintenance'
 const phaseFile = join(controlRoot, 'restore-progress.json')
@@ -216,7 +219,10 @@ export async function measureRestoreCapacity(
     return { databaseBytes, sqlBytes }
 }
 
-export async function assertRestoreCapacity(evidence: RestoreCapacityEvidence, stateCapacity: StateArchiveCapacityEvidence) {
+export async function assertRestoreCapacity(
+    evidence: RestoreCapacityEvidence,
+    stateCapacity: StateArchiveCapacityEvidence,
+) {
     // The isolated cluster measures decompression, indexes and WAL, which cannot
     // be inferred from custom-dump bytes. Double its footprint for live transaction
     // and WAL headroom; active guards cover concurrent allocations and working space.
@@ -346,7 +352,11 @@ export async function restoreManagedBackup(id: string, signal?: AbortSignal) {
     // needs target filesystem allocation for file tails, directories and metadata.
     await assertBackupCapacity([
         { path: backupRoot, bytes: snapshotBytes },
-        { path: '/var/lib/rentnerproxy', bytes: 0, archive: verified.stateCapacity.controllerState },
+        {
+            path: '/var/lib/rentnerproxy',
+            bytes: 0,
+            archive: verified.stateCapacity.controllerState,
+        },
         { path: '/var/lib/rentnerproxy', bytes: 0, archive: verified.stateCapacity.crowdSecState },
         { path: '/tmp', bytes: 0, archive: verified.stateCapacity.crowdSecState },
     ])

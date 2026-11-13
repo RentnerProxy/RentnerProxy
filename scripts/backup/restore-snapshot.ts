@@ -3,7 +3,11 @@ import { createDecipheriv, createHash } from 'node:crypto'
 import { constants } from 'node:fs'
 import { chmod, open, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { assertBackupCapacity, backupCapacityGuard, stateArchiveAllocationEvidence } from './capacity.ts'
+import {
+    assertBackupCapacity,
+    backupCapacityGuard,
+    stateArchiveAllocationEvidence,
+} from './capacity.ts'
 import type { StateArchiveAllocationEvidence } from './Types/capacity.types.ts'
 import {
     parseBackupMetadata,
@@ -113,7 +117,9 @@ export async function snapshotProductionRestore(
     const crowdSecFile = await open(join(snapshot, 'crowdsec-state.tar'), 'r')
     let crowdSecState: StateArchiveAllocationEvidence
     try {
-        crowdSecState = stateArchiveAllocationEvidence(await validateStateArchiveFile(crowdSecFile, 'crowdsec', signal))
+        crowdSecState = stateArchiveAllocationEvidence(
+            await validateStateArchiveFile(crowdSecFile, 'crowdsec', signal),
+        )
     } finally {
         await crowdSecFile.close()
     }

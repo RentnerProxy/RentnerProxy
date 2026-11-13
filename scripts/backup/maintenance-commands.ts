@@ -135,7 +135,9 @@ export function createMaintenanceCommands(options: MaintenanceCommandOptions) {
                 ? ' Maintenance cleanup unresolved; automatic appliance startup is blocked.'
                 : ''
             if (options.operation !== 'restore' || operation !== 'restore PostgreSQL')
-                throw new Error(prefix + (cleanupFailed ? '.' + cleanupMessage : ''), { cause: failureCause })
+                throw new Error(prefix + (cleanupFailed ? '.' + cleanupMessage : ''), {
+                    cause: failureCause,
+                })
             const phase = /RESTORE_PHASE=(initialize|archive|render|assemble|execute)/u.exec(
                 result?.stderr ?? '',
             )?.[1]
