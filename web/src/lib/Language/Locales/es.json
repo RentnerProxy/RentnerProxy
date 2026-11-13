@@ -855,6 +855,8 @@
                 "title": "Restaurando el dispositivo",
                 "description": "{{user}} está restaurando la copia {{backup}}. Esto afecta a todos los usuarios conectados al dispositivo.",
                 "progress": "Progreso de restauración: {{percent}} %",
+                "lastConfirmedProgress": "Último progreso de restauración confirmado: {{percent}} %",
+                "reconnecting": "Restableciendo la conexión con el dispositivo",
                 "complete": "Restauración y recuperación de los servicios confirmadas. Volverás automáticamente a la página anterior.",
                 "failed": "La restauración ha fallado o no se pudo confirmar la recuperación de los servicios. Comprueba el estado del dispositivo antes de continuar.",
                 "connectionLost": "Se interrumpió la conexión con el dispositivo. Esperando un estado de restauración confirmado; la finalización aún no está confirmada.",

@@ -177,12 +177,19 @@ export default function useApplicationLiveSync(suspended = false): ApplicationLi
         [captureScroll, queryClient, router, runAction],
     )
 
+    const revalidateIdentityCallback = useRef(revalidateIdentity)
+    useEffect(() => {
+        revalidateIdentityCallback.current = revalidateIdentity
+    }, [revalidateIdentity])
+
+    // Callback changes (for example translated feedback) must not cancel a pending
+    // identity check. Only the router subscription's lifetime owns that cancellation.
     useEffect(() => {
         const lifecycle = new AbortController()
         const verifyInitial = () =>
             queueMicrotask(() => {
                 if (!lifecycle.signal.aborted && initialVerificationPending.current)
-                    revalidateIdentity(true)
+                    revalidateIdentityCallback.current(true)
             })
         const unsubscribe = router.subscribe('onResolved', verifyInitial)
         verifyInitial()
@@ -191,7 +198,7 @@ export default function useApplicationLiveSync(suspended = false): ApplicationLi
             unsubscribe()
             syncGeneration.current += 1
         }
-    }, [revalidateIdentity, router])
+    }, [router])
 
     useEffect(() => {
         if (suspended) syncGeneration.current += 1
@@ -306,7 +313,27 @@ export default function useApplicationLiveSync(suspended = false): ApplicationLi
         enabled: (!isIdentityPending || isAwaitingResume) && !suspended,
         onData: handleSnapshot,
         onUnauthorized: () => revalidateIdentity(),
-        onResume: () => {
+        getResumeSessionVersion: () => snapshotsByClient.get(queryClient)?.sessionVersion,
+        onResume: (metadata) => {
+            const scope = identityScopesByClient.get(queryClient)
+            if (
+                metadata?.sessionVersion &&
+                metadata.sessionVersion === snapshotsByClient.get(queryClient)?.sessionVersion &&
+                !suspended &&
+                globalThis.crypto?.subtle &&
+                !sessionProofUnavailable.current &&
+                !identityPending.current &&
+                !awaitingResume.current &&
+                scope !== undefined &&
+                confirmedIdentityScope(router) === scope
+            ) {
+                // The upgrade rechecked the current cookie and principal before
+                // acknowledging this scope. Keep the page mounted across the
+                // backup's web restart, including when its next snapshot is unchanged.
+                syncGeneration.current += 1
+                void refreshApplicationQueries(queryClient).catch(() => undefined)
+                return
+            }
             if (
                 !snapshotsByClient.get(queryClient)?.sessionVersion ||
                 !globalThis.crypto?.subtle ||

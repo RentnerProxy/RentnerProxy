@@ -319,6 +319,18 @@ describe('managed backup UI', () => {
                 (row) => row.textContent?.includes(uuid(3)) && row.textContent?.includes('Running'),
             ),
         )
+        const table = document.querySelector('table')
+        const body = document.querySelector('tbody')
+        const row = [...document.querySelectorAll('tbody tr')].find((entry) =>
+            entry.textContent?.includes(uuid(3)),
+        )
+        const schedule = document.querySelector('input[name="intervalHours"]')
+        await input('intervalHours', '36')
+        const removed: Node[] = []
+        const observer = new MutationObserver((records) => {
+            removed.push(...records.flatMap((record) => [...record.removedNodes]))
+        })
+        observer.observe(page!, { childList: true, subtree: true })
         const request = status.jobs.find((job) => job.id === uuid(3))!
         const readsBeforeCompletion = statusRequests
         Object.assign(request, {
@@ -338,6 +350,18 @@ describe('managed backup UI', () => {
         expect(page?.textContent).toContain(uuid(3))
         await statusChanged()
         await statusChanged()
+        observer.disconnect()
+        expect(document.querySelector('table')).toBe(table)
+        expect(document.querySelector('tbody')).toBe(body)
+        expect(
+            [...document.querySelectorAll('tbody tr')].find((entry) =>
+                entry.textContent?.includes(uuid(3)),
+            ),
+        ).toBe(row)
+        expect(document.querySelector('input[name="intervalHours"]')).toBe(schedule)
+        expect((schedule as HTMLInputElement).value).toBe('36')
+        expect(removed.some((node) => node === table || node.contains(table))).toBe(false)
+        expect(removed.some((node) => node === schedule || node.contains(schedule))).toBe(false)
         expect(document.querySelectorAll('.rentnerproxy-toast-success')).toHaveLength(1)
         expect(startRequests).toHaveLength(0)
         expect(statusRequests).toBe(readsBeforeCompletion)

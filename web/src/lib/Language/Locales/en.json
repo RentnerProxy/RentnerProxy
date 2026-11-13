@@ -853,6 +853,8 @@
                 "title": "Restoring the appliance",
                 "description": "{{user}} is restoring backup {{backup}}. This affects everyone connected to this appliance.",
                 "progress": "Restore progress: {{percent}}%",
+                "lastConfirmedProgress": "Last confirmed restore progress: {{percent}}%",
+                "reconnecting": "Reconnecting to the appliance",
                 "complete": "Restore and service recovery confirmed. Returning automatically to your previous page.",
                 "failed": "Restore failed or service recovery could not be confirmed. Check appliance health before taking further action.",
                 "connectionLost": "The appliance connection was interrupted. Waiting for confirmed restore status; completion has not yet been confirmed.",

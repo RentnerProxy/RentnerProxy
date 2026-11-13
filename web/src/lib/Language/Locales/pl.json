@@ -857,6 +857,8 @@
                 "title": "Przywracanie urządzenia",
                 "description": "{{user}} przywraca kopię {{backup}}. Dotyczy to wszystkich użytkowników połączonych z tym urządzeniem.",
                 "progress": "Postęp przywracania: {{percent}}%",
+                "lastConfirmedProgress": "Ostatni potwierdzony postęp przywracania: {{percent}}%",
+                "reconnecting": "Ponowne łączenie z urządzeniem",
                 "complete": "Potwierdzono przywrócenie i wznowienie usług. Nastąpi automatyczny powrót do poprzedniej strony.",
                 "failed": "Przywracanie nie powiodło się lub nie można potwierdzić wznowienia usług. Przed dalszym działaniem sprawdź stan urządzenia.",
                 "connectionLost": "Połączenie z urządzeniem zostało przerwane. Oczekiwanie na potwierdzony stan przywracania; zakończenie nie jest jeszcze potwierdzone.",

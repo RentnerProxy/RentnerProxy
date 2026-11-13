@@ -855,6 +855,8 @@
                 "title": "Ripristino dell’appliance",
                 "description": "{{user}} sta ripristinando il backup {{backup}}. L’operazione riguarda tutti gli utenti connessi a questa appliance.",
                 "progress": "Avanzamento del ripristino: {{percent}}%",
+                "lastConfirmedProgress": "Ultimo avanzamento confermato del ripristino: {{percent}}%",
+                "reconnecting": "Riconnessione all’appliance",
                 "complete": "Ripristino e riavvio dei servizi confermati. Ritorno automatico alla pagina precedente.",
                 "failed": "Il ripristino è fallito o non è stato possibile confermare il recupero dei servizi. Controlla lo stato dell’appliance prima di continuare.",
                 "connectionLost": "La connessione all’appliance è stata interrotta. In attesa di uno stato di ripristino confermato; il completamento non è ancora confermato.",

@@ -3,7 +3,9 @@ import type {
     RealtimeSubscriptionOptions,
     Listener,
     Subscription,
+    RealtimeResumeMetadata,
 } from './Types/realtime-events-client.types.ts'
+import { LIVE_WEBSOCKET_PROTOCOL, LIVE_SESSION_PROTOCOL_PREFIX } from '@/config/realtime.config.ts'
 import { realtimeEventSchema } from './events.ts'
 import { runDetachedTask } from '@/lib/Async/runDetachedTask.ts'
 import type { LiveTopic, SnapshotEvent } from './Types/events.types.ts'
@@ -44,14 +46,41 @@ function notifyStatus(status: LiveStatus): void {
     for (const listener of listeners.values()) notifyListenerStatus(listener, status)
 }
 
-function notifyLifecycleListeners(event: 'onResume' | 'onUnauthorized'): void {
+function notifyLifecycleListeners(
+    event: 'onResume' | 'onUnauthorized',
+    metadata?: RealtimeResumeMetadata,
+): void {
     for (const listener of listeners.values()) {
         if (!listener[event]) continue
         runDetachedTask(
-            () => listener[event]?.(),
+            () =>
+                event === 'onResume' ? listener.onResume?.(metadata) : listener.onUnauthorized?.(),
             () => console.warn('[realtime] Lifecycle listener failed'),
         )
     }
+}
+
+function resumeSessionVersion(): string | undefined {
+    let expected: string | undefined
+    for (const subscription of subscriptions.values()) {
+        if (subscription.topic !== 'app-events') continue
+        for (const listener of subscription.listeners) {
+            let version: string | undefined
+            try {
+                version = listener.getResumeSessionVersion?.()
+            } catch {
+                return undefined
+            }
+            if (version === undefined) continue
+            if (
+                !/^[a-f0-9]{64}$/u.test(version) ||
+                (expected !== undefined && expected !== version)
+            )
+                return undefined
+            expected = version
+        }
+    }
+    return expected
 }
 
 function notifyData(event: SnapshotEvent): void {
@@ -138,7 +167,11 @@ function connect(): void {
     isConnecting = true
     notifyStatus('connecting')
     try {
-        const current = new WebSocket(getRealtimeUrl())
+        const expectedSessionVersion = resumeSessionVersion()
+        const protocols = [LIVE_WEBSOCKET_PROTOCOL]
+        if (expectedSessionVersion)
+            protocols.push(LIVE_SESSION_PROTOCOL_PREFIX + expectedSessionVersion)
+        const current = new WebSocket(getRealtimeUrl(), protocols)
         websocket = current
         current.addEventListener('open', () => {
             if (websocket !== current) return
@@ -147,7 +180,15 @@ function connect(): void {
             reconnectDelay = MIN_RECONNECT_DELAY_MS
             notifyStatus('connected')
             sendAllSubscriptions()
-            if (resuming) notifyLifecycleListeners('onResume')
+            if (resuming) {
+                const confirmed =
+                    expectedSessionVersion !== undefined &&
+                    current.protocol === LIVE_SESSION_PROTOCOL_PREFIX + expectedSessionVersion
+                notifyLifecycleListeners(
+                    'onResume',
+                    confirmed ? { sessionVersion: expectedSessionVersion } : undefined,
+                )
+            }
         })
         current.addEventListener('message', (event) => {
             if (websocket !== current) return
@@ -220,6 +261,7 @@ export function subscribeToRealtimeEvents<T>({
     onStatus,
     onUnauthorized,
     onResume,
+    getResumeSessionVersion,
 }: RealtimeSubscriptionOptions<T>): () => void {
     if (
         listeners.size === 0 &&
@@ -244,6 +286,7 @@ export function subscribeToRealtimeEvents<T>({
         ...(onStatus ? { onStatus } : {}),
         ...(onUnauthorized ? { onUnauthorized } : {}),
         ...(onResume ? { onResume } : {}),
+        ...(getResumeSessionVersion ? { getResumeSessionVersion } : {}),
     }
     listeners.set(listener.id, listener)
     subscription.listeners.add(listener)

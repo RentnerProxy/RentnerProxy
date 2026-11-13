@@ -126,6 +126,7 @@ export async function readLiveHandshake(
     maxPayloadBytes: number,
     readSnapshot: LiveSnapshotReader,
     trackWork?: (work: Promise<unknown>) => void,
+    onData?: (data: unknown) => void,
 ): Promise<number> {
     const controller = new AbortController()
     connection.handshakeAbortController = controller
@@ -141,7 +142,9 @@ export async function readLiveHandshake(
             maxPayloadBytes,
             trackWork,
         )
-        return result.kind === 'failure' ? (result.status ?? 503) : 200
+        if (result.kind === 'failure') return result.status ?? 503
+        onData?.(result.data)
+        return 200
     } finally {
         clearTimeout(timer)
         connection.handshakeAbortController = null

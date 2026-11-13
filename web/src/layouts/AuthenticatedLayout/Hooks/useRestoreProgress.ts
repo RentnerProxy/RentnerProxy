@@ -41,6 +41,22 @@ export default function useRestoreProgress(beforeHide?: () => void) {
         if (retired.size > 100) retired.delete(retired.values().next().value!)
     }, [])
     const mounted = useRef(true)
+    const refreshRestoredRoutes = useCallback(async () => {
+        await router.invalidate({ sync: true })
+        // Router invalidation can resolve with failed matches after a transient
+        // restart response. Only a settled successful route confirms recovery.
+        const state = router.state
+        if (
+            state.status !== 'idle' ||
+            state.isLoading ||
+            (state.resolvedLocation && state.resolvedLocation.href !== state.location.href) ||
+            !state.matches.some((match) => match.routeId === '/_authenticated') ||
+            state.matches.some(
+                (match) => match.status !== 'success' || match.invalid || match.error,
+            )
+        )
+            throw new Error('Restored routes have not recovered')
+    }, [router])
     useEffect(() => {
         mounted.current = true
         return () => {
@@ -138,7 +154,7 @@ export default function useRestoreProgress(beforeHide?: () => void) {
                 try {
                     await queryClient.cancelQueries()
                     queryClient.clear()
-                    await router.invalidate({ sync: true })
+                    await refreshRestoredRoutes()
                     // Keep the blocker until refresh succeeds; a newer ordered snapshot owns the screen now.
                     if (
                         mounted.current &&
@@ -181,7 +197,7 @@ export default function useRestoreProgress(beforeHide?: () => void) {
                 await queryClient.cancelQueries()
                 queryClient.clear()
                 await Promise.all([
-                    router.invalidate({ sync: true }),
+                    refreshRestoredRoutes(),
                     new Promise<void>((resolve) =>
                         setTimeout(resolve, RESTORE_COMPLETION_VISIBLE_MS),
                     ),
@@ -205,7 +221,15 @@ export default function useRestoreProgress(beforeHide?: () => void) {
                 }
             }
         },
-        [beforeHide, queryClient, router, t, retireOperation, cancelRefreshRetry, runAction],
+        [
+            beforeHide,
+            queryClient,
+            refreshRestoredRoutes,
+            t,
+            retireOperation,
+            cancelRefreshRetry,
+            runAction,
+        ],
     )
     const status = useLiveQuery<unknown>({
         topic: 'backup-restore',

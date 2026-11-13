@@ -1,6 +1,8 @@
 import type { LiveTopic } from '@/lib/Live/Types/realtime.types.ts'
 export const REALTIME_WS_PATH = '/api/live'
 export const LIVE_SNAPSHOT_PATH = '/api/live-snapshot'
+export const LIVE_WEBSOCKET_PROTOCOL = 'rentnerproxy.live.v1'
+export const LIVE_SESSION_PROTOCOL_PREFIX = 'rentnerproxy.session.'
 
 export const LIVE_TOPICS = [
     'access-logs',

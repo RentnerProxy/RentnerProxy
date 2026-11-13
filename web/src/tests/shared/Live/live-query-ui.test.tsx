@@ -4,6 +4,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 
 import useLiveQuery from '@/shared/Live/Hooks/useLiveQuery.ts'
+import { LIVE_WEBSOCKET_PROTOCOL, LIVE_SESSION_PROTOCOL_PREFIX } from '@/config/realtime.config.ts'
 
 if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register()
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
@@ -15,7 +16,11 @@ class FakeSocket extends EventTarget {
     readyState = FakeSocket.OPEN
     sent: string[] = []
     closed = false
-    constructor(readonly url: URL) {
+    protocol = ''
+    constructor(
+        readonly url: URL,
+        readonly protocols: string[] = [],
+    ) {
         super()
         FakeSocket.instances.push(this)
     }
@@ -55,6 +60,20 @@ function Probe({ enabled = true, search = '' }: { enabled?: boolean; search?: st
         enabled,
         onData: (data) => {
             received.push(data)
+        },
+    })
+    return <span>{status}</span>
+}
+
+function ResumeProbe({ version }: { version: string }) {
+    const status = useLiveQuery({
+        topic: 'app-events',
+        query: {},
+        enabled: true,
+        onData: () => {},
+        getResumeSessionVersion: () => version,
+        onResume: (metadata) => {
+            received.push({ callbackVersion: version, metadata })
         },
     })
     return <span>{status}</span>
@@ -145,4 +164,27 @@ test('unmount cancels a pending reconnect', async () => {
     await act(async () => root.render(<span>left</span>))
     await new Promise((resolve) => setTimeout(resolve, 1100))
     expect(FakeSocket.instances).toHaveLength(1)
+})
+
+test('uses current proof and resume callbacks without restarting an unchanged subscription', async () => {
+    await act(async () => root.render(<ResumeProbe version={'a'.repeat(64)} />))
+    const first = FakeSocket.instances[0]!
+    await act(async () => first.open())
+    await act(async () => root.render(<ResumeProbe version={'b'.repeat(64)} />))
+    expect(FakeSocket.instances).toHaveLength(1)
+    await act(async () => first.close())
+    await act(async () => {
+        await Bun.sleep(1100)
+    })
+    const second = FakeSocket.instances[1]!
+    expect(second.protocols).toEqual([
+        LIVE_WEBSOCKET_PROTOCOL,
+        LIVE_SESSION_PROTOCOL_PREFIX + 'b'.repeat(64),
+    ])
+    await act(async () => root.render(<ResumeProbe version={'c'.repeat(64)} />))
+    second.protocol = LIVE_SESSION_PROTOCOL_PREFIX + 'b'.repeat(64)
+    await act(async () => second.open())
+    expect(received).toEqual([
+        { callbackVersion: 'c'.repeat(64), metadata: { sessionVersion: 'b'.repeat(64) } },
+    ])
 })

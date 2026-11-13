@@ -1,7 +1,7 @@
 // oxlint-disable no-await-in-loop -- Bounded waits observe serial React and router transitions.
 import { afterEach, beforeEach, expect, jest, mock, spyOn, test } from 'bun:test'
 import { GlobalRegistrator } from '@happy-dom/global-registrator'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
 import { toast } from '@rentnerkev/toasts'
 import { act, useState } from 'react'
 import type { ReactNode } from 'react'
@@ -22,6 +22,7 @@ import type { ManagedBackupMaintenance } from '@/lib/Backups/Types/backups.types
 import type { UserThemeMode } from '@/config/Types/theme-config.types.ts'
 import withTestLanguage, { catalogs } from '@/tests/Helpers/withTestLanguage.tsx'
 import { runBunScript } from '@/tests/Helpers/runBunScript.ts'
+import GlobalErrorPage from '@/shared/SystemStatePage/GlobalErrorPage.tsx'
 
 if (!GlobalRegistrator.isRegistered) GlobalRegistrator.register()
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
@@ -70,6 +71,9 @@ await mock.module('@/features/Auth/middleware.ts', () => ({
 const { default: AuthenticatedLayout } = await import('@/layouts/AuthenticatedLayout/index.tsx')
 let themeUpdatesAllowed = false
 let identityLoad: Promise<void> | undefined
+let identityRead: (() => Promise<{ user: AuthenticatedUser; sessionId: string }>) | undefined
+let routeRead: (() => Promise<string>) | undefined
+let routeLoad: (() => Promise<void>) | undefined
 
 class FakeSocket extends EventTarget {
     static instances: FakeSocket[] = []
@@ -136,8 +140,16 @@ const running: ManagedBackupMaintenance = {
 
 function DraftRoute() {
     const [count, setCount] = useState(0)
+    const result = useQuery({
+        queryKey: ['restored-route-data'],
+        queryFn: () => routeRead!(),
+        enabled: routeRead !== undefined,
+    })
     return (
         <div data-route-state>
+            {routeRead ? (
+                <output data-restored-route-data>{result.data ?? result.status}</output>
+            ) : null}
             <input aria-label="Unfinished draft" defaultValue="original" />
             <button onClick={() => setCount((value) => value + 1)}>Draft count {count}</button>
         </div>
@@ -149,11 +161,13 @@ function makeRouter() {
     const authenticated = createRoute({
         getParentRoute: () => rootRoute,
         id: '_authenticated',
-        beforeLoad: () =>
-            identityLoad
+        beforeLoad: () => {
+            if (identityRead) return identityRead()
+            return identityLoad
                 ? identityLoad.then(() => ({ user, sessionId: 'stable-session' }))
-                : { user, sessionId: 'stable-session' },
-        component: () => <AuthenticatedLayout user={user} />,
+                : { user, sessionId: 'stable-session' }
+        },
+        component: () => <AuthenticatedLayout user={authenticated.useRouteContext().user} />,
     })
     const route = createRoute({
         getParentRoute: () => authenticated,
@@ -163,9 +177,12 @@ function makeRouter() {
             page: Number(value.page ?? 1),
         }),
         component: DraftRoute,
+        loader: () => routeLoad?.(),
+        errorComponent: () => <div data-route-recovery-error />,
     })
     return createRouter({
         routeTree: rootRoute.addChildren([authenticated.addChildren([route])]),
+        defaultErrorComponent: GlobalErrorPage,
         history: createMemoryHistory({
             initialEntries: ['/proxy-hosts?filter=kept&page=3#details'],
         }),
@@ -221,6 +238,9 @@ beforeEach(() => {
     restorers.push(() => success.mockRestore())
     themeUpdatesAllowed = false
     identityLoad = undefined
+    identityRead = undefined
+    routeRead = undefined
+    routeLoad = undefined
     window.location.href = 'http://localhost/proxy-hosts?filter=kept&page=3#details'
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
     globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket
@@ -903,6 +923,172 @@ test('empty, invalid and disconnected snapshots retain the last confirmed stage 
     )
     expect(progress()?.value).toBe(42)
     expect(container.textContent).not.toContain('Restore and service recovery confirmed')
+    expect(container.textContent).toContain('Last confirmed restore progress: 42%')
+    const reconnecting = container.querySelector<HTMLProgressElement>(
+        'progress[aria-label="Reconnecting to the appliance"]',
+    )
+    expect(reconnecting).not.toBeNull()
+    expect(reconnecting!.hasAttribute('value')).toBe(false)
+})
+
+test('a mounted route reads restored data after service restart without a manual reload', async () => {
+    let persistedValue = 'before restore'
+    let reads = 0
+    routeRead = async () => {
+        reads += 1
+        return persistedValue
+    }
+    await mount()
+    const value = () => container.querySelector('[data-restored-route-data]')?.textContent
+    await waitFor(() => value() === 'before restore')
+    await deliver(running)
+    await waitFor(() => progress()?.value === 42)
+    await act(async () => FakeSocket.instances.at(-1)!.close())
+    await waitFor(() => FakeSocket.instances.length === 2)
+    await act(async () => FakeSocket.instances.at(-1)!.open())
+    persistedValue = 'restored data'
+    const readsBeforeRecovery = reads
+    await deliver({
+        ...running,
+        state: 'succeeded',
+        phase: 'complete',
+        progressPercent: 100,
+        finishedAt: running.startedAt! + 1_000,
+    })
+    await waitFor(() => !progress())
+    await waitFor(() => !container.querySelector('[data-route-state]')?.closest('[hidden]'))
+    await waitFor(() => value() === 'restored data')
+    expect(reads).toBeGreaterThan(readsBeforeRecovery)
+    expect(container.querySelector('h1')).toBeNull()
+})
+
+test('a resolved router reload with a restart error retains restore progress and retries until routes recover', async () => {
+    await mount()
+    let reloads = 0
+    routeLoad = async () => {
+        reloads += 1
+        if (reloads === 1) throw Object.assign(new Error('Restarting'), { status: 503 })
+    }
+    const success = spyOn(toast, 'success').mockReturnValue('recovered-routes')
+    restorers.push(() => success.mockRestore())
+    await deliver(running)
+    await waitFor(() => progress()?.value === 42)
+    await deliver({
+        ...running,
+        state: 'succeeded',
+        phase: 'complete',
+        progressPercent: 100,
+        finishedAt: running.startedAt! + 1_000,
+    })
+    await waitFor(() => reloads === 1 && router.state.status === 'idle')
+    expect(progress()?.value).toBe(100)
+    expect(success).not.toHaveBeenCalled()
+    await act(async () => Bun.sleep(RESTORE_COMPLETION_VISIBLE_MS + 100))
+    expect(progress()?.value).toBe(100)
+    expect(success).not.toHaveBeenCalled()
+    expect(reloads).toBe(1)
+    await waitFor(() => reloads >= 2)
+    await waitFor(() => !progress())
+    await waitFor(() => !container.querySelector('[data-route-state]')?.closest('[hidden]'))
+    expect(container.querySelector('[data-route-recovery-error]')).toBeNull()
+    expect(success).toHaveBeenCalledTimes(1)
+    expect(reloads).toBeLessThanOrEqual(3)
+})
+
+test('an authenticated beforeLoad restart failure recovers through the global error page after restore unmounts', async () => {
+    let persistedValue = 'before restore'
+    routeRead = async () => persistedValue
+    await mount()
+    const href = router.state.location.href
+    let validations = 0
+    identityRead = async () => {
+        validations += 1
+        if (validations === 1)
+            throw Object.assign(new Error('Restarting authentication'), { status: 503 })
+        return { user, sessionId: 'restored-session' }
+    }
+    await deliver(running)
+    await waitFor(() => progress()?.value === 42)
+    persistedValue = 'restored data'
+    await deliver({
+        ...running,
+        state: 'succeeded',
+        phase: 'complete',
+        progressPercent: 100,
+        finishedAt: running.startedAt! + 1_000,
+    })
+    await waitFor(() => container.textContent?.includes('503') === true)
+    expect(progress()).toBeNull()
+    expect(container.querySelector('[data-route-state]')).toBeNull()
+    await waitFor(() => !!container.querySelector('[data-route-state]'))
+    await waitFor(() => !container.querySelector('[data-route-state]')?.closest('[hidden]'))
+    await waitFor(
+        () =>
+            container.querySelector('[data-restored-route-data]')?.textContent === 'restored data',
+    )
+    expect(validations).toBe(2)
+    expect(router.state.location.href).toBe(href)
+    expect(
+        router.state.matches.find((match) => match.routeId === '/_authenticated')?.context
+            .sessionId,
+    ).toBe('restored-session')
+    expect(toast.success).not.toHaveBeenCalled()
+    expect(FakeSocket.instances.length).toBeGreaterThan(1)
+})
+
+test('restored session and language converge when localization changes during the resumed identity check', async () => {
+    await mount()
+    const pending = Promise.withResolvers<void>()
+    let validations = 0
+    identityRead = async () => {
+        validations += 1
+        if (validations > 1) await pending.promise
+        return {
+            user: {
+                ...user,
+                displayName: 'Restored viewer',
+                language: validations > 1 ? 'de' : 'en',
+            },
+            sessionId: 'restored-session',
+        }
+    }
+    await deliver(running)
+    await waitFor(() => progress()?.value === 42)
+    try {
+        await deliver({
+            ...running,
+            state: 'succeeded',
+            phase: 'complete',
+            progressPercent: 100,
+            finishedAt: running.startedAt! + 1_000,
+        })
+        await waitFor(() => validations === 2)
+        await act(async () => {
+            root!.render(
+                withTestLanguage(
+                    <QueryClientProvider client={client}>
+                        <RouterProvider router={router} />
+                    </QueryClientProvider>,
+                    'de',
+                ),
+            )
+            await Bun.sleep(10)
+        })
+        expect(container.querySelector('[data-route-state]')?.closest('[hidden]')).not.toBeNull()
+        await act(async () => pending.resolve())
+        await waitFor(() => !container.querySelector('[data-route-state]')?.closest('[hidden]'))
+        const context = router.state.matches.find(
+            (match) => match.routeId === '/_authenticated',
+        )?.context
+        expect(context?.sessionId).toBe('restored-session')
+        expect(context?.user.language).toBe('de')
+        expect(document.documentElement.lang).toBe('de')
+        expect(progress()).toBeNull()
+        expect(container.querySelector('h1')).toBeNull()
+        expect(validations).toBe(2)
+    } finally {
+        await act(async () => pending.resolve())
+    }
 })
 
 test('a new recovery operation remains visible after the appliance clock moves backwards', async () => {

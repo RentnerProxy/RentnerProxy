@@ -4,6 +4,7 @@ import { createLiveWebSocketRuntime } from '@/server/WebSockets/realtimeWebSocke
 import { publishApplicationChange } from '@/server/WebSockets/applicationChanges.ts'
 import { BACKGROUND_RESOURCE_ENVELOPE } from '@/config/background-resources.config.ts'
 import { LIVE_CHANGE_COALESCE_MS } from '@/config/realtime.config.ts'
+import { LIVE_WEBSOCKET_PROTOCOL, LIVE_SESSION_PROTOCOL_PREFIX } from '@/config/realtime.config.ts'
 import type { LiveSocketData as RuntimeSocketData } from '@/server/WebSockets/Types/bun.types.ts'
 
 type SnapshotReader = (request: Request) => Response | Promise<Response>
@@ -29,12 +30,20 @@ function startRuntime(readSnapshot: SnapshotReader) {
     return { runtime, server }
 }
 
-function openSocket(url: URL): WebSocket {
+function openSocket(
+    url: URL,
+    protocols?: string[],
+    origin = 'http://allowed.test',
+    cookie?: string,
+): WebSocket {
     const Constructor = globalThis.WebSocket as unknown as new (
         url: string,
-        options?: { headers?: Record<string, string> },
+        options?: { headers?: Record<string, string>; protocols?: string[] },
     ) => WebSocket
-    return new Constructor(url.toString(), { headers: { Origin: 'http://allowed.test' } })
+    return new Constructor(url.toString(), {
+        ...(protocols ? { protocols } : {}),
+        headers: { Origin: origin, ...(cookie ? { Cookie: cookie } : {}) },
+    })
 }
 
 function nextMessage(socket: WebSocket, timeoutMs = 1_000): Promise<unknown> {
@@ -68,6 +77,100 @@ function socketClosed(socket: WebSocket): Promise<CloseEvent> {
 }
 
 describe('live WebSocket transport', () => {
+    test.each(['matched', 'different', 'missing', 'maintenance', 'malformed'] as const)(
+        'negotiates an optional resume proof only from a fresh authenticated snapshot (%s)',
+        async (kind) => {
+            const expected = 'a'.repeat(64)
+            const snapshot = {
+                revision: 'current',
+                userVersion: 'user',
+                identityVersion: 'c'.repeat(64),
+                sessionVersion: kind === 'different' ? 'b'.repeat(64) : expected,
+            }
+            const payload =
+                kind === 'missing'
+                    ? { revision: 'current' }
+                    : kind === 'maintenance'
+                      ? { ...snapshot, maintenanceSuspended: true }
+                      : kind === 'malformed'
+                        ? { sessionVersion: expected }
+                        : snapshot
+            const observed = { cookie: null as string | null }
+            const { runtime, server } = startRuntime((request) => {
+                observed.cookie = request.headers.get('cookie')
+                return Response.json(payload)
+            })
+            const socket = openSocket(
+                new URL('/api/live', server.url),
+                [LIVE_WEBSOCKET_PROTOCOL, LIVE_SESSION_PROTOCOL_PREFIX + expected],
+                'http://allowed.test',
+                'test-session=fixture',
+            )
+            try {
+                await socketOpened(socket)
+                expect(socket.protocol).toBe(
+                    kind === 'matched'
+                        ? LIVE_SESSION_PROTOCOL_PREFIX + expected
+                        : LIVE_WEBSOCKET_PROTOCOL,
+                )
+                expect(observed.cookie).toBe('test-session=fixture')
+            } finally {
+                socket.close()
+                await runtime.shutdown()
+                await server.stop(true)
+            }
+        },
+    )
+
+    test('baseline-first clients safely fall back when an older server selects the first offered protocol', async () => {
+        const server = Bun.serve({
+            hostname: '127.0.0.1',
+            port: 0,
+            fetch: (request, instance) =>
+                instance.upgrade(request) ? undefined : new Response(null, { status: 400 }),
+            websocket: { message: () => {} },
+        })
+        const socket = new WebSocket(new URL('/api/live', server.url), [
+            LIVE_WEBSOCKET_PROTOCOL,
+            LIVE_SESSION_PROTOCOL_PREFIX + 'a'.repeat(64),
+        ])
+        try {
+            await socketOpened(socket)
+            expect(socket.protocol).toBe(LIVE_WEBSOCKET_PROTOCOL)
+        } finally {
+            socket.close()
+            await server.stop(true)
+        }
+    })
+
+    test.each(['unauthorized', 'cross-origin', 'proof-only'] as const)(
+        'an offered resume proof cannot bypass %s rejection',
+        async (kind) => {
+            let reads = 0
+            const { runtime, server } = startRuntime(() => {
+                reads++
+                return kind === 'unauthorized'
+                    ? new Response(null, { status: 401 })
+                    : Response.json({ revision: 'current' })
+            })
+            const proof = LIVE_SESSION_PROTOCOL_PREFIX + 'a'.repeat(64)
+            const socket = openSocket(
+                new URL('/api/live', server.url),
+                kind === 'proof-only' ? [proof] : [LIVE_WEBSOCKET_PROTOCOL, proof],
+                kind === 'cross-origin' ? 'http://evil.test' : 'http://allowed.test',
+            )
+            try {
+                await expect(socketOpened(socket)).rejects.toThrow('WebSocket failed to open')
+                expect(socket.protocol).toBe('')
+                expect(reads).toBe(kind === 'cross-origin' ? 0 : 1)
+                expect(runtime.connectionCount).toBe(0)
+            } finally {
+                socket.close()
+                await runtime.shutdown()
+                await server.stop(true)
+            }
+        },
+    )
     test('rejects cross-origin upgrades before reading a snapshot', async () => {
         let reads = 0
         const runtime = createLiveWebSocketRuntime({

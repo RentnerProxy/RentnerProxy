@@ -34,9 +34,12 @@ export default function RestoreProgress({
                             })}
                         </p>
                         <label htmlFor="restore-progress" className="font-extrabold">
-                            {t('admin.backups.restoreScreen.progress', {
-                                percent: maintenance.progressPercent,
-                            })}
+                            {t(
+                                disconnected
+                                    ? 'admin.backups.restoreScreen.lastConfirmedProgress'
+                                    : 'admin.backups.restoreScreen.progress',
+                                { percent: maintenance.progressPercent },
+                            )}
                         </label>
                         <progress
                             id="restore-progress"
@@ -58,9 +61,13 @@ export default function RestoreProgress({
                     <p>{t('admin.backups.restoreScreen.complete')}</p>
                 ) : null}
                 {disconnected ? (
-                    <p role="alert" className="text-warning-text">
-                        {t('admin.backups.restoreScreen.connectionLost')}
-                    </p>
+                    <output className="grid gap-2 text-warning-text">
+                        <span>{t('admin.backups.restoreScreen.connectionLost')}</span>
+                        <progress
+                            aria-label={t('admin.backups.restoreScreen.reconnecting')}
+                            className="h-2 w-full accent-accent"
+                        />
+                    </output>
                 ) : null}
                 {onDismiss ? (
                     <button

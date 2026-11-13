@@ -853,6 +853,8 @@
                 "title": "Appliance wird wiederhergestellt",
                 "description": "{{user}} stellt Backup {{backup}} wieder her. Das betrifft alle mit dieser Appliance verbundenen Benutzer.",
                 "progress": "Wiederherstellung: {{percent}} %",
+                "lastConfirmedProgress": "Zuletzt bestätigter Fortschritt: {{percent}} %",
+                "reconnecting": "Verbindung zur Appliance wird wiederhergestellt",
                 "complete": "Wiederherstellung und Wiederaufnahme der Dienste bestätigt. Du kehrst automatisch zur vorherigen Seite zurück.",
                 "failed": "Die Wiederherstellung ist fehlgeschlagen oder die Wiederaufnahme der Dienste konnte nicht bestätigt werden. Prüfe den Zustand der Appliance, bevor du fortfährst.",
                 "connectionLost": "Die Verbindung zur Appliance wurde unterbrochen. Wir warten auf einen bestätigten Wiederherstellungsstatus; der Abschluss ist noch nicht bestätigt.",
