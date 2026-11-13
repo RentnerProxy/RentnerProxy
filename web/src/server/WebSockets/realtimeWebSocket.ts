@@ -155,12 +155,20 @@ export function createLiveWebSocketRuntime(
                     options.readSnapshot,
                     (work) => actualWork.add(work),
                     (data) => {
-                        if (typeof data !== 'object' || data === null ||
-                            'maintenanceSuspended' in data || !('sessionVersion' in data) ||
-                            !('revision' in data) || typeof data.revision !== 'string' ||
-                            !('userVersion' in data) || typeof data.userVersion !== 'string' ||
-                            !('identityVersion' in data) || typeof data.identityVersion !== 'string' ||
-                            !/^[a-f0-9]{64}$/u.test(data.identityVersion)) return
+                        if (
+                            typeof data !== 'object' ||
+                            data === null ||
+                            'maintenanceSuspended' in data ||
+                            !('sessionVersion' in data) ||
+                            !('revision' in data) ||
+                            typeof data.revision !== 'string' ||
+                            !('userVersion' in data) ||
+                            typeof data.userVersion !== 'string' ||
+                            !('identityVersion' in data) ||
+                            typeof data.identityVersion !== 'string' ||
+                            !/^[a-f0-9]{64}$/u.test(data.identityVersion)
+                        )
+                            return
                         const version = data.sessionVersion
                         if (typeof version === 'string' && /^[a-f0-9]{64}$/u.test(version))
                             sessionVersion = version
@@ -177,10 +185,16 @@ export function createLiveWebSocketRuntime(
             if (shuttingDown) return { handled: true, response: statusResponse(503) }
             if (authStatus !== 200) return { handled: true, response: statusResponse(authStatus) }
             const offered = (request.headers.get('sec-websocket-protocol') ?? '')
-                .split(',').map((value) => value.trim()).filter(Boolean)
+                .split(',')
+                .map((value) => value.trim())
+                .filter(Boolean)
             const proof = sessionVersion ? LIVE_SESSION_PROTOCOL_PREFIX + sessionVersion : undefined
-            const protocol = proof && offered.includes(proof) ? proof :
-                offered.includes(LIVE_WEBSOCKET_PROTOCOL) ? LIVE_WEBSOCKET_PROTOCOL : undefined
+            const protocol =
+                proof && offered.includes(proof)
+                    ? proof
+                    : offered.includes(LIVE_WEBSOCKET_PROTOCOL)
+                      ? LIVE_WEBSOCKET_PROTOCOL
+                      : undefined
             // Bun otherwise echoes the first offered protocol automatically. Never
             // let an unverified proof be accepted through that default behavior.
             if (offered.length > 0 && !protocol)

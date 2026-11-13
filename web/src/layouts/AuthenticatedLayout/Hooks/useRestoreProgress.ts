@@ -51,7 +51,9 @@ export default function useRestoreProgress(beforeHide?: () => void) {
             state.isLoading ||
             (state.resolvedLocation && state.resolvedLocation.href !== state.location.href) ||
             !state.matches.some((match) => match.routeId === '/_authenticated') ||
-            state.matches.some((match) => match.status !== 'success' || match.invalid || match.error)
+            state.matches.some(
+                (match) => match.status !== 'success' || match.invalid || match.error,
+            )
         )
             throw new Error('Restored routes have not recovered')
     }, [router])
@@ -219,7 +221,15 @@ export default function useRestoreProgress(beforeHide?: () => void) {
                 }
             }
         },
-        [beforeHide, queryClient, refreshRestoredRoutes, t, retireOperation, cancelRefreshRetry, runAction],
+        [
+            beforeHide,
+            queryClient,
+            refreshRestoredRoutes,
+            t,
+            retireOperation,
+            cancelRefreshRetry,
+            runAction,
+        ],
     )
     const status = useLiveQuery<unknown>({
         topic: 'backup-restore',

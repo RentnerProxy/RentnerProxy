@@ -241,7 +241,9 @@ export async function validateStateArchiveFile(
             // oxlint-disable-next-line no-await-in-loop -- Each header determines the next offset.
             buffered = await readFileRange(file, offset, Math.min(65_536, info.size - offset))
         }
-        next = index.next(buffered.subarray(offset - bufferedOffset, offset - bufferedOffset + size))
+        next = index.next(
+            buffered.subarray(offset - bufferedOffset, offset - bufferedOffset + size),
+        )
         progress?.()
     }
     return next.value

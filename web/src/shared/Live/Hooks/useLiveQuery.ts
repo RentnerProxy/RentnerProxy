@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 
 import { subscribeToRealtimeEvents } from '@/lib/Live/realtimeEventsClient.ts'
-import type { LiveStatus, RealtimeResumeMetadata } from '@/lib/Live/Types/realtime-events-client.types.ts'
+import type {
+    LiveStatus,
+    RealtimeResumeMetadata,
+} from '@/lib/Live/Types/realtime-events-client.types.ts'
 import type { LiveTopic } from '@/lib/Live/Types/events.types.ts'
 
 export default function useLiveQuery<T>({

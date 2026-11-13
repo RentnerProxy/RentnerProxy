@@ -46,11 +46,15 @@ function notifyStatus(status: LiveStatus): void {
     for (const listener of listeners.values()) notifyListenerStatus(listener, status)
 }
 
-function notifyLifecycleListeners(event: 'onResume' | 'onUnauthorized', metadata?: RealtimeResumeMetadata): void {
+function notifyLifecycleListeners(
+    event: 'onResume' | 'onUnauthorized',
+    metadata?: RealtimeResumeMetadata,
+): void {
     for (const listener of listeners.values()) {
         if (!listener[event]) continue
         runDetachedTask(
-            () => event === 'onResume' ? listener.onResume?.(metadata) : listener.onUnauthorized?.(),
+            () =>
+                event === 'onResume' ? listener.onResume?.(metadata) : listener.onUnauthorized?.(),
             () => console.warn('[realtime] Lifecycle listener failed'),
         )
     }
@@ -68,7 +72,10 @@ function resumeSessionVersion(): string | undefined {
                 return undefined
             }
             if (version === undefined) continue
-            if (!/^[a-f0-9]{64}$/u.test(version) || (expected !== undefined && expected !== version))
+            if (
+                !/^[a-f0-9]{64}$/u.test(version) ||
+                (expected !== undefined && expected !== version)
+            )
                 return undefined
             expected = version
         }
@@ -162,7 +169,8 @@ function connect(): void {
     try {
         const expectedSessionVersion = resumeSessionVersion()
         const protocols = [LIVE_WEBSOCKET_PROTOCOL]
-        if (expectedSessionVersion) protocols.push(LIVE_SESSION_PROTOCOL_PREFIX + expectedSessionVersion)
+        if (expectedSessionVersion)
+            protocols.push(LIVE_SESSION_PROTOCOL_PREFIX + expectedSessionVersion)
         const current = new WebSocket(getRealtimeUrl(), protocols)
         websocket = current
         current.addEventListener('open', () => {
@@ -173,9 +181,13 @@ function connect(): void {
             notifyStatus('connected')
             sendAllSubscriptions()
             if (resuming) {
-                const confirmed = expectedSessionVersion !== undefined &&
+                const confirmed =
+                    expectedSessionVersion !== undefined &&
                     current.protocol === LIVE_SESSION_PROTOCOL_PREFIX + expectedSessionVersion
-                notifyLifecycleListeners('onResume', confirmed ? { sessionVersion: expectedSessionVersion } : undefined)
+                notifyLifecycleListeners(
+                    'onResume',
+                    confirmed ? { sessionVersion: expectedSessionVersion } : undefined,
+                )
             }
         })
         current.addEventListener('message', (event) => {

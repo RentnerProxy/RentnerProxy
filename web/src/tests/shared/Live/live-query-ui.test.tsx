@@ -17,7 +17,10 @@ class FakeSocket extends EventTarget {
     sent: string[] = []
     closed = false
     protocol = ''
-    constructor(readonly url: URL, readonly protocols: string[] = []) {
+    constructor(
+        readonly url: URL,
+        readonly protocols: string[] = [],
+    ) {
         super()
         FakeSocket.instances.push(this)
     }
@@ -64,10 +67,14 @@ function Probe({ enabled = true, search = '' }: { enabled?: boolean; search?: st
 
 function ResumeProbe({ version }: { version: string }) {
     const status = useLiveQuery({
-        topic: 'app-events', query: {}, enabled: true,
+        topic: 'app-events',
+        query: {},
+        enabled: true,
         onData: () => {},
         getResumeSessionVersion: () => version,
-        onResume: (metadata) => { received.push({ callbackVersion: version, metadata }) },
+        onResume: (metadata) => {
+            received.push({ callbackVersion: version, metadata })
+        },
     })
     return <span>{status}</span>
 }
@@ -166,11 +173,18 @@ test('uses current proof and resume callbacks without restarting an unchanged su
     await act(async () => root.render(<ResumeProbe version={'b'.repeat(64)} />))
     expect(FakeSocket.instances).toHaveLength(1)
     await act(async () => first.close())
-    await act(async () => { await Bun.sleep(1100) })
+    await act(async () => {
+        await Bun.sleep(1100)
+    })
     const second = FakeSocket.instances[1]!
-    expect(second.protocols).toEqual([LIVE_WEBSOCKET_PROTOCOL, LIVE_SESSION_PROTOCOL_PREFIX + 'b'.repeat(64)])
+    expect(second.protocols).toEqual([
+        LIVE_WEBSOCKET_PROTOCOL,
+        LIVE_SESSION_PROTOCOL_PREFIX + 'b'.repeat(64),
+    ])
     await act(async () => root.render(<ResumeProbe version={'c'.repeat(64)} />))
     second.protocol = LIVE_SESSION_PROTOCOL_PREFIX + 'b'.repeat(64)
     await act(async () => second.open())
-    expect(received).toEqual([{ callbackVersion: 'c'.repeat(64), metadata: { sessionVersion: 'b'.repeat(64) } }])
+    expect(received).toEqual([
+        { callbackVersion: 'c'.repeat(64), metadata: { sessionVersion: 'b'.repeat(64) } },
+    ])
 })

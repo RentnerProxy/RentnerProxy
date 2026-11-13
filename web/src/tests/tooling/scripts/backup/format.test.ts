@@ -620,21 +620,30 @@ it('bounds archive read-ahead across headers, trailers, cancellation and truncat
             for (const call of reads.mock.calls) assert.ok(Number(call.at(2)) <= 65_536)
             const stop = new AbortController()
             let progress = 0
-            await assert.rejects(validateStateArchiveFile(file, 'controller', stop.signal, () => {
-                progress++
-                if (progress === 2) stop.abort(new Error('cancel cached headers'))
-            }), /cancel cached headers/)
+            await assert.rejects(
+                validateStateArchiveFile(file, 'controller', stop.signal, () => {
+                    progress++
+                    if (progress === 2) stop.abort(new Error('cancel cached headers'))
+                }),
+                /cancel cached headers/,
+            )
             assert.equal(progress, 2)
             await file.write(Buffer.from([255]), 0, 1, 65_536)
-            await assert.rejects(validateStateArchiveFile(file, 'controller'), /invalid state archive checksum/)
+            await assert.rejects(
+                validateStateArchiveFile(file, 'controller'),
+                /invalid state archive checksum/,
+            )
             await file.write(bytes, 0, bytes.length, 0)
             let truncated = false
-            await assert.rejects(validateStateArchiveFile(file, 'controller', undefined, () => {
-                if (!truncated) {
-                    truncated = true
-                    ftruncateSync(file.fd, 1024)
-                }
-            }), /truncated backup file/)
+            await assert.rejects(
+                validateStateArchiveFile(file, 'controller', undefined, () => {
+                    if (!truncated) {
+                        truncated = true
+                        ftruncateSync(file.fd, 1024)
+                    }
+                }),
+                /truncated backup file/,
+            )
         } finally {
             reads.mockRestore()
             await file.close()

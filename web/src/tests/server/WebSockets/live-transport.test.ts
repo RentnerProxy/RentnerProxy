@@ -30,7 +30,12 @@ function startRuntime(readSnapshot: SnapshotReader) {
     return { runtime, server }
 }
 
-function openSocket(url: URL, protocols?: string[], origin = 'http://allowed.test', cookie?: string): WebSocket {
+function openSocket(
+    url: URL,
+    protocols?: string[],
+    origin = 'http://allowed.test',
+    cookie?: string,
+): WebSocket {
     const Constructor = globalThis.WebSocket as unknown as new (
         url: string,
         options?: { headers?: Record<string, string>; protocols?: string[] },
@@ -77,23 +82,37 @@ describe('live WebSocket transport', () => {
         async (kind) => {
             const expected = 'a'.repeat(64)
             const snapshot = {
-                revision: 'current', userVersion: 'user', identityVersion: 'c'.repeat(64),
+                revision: 'current',
+                userVersion: 'user',
+                identityVersion: 'c'.repeat(64),
                 sessionVersion: kind === 'different' ? 'b'.repeat(64) : expected,
             }
-            const payload = kind === 'missing' ? { revision: 'current' } :
-                kind === 'maintenance' ? { ...snapshot, maintenanceSuspended: true } :
-                kind === 'malformed' ? { sessionVersion: expected } : snapshot
+            const payload =
+                kind === 'missing'
+                    ? { revision: 'current' }
+                    : kind === 'maintenance'
+                      ? { ...snapshot, maintenanceSuspended: true }
+                      : kind === 'malformed'
+                        ? { sessionVersion: expected }
+                        : snapshot
             const observed = { cookie: null as string | null }
             const { runtime, server } = startRuntime((request) => {
                 observed.cookie = request.headers.get('cookie')
                 return Response.json(payload)
             })
-            const socket = openSocket(new URL('/api/live', server.url),
+            const socket = openSocket(
+                new URL('/api/live', server.url),
                 [LIVE_WEBSOCKET_PROTOCOL, LIVE_SESSION_PROTOCOL_PREFIX + expected],
-                'http://allowed.test', 'test-session=fixture')
+                'http://allowed.test',
+                'test-session=fixture',
+            )
             try {
                 await socketOpened(socket)
-                expect(socket.protocol).toBe(kind === 'matched' ? LIVE_SESSION_PROTOCOL_PREFIX + expected : LIVE_WEBSOCKET_PROTOCOL)
+                expect(socket.protocol).toBe(
+                    kind === 'matched'
+                        ? LIVE_SESSION_PROTOCOL_PREFIX + expected
+                        : LIVE_WEBSOCKET_PROTOCOL,
+                )
                 expect(observed.cookie).toBe('test-session=fixture')
             } finally {
                 socket.close()
@@ -105,11 +124,16 @@ describe('live WebSocket transport', () => {
 
     test('baseline-first clients safely fall back when an older server selects the first offered protocol', async () => {
         const server = Bun.serve({
-            hostname: '127.0.0.1', port: 0,
-            fetch: (request, instance) => instance.upgrade(request) ? undefined : new Response(null, { status: 400 }),
+            hostname: '127.0.0.1',
+            port: 0,
+            fetch: (request, instance) =>
+                instance.upgrade(request) ? undefined : new Response(null, { status: 400 }),
             websocket: { message: () => {} },
         })
-        const socket = new WebSocket(new URL('/api/live', server.url), [LIVE_WEBSOCKET_PROTOCOL, LIVE_SESSION_PROTOCOL_PREFIX + 'a'.repeat(64)])
+        const socket = new WebSocket(new URL('/api/live', server.url), [
+            LIVE_WEBSOCKET_PROTOCOL,
+            LIVE_SESSION_PROTOCOL_PREFIX + 'a'.repeat(64),
+        ])
         try {
             await socketOpened(socket)
             expect(socket.protocol).toBe(LIVE_WEBSOCKET_PROTOCOL)
@@ -125,13 +149,16 @@ describe('live WebSocket transport', () => {
             let reads = 0
             const { runtime, server } = startRuntime(() => {
                 reads++
-                return kind === 'unauthorized' ? new Response(null, { status: 401 }) :
-                    Response.json({ revision: 'current' })
+                return kind === 'unauthorized'
+                    ? new Response(null, { status: 401 })
+                    : Response.json({ revision: 'current' })
             })
             const proof = LIVE_SESSION_PROTOCOL_PREFIX + 'a'.repeat(64)
-            const socket = openSocket(new URL('/api/live', server.url),
+            const socket = openSocket(
+                new URL('/api/live', server.url),
                 kind === 'proof-only' ? [proof] : [LIVE_WEBSOCKET_PROTOCOL, proof],
-                kind === 'cross-origin' ? 'http://evil.test' : 'http://allowed.test')
+                kind === 'cross-origin' ? 'http://evil.test' : 'http://allowed.test',
+            )
             try {
                 await expect(socketOpened(socket)).rejects.toThrow('WebSocket failed to open')
                 expect(socket.protocol).toBe('')

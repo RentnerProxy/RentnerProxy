@@ -147,7 +147,9 @@ function DraftRoute() {
     })
     return (
         <div data-route-state>
-            {routeRead ? <output data-restored-route-data>{result.data ?? result.status}</output> : null}
+            {routeRead ? (
+                <output data-restored-route-data>{result.data ?? result.status}</output>
+            ) : null}
             <input aria-label="Unfinished draft" defaultValue="original" />
             <button onClick={() => setCount((value) => value + 1)}>Draft count {count}</button>
         </div>
@@ -1021,12 +1023,14 @@ test('an authenticated beforeLoad restart failure recovers through the global er
     await waitFor(() => !!container.querySelector('[data-route-state]'))
     await waitFor(() => !container.querySelector('[data-route-state]')?.closest('[hidden]'))
     await waitFor(
-        () => container.querySelector('[data-restored-route-data]')?.textContent === 'restored data',
+        () =>
+            container.querySelector('[data-restored-route-data]')?.textContent === 'restored data',
     )
     expect(validations).toBe(2)
     expect(router.state.location.href).toBe(href)
     expect(
-        router.state.matches.find((match) => match.routeId === '/_authenticated')?.context.sessionId,
+        router.state.matches.find((match) => match.routeId === '/_authenticated')?.context
+            .sessionId,
     ).toBe('restored-session')
     expect(toast.success).not.toHaveBeenCalled()
     expect(FakeSocket.instances.length).toBeGreaterThan(1)

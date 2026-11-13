@@ -38,7 +38,10 @@ class FakeSocket extends EventTarget {
     protocol = ''
     sent: string[] = []
 
-    constructor(readonly url: URL, readonly protocols?: string[]) {
+    constructor(
+        readonly url: URL,
+        readonly protocols?: string[],
+    ) {
         super()
         FakeSocket.instances.push(this)
     }
@@ -829,22 +832,28 @@ test.each(['missing', 'different', 'changed-context', 'unconfirmed-route'] as co
         const sessionVersion = await identityScopeVersion(
             JSON.stringify([principalVersion(user), confirmedContext.sessionId]),
         )
-        await act(async () => FakeSocket.instances.at(-1)!.deliver({
-            revision: 'before',
-            userVersion: 'same-user',
-            identityVersion: 'a'.repeat(64),
-            sessionVersion,
-        }))
+        await act(async () =>
+            FakeSocket.instances.at(-1)!.deliver({
+                revision: 'before',
+                userVersion: 'same-user',
+                identityVersion: 'a'.repeat(64),
+                sessionVersion,
+            }),
+        )
         await flush()
-        await act(async () => container.querySelector<HTMLButtonElement>('[data-stage-mfa]')!.click())
+        await act(async () =>
+            container.querySelector<HTMLButtonElement>('[data-stage-mfa]')!.click(),
+        )
         await act(async () => {
             FakeSocket.instances.at(-1)!.close()
             await Bun.sleep(1_050)
         })
         const socket = FakeSocket.instances.at(-1)!
-        socket.protocol = kind === 'missing'
-            ? LIVE_WEBSOCKET_PROTOCOL
-            : LIVE_SESSION_PROTOCOL_PREFIX + (kind === 'different' ? 'b'.repeat(64) : sessionVersion)
+        socket.protocol =
+            kind === 'missing'
+                ? LIVE_WEBSOCKET_PROTOCOL
+                : LIVE_SESSION_PROTOCOL_PREFIX +
+                  (kind === 'different' ? 'b'.repeat(64) : sessionVersion)
         if (kind === 'changed-context') confirmedContext = { user, sessionId: 'new-session' }
         if (kind === 'unconfirmed-route') authMatchInvalid = true
         await act(async () => socket.open())
