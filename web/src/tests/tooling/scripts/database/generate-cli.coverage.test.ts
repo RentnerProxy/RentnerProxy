@@ -9,10 +9,13 @@ const prefix = join(tmpdir(), 'rentnerproxy-migration-cli-')
 const directories: string[] = []
 
 afterEach(async () => {
-    await Promise.all(directories.splice(0).map(async (directory) => {
-        if (!resolve(directory).startsWith(resolve(prefix))) throw new Error('Unsafe migration CLI fixture cleanup')
-        await rm(directory, { recursive: true, force: true })
-    }))
+    await Promise.all(
+        directories.splice(0).map(async (directory) => {
+            if (!resolve(directory).startsWith(resolve(prefix)))
+                throw new Error('Unsafe migration CLI fixture cleanup')
+            await rm(directory, { recursive: true, force: true })
+        }),
+    )
 })
 
 const kitFixture = `
@@ -54,25 +57,41 @@ async function fixture() {
     ])
     await Promise.all([
         ...['generate.ts', 'custom-migrations.ts'].map(async (filename) => {
-            await writeFile(join(directory, 'scripts/database', filename),
-                await coverageFixtureSource('scripts/database/' + filename))
+            await writeFile(
+                join(directory, 'scripts/database', filename),
+                await coverageFixtureSource('scripts/database/' + filename),
+            )
         }),
         writeFile(join(directory, 'node_modules/drizzle-kit/bin.cjs'), kitFixture),
         writeFile(join(directory, 'web/src/db/CustomMigrations/audit_v1.sql'), 'select 17;\n'),
     ])
     const run = async (args: readonly string[], fail = false) => {
-        const child = Bun.spawn([process.execPath, '--no-env-file', join(directory, 'scripts/database/generate.ts'), ...args], {
-            cwd: tmpdir(),
-            env: { ...process.env, FIXTURE_KIT_FAIL: fail ? '1' : '0' },
-            stdout: 'pipe', stderr: 'pipe',
-        })
+        const child = Bun.spawn(
+            [
+                process.execPath,
+                '--no-env-file',
+                join(directory, 'scripts/database/generate.ts'),
+                ...args,
+            ],
+            {
+                cwd: tmpdir(),
+                env: { ...process.env, FIXTURE_KIT_FAIL: fail ? '1' : '0' },
+                stdout: 'pipe',
+                stderr: 'pipe',
+            },
+        )
         const [status, stdout, stderr] = await Promise.all([
-            child.exited, new Response(child.stdout).text(), new Response(child.stderr).text(),
+            child.exited,
+            new Response(child.stdout).text(),
+            new Response(child.stderr).text(),
         ])
         return { status, output: stdout + stderr }
     }
-    const calls = async () => (await readFile(join(directory, 'calls.jsonl'), 'utf8')).trim().split('\n')
-        .map((line) => JSON.parse(line) as { args: string[]; cwd: string })
+    const calls = async () =>
+        (await readFile(join(directory, 'calls.jsonl'), 'utf8'))
+            .trim()
+            .split('\n')
+            .map((line) => JSON.parse(line) as { args: string[]; cwd: string })
     return { directory, cwd: await realpath(directory), run, calls }
 }
 
@@ -84,7 +103,10 @@ describe('owned migration generation CLI', () => {
         expect(first.status, first.output).toBe(0)
         expect(await context.calls()).toEqual([
             { args: ['generate', '--config=drizzle.config.ts', ...args], cwd: context.cwd },
-            { args: ['generate', '--config=drizzle.config.ts', '--custom', '--name=audit_v1'], cwd: context.cwd },
+            {
+                args: ['generate', '--config=drizzle.config.ts', '--custom', '--name=audit_v1'],
+                cwd: context.cwd,
+            },
         ])
         const sqlPath = join(context.directory, 'web/drizzle/0001_audit_v1.sql')
         const journalPath = join(context.directory, 'web/drizzle/meta/_journal.json')
@@ -92,9 +114,12 @@ describe('owned migration generation CLI', () => {
         const journal = await readFile(journalPath, 'utf8')
         expect(sql).toContain('-- Generated from CustomMigrations/audit_v1.sql; sha256:')
         expect(sql).toEndWith('select 17;\n')
-        expect(JSON.parse(journal)).toEqual({ entries: [
-            { idx: 0, tag: '0000_base_schema' }, { idx: 1, tag: '0001_audit_v1' },
-        ] })
+        expect(JSON.parse(journal)).toEqual({
+            entries: [
+                { idx: 0, tag: '0000_base_schema' },
+                { idx: 1, tag: '0001_audit_v1' },
+            ],
+        })
         const second = await context.run(args)
         expect(second.status, second.output).toBe(0)
         expect(await context.calls()).toHaveLength(3)
@@ -109,9 +134,14 @@ describe('owned migration generation CLI', () => {
         expect(result.output).toContain('synthetic Kit failure')
         expect(result.output).toContain('Drizzle migration generation failed')
         expect(await context.calls()).toEqual([
-            { args: ['generate', '--config=drizzle.config.ts', '--name=failed_schema'], cwd: context.cwd },
+            {
+                args: ['generate', '--config=drizzle.config.ts', '--name=failed_schema'],
+                cwd: context.cwd,
+            },
         ])
-        await expect(readFile(join(context.directory, 'web/drizzle/meta/_journal.json'), 'utf8')).rejects.toThrow()
+        await expect(
+            readFile(join(context.directory, 'web/drizzle/meta/_journal.json'), 'utf8'),
+        ).rejects.toThrow()
     }, 15_000)
 
     test('rejects incomplete history before starting Kit or changing existing SQL', async () => {
