@@ -3,6 +3,14 @@ use crate::{
     proxy::revision_for_configuration,
 };
 
+pub(crate) struct TestDirectory(pub(crate) std::path::PathBuf);
+
+impl Drop for TestDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 pub(crate) async fn reserve_dns_socket_pair(
     mut candidate: std::net::SocketAddr,
 ) -> std::io::Result<(tokio::net::TcpListener, tokio::net::UdpSocket)> {

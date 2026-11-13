@@ -361,11 +361,13 @@ async fn unknown_candidate_version_is_rejected_without_dropping_the_sidecar() {
 }
 
 #[tokio::test]
-async fn tampered_candidate_material_is_rejected_and_remains_guarded() {
+async fn tampered_candidate_material_is_rejected_and_retired_without_changing_active_material() {
     for (offset, tamper_fingerprint) in [(0, false), (1, true)] {
         let state_dir = test_state_dir();
         let id = format!("0198d98a-0000-7000-8000-0000000000{offset:02x}");
-        let (store, _, _) = active_acme_store(state_dir.clone(), &id).await;
+        let (store, active_fingerprint, active_version) =
+            active_acme_store(state_dir.clone(), &id).await;
+        let active_bytes = std::fs::read(active_version.join("fullchain.pem")).unwrap();
         let candidate_version = stage_acme_candidate(&store, &state_dir, &id).await;
         drop(store);
 
@@ -394,7 +396,7 @@ async fn tampered_candidate_material_is_rejected_and_remains_guarded() {
             .await
             .expect("candidate metadata should parse");
         let expected_error = if tamper_fingerprint {
-            CertificateError::StoreUnavailable
+            CertificateError::InvalidCertificate
         } else {
             CertificateError::KeyMismatch
         };
@@ -402,7 +404,19 @@ async fn tampered_candidate_material_is_rejected_and_remains_guarded() {
             reopened.begin_candidate_activation(&id, false).await,
             Err(error) if error == expected_error
         ));
-        assert_eq!(reopened.pending_candidate_ids().await.unwrap(), vec![id]);
+        assert!(reopened.pending_candidate_ids().await.unwrap().is_empty());
+        assert_eq!(
+            reopened.get(&id).await.unwrap().fingerprint.as_deref(),
+            Some(active_fingerprint.as_str())
+        );
+        assert_eq!(
+            std::fs::read(active_version.join("fullchain.pem")).unwrap(),
+            active_bytes
+        );
+        assert!(reopened.begin_renewal(&id).await.is_ok());
+        reopened
+            .finish_failed(&id, CertificateError::AcmeFailed)
+            .await;
     }
 }
 
