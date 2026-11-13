@@ -5,6 +5,7 @@ export type MaintenanceProcessOptions = Readonly<{
     env?: NodeJS.ProcessEnv
     signal?: AbortSignal | undefined
     maximumOutputBytes?: number
+    checkCapacity?: () => Promise<void>
     outputFile?: { file: FileHandle; maximumBytes: number }
 }>
 

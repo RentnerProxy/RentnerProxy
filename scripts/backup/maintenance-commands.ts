@@ -1,5 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { open, rm, type FileHandle } from 'node:fs/promises'
+import { dirname } from 'node:path'
+import { BACKUP_RUNTIME_POLICY } from '../../web/src/config/backup-runtime.config.ts'
+import { backupCapacityGuard } from './capacity.ts'
 import { runMaintenanceProcess } from './maintenance-process.ts'
 import type { MaintenanceCommandOptions } from './Types/maintenance-commands.types.ts'
 
@@ -84,6 +87,7 @@ export function createMaintenanceCommands(options: MaintenanceCommandOptions) {
         timeoutMs: number,
         input?: Uint8Array,
         outputFile?: { file: FileHandle; maximumBytes: number },
+        checkCapacity?: () => Promise<void>,
     ) {
         if (!restartSafe)
             throw new Error(
@@ -103,6 +107,7 @@ export function createMaintenanceCommands(options: MaintenanceCommandOptions) {
                 timeoutMs,
                 ...(input === undefined ? {} : { input }),
                 ...(outputFile ? { outputFile } : {}),
+                ...(checkCapacity ? { checkCapacity } : {}),
             })
         } catch {
             // Spawn/transport failures use the same sanitized operation contract.
@@ -167,15 +172,15 @@ export function createMaintenanceCommands(options: MaintenanceCommandOptions) {
         async bytes(args: readonly string[], operation: string, timeoutMs = 300_000) {
             return (await run(args, operation, timeoutMs)).stdout
         },
-        async file(args: readonly string[], path: string, operation: string, timeoutMs = 300_000) {
+        async file(args: readonly string[], path: string, operation: string, timeoutMs = BACKUP_RUNTIME_POLICY.captureTimeoutMs) {
             const file = await open(path, 'wx', 0o600)
             let success = false
             try {
                 await file.chmod(0o600)
                 const result = await run(args, operation, timeoutMs, undefined, {
                     file,
-                    maximumBytes: 8 * 1024 ** 3,
-                })
+                    maximumBytes: BACKUP_RUNTIME_POLICY.maximumArtifactBytes,
+                }, backupCapacityGuard([dirname(path)]))
                 if (!result.artifact) throw new Error('missing backup artifact result')
                 await file.sync()
                 success = true

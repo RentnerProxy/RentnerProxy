@@ -3,6 +3,7 @@ import { createDecipheriv, createHash } from 'node:crypto'
 import { constants } from 'node:fs'
 import { chmod, open, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { assertBackupCapacity, backupCapacityGuard } from './capacity.ts'
 import {
     parseBackupMetadata,
     validateControllerEncryptionFile,
@@ -29,7 +30,8 @@ async function readBackupFile(path: string, maximumBytes: number): Promise<Buffe
     }
 }
 
-export async function snapshotProductionRestore(inputPath: string, snapshot: string) {
+export async function snapshotProductionRestore(inputPath: string, snapshot: string, signal?: AbortSignal) {
+    signal?.throwIfAborted()
     const metadataBytes = await readBackupFile(join(inputPath, 'metadata.json'), 65_536)
     let metadataValue: unknown
     try {
@@ -38,6 +40,9 @@ export async function snapshotProductionRestore(inputPath: string, snapshot: str
         throw new Error('invalid backup metadata')
     }
     const metadata = parseBackupMetadata(metadataValue)
+    await assertBackupCapacity([
+        { path: snapshot, bytes: metadata.postgres.bytes + metadata.applicationEncryptionKey.bytes + metadata.controllerState.bytes + metadata.crowdSecState.bytes + 65_536 },
+    ])
     const backupId = createHash('sha256').update(metadataBytes).digest('hex')
     await writeFile(join(snapshot, 'metadata.json'), metadataBytes, { mode: 0o600, flag: 'wx' })
     await chmod(join(snapshot, 'metadata.json'), 0o600)
@@ -52,18 +57,20 @@ export async function snapshotProductionRestore(inputPath: string, snapshot: str
             join(inputPath, artifact.name),
             join(snapshot, artifact.name),
             artifact.metadata,
+            signal,
+            backupCapacityGuard([snapshot]),
         )
     }
     const keyFile = await open(join(snapshot, 'app-encryption-key'), 'r')
     let appKey: Buffer
     try {
-        appKey = await parseApplicationEncryptionKeyFile(keyFile)
+        appKey = await parseApplicationEncryptionKeyFile(keyFile, signal)
     } finally {
         await keyFile.close()
     }
     const controllerFile = await open(join(snapshot, stateArchiveName), 'r')
     try {
-        const controllerEntries = await validateStateArchiveFile(controllerFile, 'controller')
+        const controllerEntries = await validateStateArchiveFile(controllerFile, 'controller', signal)
         await validateControllerEncryptionFile(
             controllerFile,
             controllerEntries,
@@ -86,7 +93,7 @@ export async function snapshotProductionRestore(inputPath: string, snapshot: str
     }
     const crowdSecFile = await open(join(snapshot, 'crowdsec-state.tar'), 'r')
     try {
-        await validateStateArchiveFile(crowdSecFile, 'crowdsec')
+        await validateStateArchiveFile(crowdSecFile, 'crowdsec', signal)
     } finally {
         await crowdSecFile.close()
     }

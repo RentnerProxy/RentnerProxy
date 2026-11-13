@@ -5,6 +5,7 @@ import type {
 } from './Types/maintenance-process.types.ts'
 import { createHash } from 'node:crypto'
 import { writeFileChunk } from './artifact-file.ts'
+import { BACKUP_RUNTIME_POLICY } from '../../web/src/config/backup-runtime.config.ts'
 
 export async function runMaintenanceProcess(
     args: readonly string[],
@@ -14,6 +15,26 @@ export async function runMaintenanceProcess(
     if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0)
         throw new Error('Maintenance process timeout must be positive and finite')
     const deadline = performance.now() + options.timeoutMs
+    if (options.checkCapacity) {
+        let admissionTimer: ReturnType<typeof setTimeout> | undefined
+        let admissionAbort: (() => void) | undefined
+        try {
+            await Promise.race([
+                options.checkCapacity(),
+                new Promise<never>((_, reject) => {
+                    admissionTimer = setTimeout(() => reject(new Error('maintenance deadline exceeded')), options.timeoutMs)
+                    admissionAbort = () => reject(new Error('maintenance cancelled'))
+                    options.signal?.addEventListener('abort', admissionAbort, { once: true })
+                    if (options.signal?.aborted) admissionAbort()
+                }),
+            ])
+        } finally {
+            clearTimeout(admissionTimer)
+            if (admissionAbort) options.signal?.removeEventListener('abort', admissionAbort)
+        }
+    }
+    options.signal?.throwIfAborted()
+    if (performance.now() > deadline) throw new Error('maintenance deadline exceeded')
     const child = Bun.spawn({
         cmd: [...args],
         cwd: options.cwd,
@@ -29,6 +50,7 @@ export async function runMaintenanceProcess(
     const chunks: Uint8Array[] = []
     const hash = createHash('sha256')
     let written = 0
+    let capacityCheckedAt = 0
     let buffered = 0
     let diagnostic = Buffer.alloc(0)
     let timedOut = false
@@ -48,6 +70,10 @@ export async function runMaintenanceProcess(
                 if (written + next.value.length > options.outputFile.maximumBytes)
                     throw new Error('backup artifact is too large')
                 for (let offset = 0; offset < next.value.length; offset += 65_536) {
+                    if (written - capacityCheckedAt >= BACKUP_RUNTIME_POLICY.capacityCheckBytes) {
+                        await options.checkCapacity?.()
+                        capacityCheckedAt = written
+                    }
                     const chunk = next.value.subarray(offset, offset + 65_536)
                     await writeFileChunk(options.outputFile.file, chunk)
                     hash.update(chunk)
@@ -86,6 +112,19 @@ export async function runMaintenanceProcess(
         await child.stdin.end()
     })()
     let timer: ReturnType<typeof setTimeout> | undefined
+    let capacityTimer: ReturnType<typeof setInterval> | undefined
+    let checkingCapacity = false
+    const capacityFailed = new Promise<never>((_, reject) => {
+        const checkCapacity = options.checkCapacity
+        if (!checkCapacity) return
+        capacityTimer = setInterval(() => {
+            if (checkingCapacity) return
+            checkingCapacity = true
+            void Promise.resolve().then(checkCapacity).catch(reject).finally(() => {
+                checkingCapacity = false
+            })
+        }, BACKUP_RUNTIME_POLICY.capacityCheckIntervalMs)
+    })
     let cancel: (() => void) | undefined
     const cancelled = new Promise<never>((_, reject) => {
         cancel = () => reject(new Error('maintenance cancelled'))
@@ -102,7 +141,9 @@ export async function runMaintenanceProcess(
         )
     })
     try {
-        await Promise.race([Promise.all([exited, stdout, stderr, input]), expired, cancelled])
+        await Promise.race([
+            Promise.all([exited, stdout, stderr, input]), expired, cancelled, capacityFailed,
+        ])
         // A delayed timer must not turn an operation finishing after its budget into success.
         timedOut ||= performance.now() > deadline
         interrupted = timedOut
@@ -112,6 +153,7 @@ export async function runMaintenanceProcess(
         interrupted = true
     } finally {
         clearTimeout(timer)
+        clearInterval(capacityTimer)
         if (cancel) options.signal?.removeEventListener('abort', cancel)
         if (interrupted) {
             if (process.platform !== 'win32') {

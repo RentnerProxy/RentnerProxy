@@ -3,7 +3,7 @@ import { expect, test } from 'bun:test'
 import { chmod, chown, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { readIsolatedValidationProof } from '../../../../../../docker/production/backups/maintenance.ts'
+import { readIsolatedValidationProof, readIsolatedValidationCapacity } from '../../../../../../docker/production/backups/maintenance.ts'
 
 test.skipIf(process.getuid?.() !== 0)(
     'offline restore accepts only a bounded root-owned isolated-validation proof',
@@ -14,6 +14,13 @@ test.skipIf(process.getuid?.() !== 0)(
         try {
             await writeFile(path, JSON.stringify({ schemaVersion: 1, backupId }), { mode: 0o600 })
             expect(await readIsolatedValidationProof(path)).toBe(backupId)
+            await expect(readIsolatedValidationCapacity(path)).rejects.toThrow('repeated with capacity evidence')
+            const capacity = { schemaVersion: 2, backupId, databaseBytes: 3 * 1024 ** 3, sqlBytes: 5 * 1024 ** 3 }
+            await writeFile(path, JSON.stringify(capacity))
+            expect(await readIsolatedValidationProof(path)).toBe(backupId)
+            expect(await readIsolatedValidationCapacity(path)).toEqual({
+                backupId, databaseBytes: capacity.databaseBytes, sqlBytes: capacity.sqlBytes,
+            })
             await chmod(path, 0o666)
             await expect(readIsolatedValidationProof(path)).rejects.toThrow('Invalid isolated')
             await chmod(path, 0o600)
@@ -24,6 +31,9 @@ test.skipIf(process.getuid?.() !== 0)(
                 null,
                 [],
                 { schemaVersion: 2, backupId },
+                { schemaVersion: 2, backupId, databaseBytes: -1, sqlBytes: 1 },
+                { schemaVersion: 2, backupId, databaseBytes: 1, sqlBytes: Number.MAX_SAFE_INTEGER + 1 },
+                { schemaVersion: '1', backupId },
                 { schemaVersion: 1, backupId: 'bad' },
             ]) {
                 await writeFile(path, JSON.stringify(value))

@@ -26,6 +26,8 @@ import {
 } from '../../../scripts/backup/format.ts'
 import { verifyPublishedBackup, syncBackupDirectory } from '../../../scripts/backup/publication.ts'
 import { runMaintenanceProcess } from '../../../scripts/backup/maintenance-process.ts'
+import { assertBackupCapacity, backupCapacityGuard } from '../../../scripts/backup/capacity.ts'
+import { BACKUP_RUNTIME_POLICY } from '../../../web/src/config/backup-runtime.config.ts'
 import { postgresRestoreCommand } from '../../../scripts/production-restore.ts'
 import { postgresShutdownScript } from '../../../scripts/backup/postgres-shutdown.ts'
 import {
@@ -51,6 +53,7 @@ import {
     writePrivateJson,
 } from './storage.ts'
 import type { ManagedBackupMaintenance } from '../../../web/src/lib/Backups/Types/backups.types.ts'
+import type { RestoreCapacityEvidence } from '../../../scripts/backup/Types/capacity.types.ts'
 
 export const maintenanceRoot = '/run/rentnerproxy/maintenance'
 const phaseFile = join(controlRoot, 'restore-progress.json')
@@ -118,7 +121,8 @@ async function command(
 ) {
     const result = await runMaintenanceProcess(args, {
         cwd: '/',
-        timeoutMs: 360_000,
+        timeoutMs: BACKUP_RUNTIME_POLICY.databaseTimeoutMs,
+        checkCapacity: backupCapacityGuard(['/tmp', '/var/lib/rentnerproxy']),
         signal,
         ...(input === undefined ? {} : { input }),
         maximumOutputBytes,
@@ -162,6 +166,8 @@ export function validationCommand(snapshot: string, temporary: string) {
         '"$ready"',
         'gosu postgres createdb --host="$socket_directory" --port="$PGPORT" --username=postgres rentnerproxy',
         postgresRestoreCommand(true, snapshot),
+        // Retain only numeric size evidence after the owned SQL files are cleaned up.
+        'stat --format=%s "$rendered_sql_path" "$restore_sql_path" > ' + temporary + '/sql-capacity',
         'bun --no-env-file /opt/rentnerproxy/web/backup-export.js --validate-restore ' +
             snapshot +
             ' ' +
@@ -172,6 +178,37 @@ export function validationCommand(snapshot: string, temporary: string) {
 
 export async function validateRestoreDatabase(snapshot: string, crowdsec: string) {
     await validateDatabase(snapshot, 55439, crowdsec, join(dirname(crowdsec), 'socket'))
+}
+
+export async function measureRestoreCapacity(temporary: string, signal?: AbortSignal): Promise<RestoreCapacityEvidence> {
+    const footprint = await command(['du', '--summarize', '--bytes', join(temporary, 'postgres')], signal)
+    const databaseBytes = Number(/^([0-9]+)\s/u.exec(footprint)?.[1])
+    const file = await open(join(temporary, 'sql-capacity'), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+    let sqlSizes: number[]
+    try {
+        const info = await file.stat()
+        if (!info.isFile() || info.uid !== 0 || info.nlink !== 1 || info.size > 128)
+            throw new Error('restore capacity evidence unavailable')
+        sqlSizes = (await file.readFile('utf8')).trim().split('\n').map(Number)
+    } finally {
+        await file.close()
+    }
+    if (!Number.isSafeInteger(databaseBytes) || databaseBytes <= 0 || sqlSizes.length !== 2 ||
+        sqlSizes.some((bytes) => !Number.isSafeInteger(bytes) || bytes <= 0))
+        throw new Error('restore capacity evidence unavailable')
+    const sqlBytes = sqlSizes.reduce((sum, bytes) => sum + bytes, 0)
+    if (!Number.isSafeInteger(sqlBytes)) throw new Error('restore capacity evidence unavailable')
+    return { databaseBytes, sqlBytes }
+}
+
+export async function assertRestoreCapacity(evidence: RestoreCapacityEvidence, stateBytes: number) {
+    // The isolated cluster measures decompression, indexes and WAL, which cannot
+    // be inferred from custom-dump bytes. Double its footprint for live transaction
+    // and WAL headroom; active guards cover concurrent allocations and working space.
+    await assertBackupCapacity([
+        { path: '/var/lib/rentnerproxy', bytes: evidence.databaseBytes * 2 + stateBytes },
+        { path: '/tmp', bytes: evidence.sqlBytes },
+    ])
 }
 
 async function replaceState(snapshot: string, name: 'proxy' | 'crowdsec', signal?: AbortSignal) {
@@ -237,6 +274,10 @@ async function replaceState(snapshot: string, name: 'proxy' | 'crowdsec', signal
 }
 
 export async function restoreManagedBackup(id: string, signal?: AbortSignal) {
+    signal = AbortSignal.any([
+        ...(signal ? [signal] : []),
+        AbortSignal.timeout(BACKUP_RUNTIME_POLICY.operationTimeoutMs),
+    ])
     z.uuid().parse(id)
     if (process.getuid?.() !== 0) throw new Error('restore requires root supervisor')
     // Appliance secret materialization always uses its loopback database role.
@@ -280,24 +321,36 @@ export async function restoreManagedBackup(id: string, signal?: AbortSignal) {
         false,
     )
     await phase('validating', 8)
+    const metadata = verified.metadata
+    const stateBytes = metadata.controllerState.bytes + metadata.crowdSecState.bytes
+    const snapshotBytes = stateBytes + metadata.postgres.bytes + metadata.applicationEncryptionKey.bytes + 65_536
+    // TAR bodies are uncompressed; archive bytes bound the extracted payload. Existing
+    // live data is already reflected in free space and remains present during replacement.
+    await assertBackupCapacity([
+        { path: backupRoot, bytes: snapshotBytes + stateBytes },
+        { path: '/tmp', bytes: metadata.crowdSecState.bytes },
+    ])
     const snapshot = join(backupRoot, '.restore-' + id)
     await mkdir(snapshot, { mode: 0o700 })
     const temporary = await mkdtemp('/tmp/rentnerproxy-validate-')
-    await command(['chown', 'postgres:postgres', temporary], signal)
     let committed = false
     try {
+        await command(['chown', 'postgres:postgres', temporary], signal)
         await writeFile(
             join(snapshot, 'metadata.json'),
             await readFile(join(directory, 'metadata.json')),
             { mode: 0o600, flag: 'wx' },
         )
-        for (const [name, metadata] of [
+        for (const [name, artifactMetadata] of [
             ['app-encryption-key', verified.metadata.applicationEncryptionKey],
             ['postgres.dump', verified.metadata.postgres],
             ['controller-state.tar', verified.metadata.controllerState],
             ['crowdsec-state.tar', verified.metadata.crowdSecState],
         ] as const)
-            await snapshotBackupArtifact(join(directory, name), join(snapshot, name), metadata)
+            await snapshotBackupArtifact(
+                join(directory, name), join(snapshot, name), artifactMetadata, signal,
+                backupCapacityGuard([backupRoot]),
+            )
         await phase('validating', 12)
         const keyFile = await open(join(snapshot, 'app-encryption-key'), 'r')
         let key: Buffer
@@ -324,6 +377,8 @@ export async function restoreManagedBackup(id: string, signal?: AbortSignal) {
         }
         await phase('validating', 15)
         await command(['bash', '-c', validationCommand(snapshot, temporary)], signal)
+        const capacity = await measureRestoreCapacity(temporary, signal)
+        await assertRestoreCapacity(capacity, stateBytes)
         await phase('validating', 18)
         await phase('quiescing', 20)
         await awaitWebQuiescence(id, signal)
@@ -336,6 +391,8 @@ export async function restoreManagedBackup(id: string, signal?: AbortSignal) {
         )
         const merge = mergeRestoreSessionsSql(sessions)
         await writeFile(join(snapshot, 'sessions.json'), sessions, { mode: 0o600, flag: 'wx' })
+        signal.throwIfAborted()
+        await assertRestoreCapacity(capacity, stateBytes)
         await beginProductionRestore(operation.metadataSha256!)
         committed = true
         await beginAppEncryptionKeyRestore(join(snapshot, 'app-encryption-key'))

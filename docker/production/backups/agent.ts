@@ -9,6 +9,7 @@ import {
 } from '../../../scripts/backup/managed-jobs.ts'
 import { syncBackupDirectory, verifyPublishedBackup } from '../../../scripts/backup/publication.ts'
 import { parseBackupMetadata } from '../../../scripts/backup/format.ts'
+import { BACKUP_RUNTIME_POLICY } from '../../../web/src/config/backup-runtime.config.ts'
 import { createBackupDownload } from './download.ts'
 import { writeMaintenanceProgress } from './restore.ts'
 import { hasRestartedRestoreProof } from './restart-recovery.ts'
@@ -543,7 +544,7 @@ export async function startBackupAgent() {
             }
             await rm(resultFile, { force: true })
             await writePrivateJson(requestFile, { id: job.id })
-            const deadline = performance.now() + 900_000
+            const deadline = performance.now() + BACKUP_RUNTIME_POLICY.agentTimeoutMs
             while (!stop.signal.aborted && performance.now() < deadline) {
                 try {
                     const result = resultSchema.parse(await readPrivateJson(resultFile, 4096))
@@ -613,7 +614,7 @@ export async function startBackupAgent() {
             const phasePath = join(controlRoot, 'restore-progress.json')
             await rm(phasePath, { force: true })
             await writePrivateJson(requestFile, { id: operation.id, kind: 'restore' })
-            const deadline = performance.now() + 1_200_000
+            const deadline = performance.now() + BACKUP_RUNTIME_POLICY.agentTimeoutMs
             let last = -1
             while (!stop.signal.aborted && performance.now() < deadline) {
                 try {

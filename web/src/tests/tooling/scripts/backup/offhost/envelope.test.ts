@@ -1,20 +1,22 @@
 // oxlint-disable no-await-in-loop -- Exercise each independent corruption and filesystem failure.
 import assert from 'node:assert/strict'
 import { createCipheriv, createHash } from 'node:crypto'
-import { existsSync } from 'node:fs'
+import * as filesystem from 'node:fs/promises'
 import {
     link,
     mkdir,
     mkdtemp,
+    open,
     readFile,
     readdir,
     rm,
     stat,
     symlink,
     writeFile,
+    type FileHandle,
 } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
-import { test } from 'bun:test'
+import { spyOn, test } from 'bun:test'
 import {
     createRecoveryKey,
     decryptBackup,
@@ -429,15 +431,34 @@ test.skipIf(process.platform === 'win32')(
         }),
 )
 
-function abortAfterChecks(checks: number): AbortSignal {
+async function abortDuringPayloadWrite(
+    source: string,
+    run: (signal: AbortSignal) => Promise<void>,
+): Promise<void> {
     const controller = new AbortController()
-    const original = controller.signal.throwIfAborted.bind(controller.signal)
-    let count = 0
-    controller.signal.throwIfAborted = () => {
-        if (++count === checks) controller.abort(new Error('interrupted fixture'))
-        original()
+    const probe = await open(source, 'r')
+    const prototype = Object.getPrototypeOf(probe) as {
+        write: (bytes: Uint8Array, offset: number, length: number) => Promise<{
+            bytesWritten: number; buffer: Uint8Array
+        }>
     }
-    return controller.signal
+    await probe.close()
+    const original = prototype.write
+    const write = spyOn(prototype, 'write').mockImplementation(async function (
+        this: FileHandle, bytes: Uint8Array, offset: number, length: number,
+    ) {
+        const result = await original.call(this, bytes, offset, length)
+        // Header and key writes remain below this size. Abort after a real payload
+        // write, so the composed operation signal must stop an in-progress copy.
+        if (length >= 65_536) controller.abort(new Error('interrupted fixture'))
+        return result
+    })
+    try {
+        await run(controller.signal)
+        assert.equal(controller.signal.aborted, true)
+    } finally {
+        write.mockRestore()
+    }
 }
 
 test('interruption cleans ciphertext and private plaintext staging while preserving both original inputs', () =>
@@ -446,19 +467,15 @@ test('interruption cleans ciphertext and private plaintext staging while preserv
             const key = createRecoveryKey()
             const encrypted = join(directory, 'backup.encrypted')
             const originalDump = await readFile(join(source, 'postgres.dump'))
-            await assert.rejects(
-                encryptBackup(source, encrypted, key, abortAfterChecks(70)),
-                /interrupted fixture/,
-            )
+            await abortDuringPayloadWrite(join(source, 'postgres.dump'), (signal) =>
+                assert.rejects(encryptBackup(source, encrypted, key, signal), /interrupted fixture/))
             await assert.rejects(stat(encrypted), /ENOENT/)
             assert.deepEqual(await readFile(join(source, 'postgres.dump')), originalDump)
             await assertNoStaging(directory)
             await encryptBackup(source, encrypted, key)
             const ciphertext = await readFile(encrypted)
-            await assert.rejects(
-                decryptBackup(encrypted, join(directory, 'restored'), key, abortAfterChecks(10)),
-                /interrupted fixture/,
-            )
+            await abortDuringPayloadWrite(encrypted, (signal) =>
+                assert.rejects(decryptBackup(encrypted, join(directory, 'restored'), key, signal), /interrupted fixture/))
             await assert.rejects(stat(join(directory, 'restored')), /ENOENT/)
             assert.deepEqual(await readFile(encrypted), ciphertext)
             await assertNoStaging(directory)
@@ -486,16 +503,20 @@ test('interruption during publication removes only the newly created destination
         await encryptBackup(source, encrypted, key)
         const original = await readFile(encrypted)
         const controller = new AbortController()
-        const originalCheck = controller.signal.throwIfAborted.bind(controller.signal)
-        controller.signal.throwIfAborted = () => {
-            if (existsSync(join(destination, 'app-encryption-key')))
+        const originalRename = filesystem.rename
+        const rename = spyOn(filesystem, 'rename').mockImplementation(async (from, to) => {
+            await originalRename(from, to)
+            if (to === join(destination, 'app-encryption-key'))
                 controller.abort(new Error('publication interrupted fixture'))
-            originalCheck()
+        })
+        try {
+            await assert.rejects(
+                decryptBackup(encrypted, destination, key, controller.signal),
+                /publication interrupted fixture/,
+            )
+        } finally {
+            rename.mockRestore()
         }
-        await assert.rejects(
-            decryptBackup(encrypted, destination, key, controller.signal),
-            /publication interrupted fixture/,
-        )
         assert.equal(controller.signal.aborted, true)
         await assert.rejects(stat(destination), /ENOENT/)
         assert.deepEqual(await readFile(encrypted), original)

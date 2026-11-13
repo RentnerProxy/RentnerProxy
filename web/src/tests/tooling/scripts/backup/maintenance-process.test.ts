@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import { join, resolve } from 'node:path'
 import { watch } from 'node:fs'
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, open, readFile, rm } from 'node:fs/promises'
+import { BACKUP_RUNTIME_POLICY } from '../../../../config/backup-runtime.config.ts'
 import { runMaintenanceProcess } from '../../../../../../scripts/backup/maintenance-process.ts'
 
 const cwd = resolve(import.meta.dir, '../../../../../..')
@@ -204,4 +205,59 @@ test('capped stdout fails and stops an otherwise long-running child', async () =
     expect(result.timedOut).toBe(false)
     expect(result.stdout.byteLength).toBeLessThanOrEqual(1_024)
     expect(result.artifact).toBeUndefined()
+})
+
+test('capacity exhaustion stops a quiet command without waiting for its overall timeout', async () => {
+    let checks = 0
+    const result = await runMaintenanceProcess(child('setInterval(() => {}, 1000)'), {
+        cwd, timeoutMs: 5_000,
+        checkCapacity: async () => {
+            checks++
+            if (checks > 1) throw new Error('synthetic exhausted disk')
+        },
+    })
+    expect(checks).toBe(2)
+    expect(result.failed).toBe(true)
+    expect(result.stopped).toBe(true)
+    expect(result.timedOut).toBe(false)
+})
+
+test('streamed capture checks its reserve again before the next bounded write batch', async () => {
+    await mkdir(join(cwd, 'tmp'), { recursive: true })
+    const directory = await mkdtemp(join(cwd, 'tmp', 'maintenance-capacity-'))
+    const file = await open(join(directory, 'capture'), 'wx', 0o600)
+    let checks = 0
+    try {
+        const result = await runMaintenanceProcess(child(
+            'process.stdout.write(Buffer.alloc(32 * 1024 * 1024)); setInterval(() => {}, 1000)',
+        ), {
+            cwd, timeoutMs: 5_000,
+            outputFile: { file, maximumBytes: BACKUP_RUNTIME_POLICY.maximumArtifactBytes },
+            checkCapacity: async () => {
+                checks++
+                if (checks > 1) throw new Error('synthetic exhausted disk')
+            },
+        })
+        expect(result.failed).toBe(true)
+        expect(result.stopped).toBe(true)
+        expect(result.artifact).toBeUndefined()
+        expect((await file.stat()).size).toBeLessThanOrEqual(BACKUP_RUNTIME_POLICY.capacityCheckBytes)
+    } finally {
+        await file.close()
+        await rm(directory, { recursive: true, force: true })
+    }
+})
+
+test('failed initial capacity admission never dispatches a command', async () => {
+    await expect(runMaintenanceProcess(['must-not-spawn'], {
+        cwd, timeoutMs: 5_000,
+        checkCapacity: async () => { throw new Error('synthetic admission rejection') },
+    })).rejects.toThrow('synthetic admission rejection')
+})
+
+test('a stalled capacity admission remains bounded before process dispatch', async () => {
+    await expect(runMaintenanceProcess(['must-not-spawn'], {
+        cwd, timeoutMs: 20,
+        checkCapacity: () => new Promise(() => {}),
+    })).rejects.toThrow('maintenance deadline exceeded')
 })

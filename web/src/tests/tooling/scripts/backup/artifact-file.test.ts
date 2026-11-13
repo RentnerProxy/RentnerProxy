@@ -86,6 +86,20 @@ async function fixture(run: (directory: string) => Promise<void>) {
     }
 }
 
+test('snapshot cancellation removes the owned partial file and preserves its source', () =>
+    fixture(async (directory) => {
+        const source = join(directory, 'cancel-source')
+        const target = join(directory, 'cancel-target')
+        const bytes = Buffer.alloc(128 * 1024, 0x61)
+        await writeFile(source, bytes)
+        const stop = new AbortController()
+        await assert.rejects(snapshotBackupArtifact(source, target, {
+            bytes: bytes.length, sha256: digest(bytes),
+        }, stop.signal, async () => { stop.abort(new Error('synthetic snapshot cancellation')) }), /synthetic snapshot cancellation/)
+        await assert.rejects(stat(target), /ENOENT/)
+        assert.equal(digest(await readFile(source)), digest(bytes))
+    }))
+
 test('snapshots multi-MiB artifacts from the held source FD despite pathname replacement', () =>
     fixture(async (directory) => {
         const source = join(directory, 'source')

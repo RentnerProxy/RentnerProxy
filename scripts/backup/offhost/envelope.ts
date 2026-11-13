@@ -25,6 +25,8 @@ import {
     writeFileChunk,
 } from '../artifact-file.ts'
 import { syncBackupDirectory, verifyPublishedBackup } from '../publication.ts'
+import { assertBackupCapacity, backupCapacityGuard } from '../capacity.ts'
+import { BACKUP_RUNTIME_POLICY } from '../../../web/src/config/backup-runtime.config.ts'
 
 // v1 has a fixed 96-byte AAD header and exactly five concatenated artifact bodies,
 // followed by the 16-byte GCM tag. No names or paths are accepted from the envelope.
@@ -39,7 +41,12 @@ const names = [
     'controller-state.tar',
     'crowdsec-state.tar',
 ] as const
-const limits = [65_536, 65_536, 8 * 1024 ** 3, 8 * 1024 ** 3, 8 * 1024 ** 3]
+const limits = [
+    65_536, 65_536,
+    BACKUP_RUNTIME_POLICY.maximumArtifactBytes,
+    BACKUP_RUNTIME_POLICY.maximumArtifactBytes,
+    BACKUP_RUNTIME_POLICY.maximumArtifactBytes,
+]
 const maximumPayloadBytes = limits.reduce((sum, bytes) => sum + bytes, 0)
 
 function parseRecoveryKey(value: string): Buffer {
@@ -149,6 +156,10 @@ export async function encryptBackup(
     recoveryKey: string,
     signal?: AbortSignal,
 ): Promise<{ bytes: number; sha256: string; keyId: string }> {
+    signal = AbortSignal.any([
+        AbortSignal.timeout(BACKUP_RUNTIME_POLICY.operationTimeoutMs),
+        ...(signal ? [signal] : []),
+    ])
     signal?.throwIfAborted()
     const key = parseRecoveryKey(recoveryKey)
     const files: FileHandle[] = []
@@ -173,6 +184,11 @@ export async function encryptBackup(
         const verified = await verifyPublishedBackup(directory, signal)
         await independentKey(files[1]!, key, signal)
         const lengths = await Promise.all(files.map(async (file) => (await file.stat()).size))
+        await assertBackupCapacity([{
+            path: dirname(resolve(outputFile)),
+            bytes: headerBytes + tagBytes + lengths.reduce((sum, length) => sum + length, 0),
+        }])
+        const checkCapacity = backupCapacityGuard([dirname(resolve(outputFile))])
         const header = Buffer.alloc(headerBytes)
         magic.copy(header)
         header[8] = 1
@@ -207,6 +223,8 @@ export async function encryptBackup(
         for (const [index, file] of files.entries()) {
             const artifactHash = createHash('sha256')
             for (let offset = 0; offset < lengths[index]!; offset += chunkBytes) {
+                if (offset % BACKUP_RUNTIME_POLICY.capacityCheckBytes === 0)
+                    await checkCapacity()
                 signal?.throwIfAborted()
                 const chunk = await readFileRange(
                     file,
@@ -229,6 +247,7 @@ export async function encryptBackup(
         output = undefined
         signal?.throwIfAborted()
         await syncBackupDirectory(dirname(resolve(outputFile)))
+        signal?.throwIfAborted()
         ownsOutput = false
         return { bytes, sha256: hash.digest('hex'), keyId }
     } finally {
@@ -245,6 +264,10 @@ export async function decryptBackup(
     recoveryKey: string,
     signal?: AbortSignal,
 ): Promise<void> {
+    signal = AbortSignal.any([
+        AbortSignal.timeout(BACKUP_RUNTIME_POLICY.operationTimeoutMs),
+        ...(signal ? [signal] : []),
+    ])
     signal?.throwIfAborted()
     const key = parseRecoveryKey(recoveryKey)
     let input: FileHandle | undefined
@@ -264,6 +287,8 @@ export async function decryptBackup(
             throw new Error('truncated or trailing encrypted backup data')
         if (!timingSafeEqual(header.subarray(24, 56), createHash('sha256').update(key).digest()))
             throw new Error('encrypted backup recovery key does not match')
+        await assertBackupCapacity([{ path: dirname(destination), bytes: payloadBytes }])
+        const checkCapacity = backupCapacityGuard([dirname(destination)])
         const decipher = createDecipheriv('aes-256-gcm', key, header.subarray(12, 24), {
             authTagLength: tagBytes,
         })
@@ -277,6 +302,8 @@ export async function decryptBackup(
             try {
                 await output.chmod(0o600)
                 for (let offset = 0; offset < lengths[index]!; offset += chunkBytes) {
+                    if (offset % BACKUP_RUNTIME_POLICY.capacityCheckBytes === 0)
+                        await checkCapacity()
                     signal?.throwIfAborted()
                     const bytes = Math.min(chunkBytes, lengths[index]! - offset)
                     await writeFileChunk(
@@ -317,6 +344,7 @@ export async function decryptBackup(
         }
         await syncBackupDirectory(destination)
         await syncBackupDirectory(dirname(destination))
+        signal?.throwIfAborted()
         ownsDestination = false
     } finally {
         key.fill(0)

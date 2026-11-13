@@ -1,4 +1,4 @@
-import { chmod, lstat, mkdir, open, readdir, rm, statfs } from 'node:fs/promises'
+import { chmod, lstat, mkdir, open, readdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { z } from 'zod'
 import { CURRENT_COMPATIBILITY_PROFILE } from '../../../web/src/config/compatibility.config.ts'
@@ -8,6 +8,8 @@ import { deploymentSchema } from '../../../scripts/backup/validation.ts'
 import { stateArchiveExclusions } from '../../../scripts/backup/controller-state-archive.ts'
 import { crowdSecArchiveExclusions } from '../../../scripts/backup/format.ts'
 import { runMaintenanceProcess } from '../../../scripts/backup/maintenance-process.ts'
+import { backupCapacityGuard } from '../../../scripts/backup/capacity.ts'
+import { BACKUP_RUNTIME_POLICY } from '../../../web/src/config/backup-runtime.config.ts'
 import {
     publishProductionBackup,
     syncBackupDirectory,
@@ -28,14 +30,15 @@ class IncompleteBackupCleanup extends Error {}
 async function capture(
     args: string[],
     path: string,
-    maximumBytes = 512 * 1024 ** 2,
+    maximumBytes = BACKUP_RUNTIME_POLICY.maximumArtifactBytes,
     signal?: AbortSignal,
 ) {
     const file = await open(path, 'wx', 0o600)
     try {
         const result = await runMaintenanceProcess(args, {
             cwd: '/',
-            timeoutMs: 180_000,
+            timeoutMs: BACKUP_RUNTIME_POLICY.captureTimeoutMs,
+            checkCapacity: backupCapacityGuard([artifactsRoot]),
             signal,
             env: { PATH: '/usr/local/bin:/usr/bin:/bin', HOME: '/tmp', LC_ALL: 'C' },
             outputFile: { file, maximumBytes },
@@ -50,6 +53,10 @@ async function capture(
 }
 
 export async function exportManagedBackup(id: string, signal?: AbortSignal): Promise<void> {
+    signal = AbortSignal.any([
+        ...(signal ? [signal] : []),
+        AbortSignal.timeout(BACKUP_RUNTIME_POLICY.operationTimeoutMs),
+    ])
     z.uuid().parse(id)
     if (process.getuid?.() !== 0) throw new Error('backup requires owned supervisor')
     const state = managedBackupStateSchema.parse(await readPrivateJson(stateFile))
@@ -59,8 +66,7 @@ export async function exportManagedBackup(id: string, signal?: AbortSignal): Pro
     const stagingPath = join(artifactsRoot, '.staging-' + id)
     if ((await readdir(artifactsRoot)).length >= 64)
         throw new Error('backup artifact capacity unavailable')
-    const space = await statfs(artifactsRoot)
-    if (space.bavail * space.bsize < 2 * 1024 ** 3) throw new Error('backup capacity unavailable')
+    await backupCapacityGuard([artifactsRoot])()
     await mkdir(stagingPath, { mode: 0o700 })
     try {
         const key = await capture(
@@ -147,9 +153,9 @@ export async function exportManagedBackup(id: string, signal?: AbortSignal): Pro
             if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT')
                 throw error
         }
-        await publishProductionBackup(stagingPath, finalPath, metadata)
+        await publishProductionBackup(stagingPath, finalPath, metadata, signal)
         await syncBackupDirectory(artifactsRoot)
-        await verifyPublishedBackup(finalPath)
+        await verifyPublishedBackup(finalPath, signal)
     } finally {
         await rm(stagingPath, { recursive: true, force: true })
     }

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readDeploymentEnvironmentVariable } from '../web/src/lib/Environment/deployment-environment.ts'
+import { BACKUP_RUNTIME_POLICY } from '../web/src/config/backup-runtime.config.ts'
 
 const repositoryRoot = fileURLToPath(new URL('..', import.meta.url))
 const defaultComposeFile = join(repositoryRoot, 'docker-compose.yml')
@@ -106,7 +107,7 @@ async function restore(): Promise<void> {
                 postgresCommand(true),
             ],
             'restore PostgreSQL',
-            360_000,
+            BACKUP_RUNTIME_POLICY.databaseTimeoutMs,
         )
 
         const keyVolume = snapshot + ':/restore-key:ro'
@@ -201,7 +202,7 @@ async function restore(): Promise<void> {
                     postgresCommand(false),
                 ],
                 'restore PostgreSQL',
-                360_000,
+                BACKUP_RUNTIME_POLICY.databaseTimeoutMs,
             )
 
             await runCommand(
@@ -219,7 +220,7 @@ async function restore(): Promise<void> {
                     controllerRestoreCommand(),
                 ],
                 'restore controller state',
-                180_000,
+                BACKUP_RUNTIME_POLICY.captureTimeoutMs,
             )
             await runCommand(
                 [
@@ -236,7 +237,7 @@ async function restore(): Promise<void> {
                     crowdSecRestoreCommand(),
                 ],
                 'restore managed CrowdSec state',
-                180_000,
+                BACKUP_RUNTIME_POLICY.captureTimeoutMs,
             )
             await runCommand(
                 [
