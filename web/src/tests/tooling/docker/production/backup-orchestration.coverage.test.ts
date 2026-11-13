@@ -8,7 +8,7 @@ const available =
     process.getuid?.() === 0 &&
     Bun.which('initdb') !== null &&
     Bun.which('gosu') !== null
-test.skipIf(!available).each(['agent-roundtrip', 'precommit-failure', 'postcommit-failure'])(
+test.skipIf(!available).each(['agent-roundtrip', 'precommit-failure', 'postcommit-failure', 'precommit-capacity-cancellation'])(
     'real isolated PostgreSQL backup %s preserves artifact identity and recovery invariants',
     async (scenario) => {
         const output = await runBunScript(
@@ -60,7 +60,7 @@ test.skipIf(!available).each(['agent-roundtrip', 'precommit-failure', 'postcommi
                 downloadVerified: true,
                 selectedDeleteSafe: true,
             })
-        } else if (scenario === 'precommit-failure') {
+        } else if (scenario === 'precommit-failure' || scenario === 'precommit-capacity-cancellation') {
             expect(result).toMatchObject({
                 restoreState: 'failed',
                 phase: 'quiescing',
@@ -72,6 +72,15 @@ test.skipIf(!available).each(['agent-roundtrip', 'precommit-failure', 'postcommi
                 pendingKeyJournal: false,
                 crowdsecKey: 'b'.repeat(64),
             })
+            if (scenario === 'precommit-capacity-cancellation') {
+                expect(result).toMatchObject({
+                    capacityCancellationInjected: true,
+                    finalTargetCapacityProbes: 3,
+                    restoreError: 'execution_failed',
+                    keyMatchesLive: true,
+                    sessions: '00000000-0000-4000-8000-000000000003',
+                })
+            }
         } else {
             expect(result).toMatchObject({
                 restoreState: 'failed',

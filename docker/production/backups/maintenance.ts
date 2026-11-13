@@ -287,6 +287,7 @@ async function offlineRestore(options: readonly string[]) {
             throw new Error('No interrupted restore is pending')
         operationSignal.throwIfAborted()
         await assertRestoreCapacity(capacity, stateCapacity)
+        operationSignal.throwIfAborted()
         if (!pending)
             await command(['/usr/local/bin/rentnerproxy-production', '--initialize-restore-target'])
         await beginProductionRestore()

@@ -426,6 +426,7 @@ export async function restoreManagedBackup(id: string, signal?: AbortSignal) {
         await writeFile(join(snapshot, 'sessions.json'), sessions, { mode: 0o600, flag: 'wx' })
         signal.throwIfAborted()
         await assertRestoreCapacity(capacity, verified.stateCapacity)
+        signal.throwIfAborted()
         await beginProductionRestore(operation.metadataSha256!)
         committed = true
         await beginAppEncryptionKeyRestore(join(snapshot, 'app-encryption-key'))

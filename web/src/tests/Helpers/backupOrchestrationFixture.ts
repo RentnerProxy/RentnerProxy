@@ -1,6 +1,8 @@
 // oxlint-disable no-await-in-loop -- A private PostgreSQL lifecycle and its migrations must run in order.
 import { createCipheriv, createHash, randomUUID } from 'node:crypto'
 import { createReadStream } from 'node:fs'
+import * as filesystem from 'node:fs/promises'
+import { spyOn } from 'bun:test'
 import {
     chmod,
     chown,
@@ -72,6 +74,8 @@ export async function runBackupOrchestrationFixture(scenario: string) {
           >
         | undefined
     let supervisorIdentityVerified = false
+    let capacityCancellationInjected = false
+    let finalTargetCapacityProbes = 0
     let payloadHash: string | undefined
     let peakRssBytes = 0
     // Include the fixture, agent, supervisor, PostgreSQL and their children. VmHWM
@@ -365,7 +369,32 @@ export async function runBackupOrchestrationFixture(scenario: string) {
                         { mode: 0o600 },
                     )
                     if (scenario !== 'precommit-failure') await chown(acknowledgement, 10002, 10002)
-                    await restore.restoreManagedBackup(operation.id)
+                    if (scenario !== 'precommit-capacity-cancellation') {
+                        await restore.restoreManagedBackup(operation.id)
+                        return
+                    }
+                    const cancellation = new AbortController()
+                    const originalStatfs = filesystem.statfs
+                    const capacityProbe = spyOn(filesystem, 'statfs').mockImplementation((async (...args: Parameters<typeof filesystem.statfs>) => {
+                        const result = await originalStatfs(...args)
+                        const progress = JSON.parse(await readFile(join(control, 'restore-progress.json'), 'utf8')) as { phase: string; progressPercent: number }
+                        const sessionsCaptured = Boolean(await lstat(join(storage.backupRoot, '.restore-' + operation.id, 'sessions.json')).catch(() => null))
+                        if (String(args[0]) === app && progress.phase === 'quiescing' && progress.progressPercent === 25 && sessionsCaptured) {
+                            finalTargetCapacityProbes++
+                            // assertRestoreCapacity probes the target for the database
+                            // and both state archives. Abort inside its final probe.
+                            if (finalTargetCapacityProbes === 3) {
+                                capacityCancellationInjected = true
+                                cancellation.abort()
+                            }
+                        }
+                        return result
+                    }) as typeof filesystem.statfs)
+                    try {
+                        await restore.restoreManagedBackup(operation.id, cancellation.signal)
+                    } finally {
+                        capacityProbe.mockRestore()
+                    }
                 },
             }))
         async function settle(kind: 'backup' | 'restore') {
@@ -601,6 +630,8 @@ export async function runBackupOrchestrationFixture(scenario: string) {
         }
         return {
             exportState: afterExport.jobs[0]!.state,
+            capacityCancellationInjected,
+            finalTargetCapacityProbes,
             payloadBytes: large ? payloadBytes : 0,
             payloadVerified,
             encryptedRoundtrip,
@@ -625,6 +656,9 @@ export async function runBackupOrchestrationFixture(scenario: string) {
             keyMatchesBackup:
                 (await readFile(join(directory, 'runtime/app-key/value'), 'utf8')).trim() ===
                 key.toString('base64'),
+            keyMatchesLive:
+                (await readFile(join(directory, 'runtime/app-key/value'), 'utf8')).trim() ===
+                Buffer.alloc(32, 9).toString('base64'),
             pendingKeyJournal: Boolean(
                 await lstat(join(app, 'bootstrap/app-key-restore-v1.json')).catch(() => null),
             ),
