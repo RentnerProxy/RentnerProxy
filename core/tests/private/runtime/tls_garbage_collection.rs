@@ -14,7 +14,9 @@ fn ca_path(settings: &RuntimeSettings, ca: &TrustedCa) -> std::path::PathBuf {
 #[tokio::test]
 async fn ca_gc_reclaims_rotation_deletion_and_failed_activation_material() {
     let engine = FakeCaddy::new();
-    let (runtime, settings) = runtime(Some(engine.clone()));
+    let prepared = runtime(Some(engine.clone()));
+    let _directory = TestDirectory(prepared.1.state_dir.clone());
+    let (runtime, settings) = prepared;
     runtime.initialize().await;
     let ca_a = trusted_ca();
     let ca_b = trusted_ca();
@@ -45,7 +47,9 @@ async fn ca_gc_reclaims_rotation_deletion_and_failed_activation_material() {
 #[tokio::test]
 async fn ca_gc_protects_durable_recovery_and_defers_fenced_or_uncertain_cleanup() {
     let engine = FakeCaddy::new();
-    let (runtime, settings) = runtime(Some(engine.clone()));
+    let prepared = runtime(Some(engine.clone()));
+    let _directory = TestDirectory(prepared.1.state_dir.clone());
+    let (runtime, settings) = prepared;
     runtime.initialize().await;
     let ca = trusted_ca();
     let config = upstream_configuration(ca.clone());
@@ -75,7 +79,9 @@ async fn ca_gc_protects_durable_recovery_and_defers_fenced_or_uncertain_cleanup(
 
 #[tokio::test]
 async fn ca_gc_preserves_unknown_files_and_retries_cleanup_errors() {
-    let (runtime, settings) = runtime(Some(FakeCaddy::new()));
+    let prepared = runtime(Some(FakeCaddy::new()));
+    let _directory = TestDirectory(prepared.1.state_dir.clone());
+    let (runtime, settings) = prepared;
     runtime.initialize().await;
     let active = trusted_ca();
     runtime
@@ -110,7 +116,9 @@ async fn ca_gc_preserves_unknown_files_and_retries_cleanup_errors() {
 
 #[tokio::test]
 async fn ca_gc_bounds_each_pass_and_advances_past_unknown_entries() {
-    let (runtime, settings) = runtime(Some(FakeCaddy::new()));
+    let prepared = runtime(Some(FakeCaddy::new()));
+    let _directory = TestDirectory(prepared.1.state_dir.clone());
+    let (runtime, settings) = prepared;
     runtime.initialize().await;
     let ca = trusted_ca();
     runtime
@@ -142,7 +150,9 @@ async fn ca_gc_bounds_each_pass_and_advances_past_unknown_entries() {
 
 #[tokio::test]
 async fn ca_gc_preserves_distinct_active_and_durable_references_but_reclaims_expired_history() {
-    let (runtime, settings) = runtime(Some(FakeCaddy::new()));
+    let prepared = runtime(Some(FakeCaddy::new()));
+    let _directory = TestDirectory(prepared.1.state_dir.clone());
+    let (runtime, settings) = prepared;
     runtime.initialize().await;
     let active = trusted_ca();
     runtime
@@ -193,7 +203,9 @@ async fn ca_gc_preserves_distinct_active_and_durable_references_but_reclaims_exp
 #[tokio::test]
 async fn ca_gc_keeps_uncertain_activation_material_until_verified_restart() {
     let engine = FakeCaddy::new();
-    let (runtime, settings) = runtime(Some(engine.clone()));
+    let prepared = runtime(Some(engine.clone()));
+    let _directory = TestDirectory(prepared.1.state_dir.clone());
+    let (runtime, settings) = prepared;
     runtime.initialize().await;
     let active = trusted_ca();
     let candidate = trusted_ca();
@@ -229,7 +241,9 @@ async fn ca_gc_keeps_uncertain_activation_material_until_verified_restart() {
 
 #[tokio::test]
 async fn ca_gc_retries_partial_materialization_cleanup_while_preserving_active_policy() {
-    let (runtime, settings) = runtime(Some(FakeCaddy::new()));
+    let prepared = runtime(Some(FakeCaddy::new()));
+    let _directory = TestDirectory(prepared.1.state_dir.clone());
+    let (runtime, settings) = prepared;
     runtime.initialize().await;
     let active = trusted_ca();
     runtime

@@ -232,9 +232,22 @@ async fn certificate_gc_rejects_links_without_touching_external_material() {
     assert_eq!(std::fs::read(&outside).unwrap(), b"keep");
     std::fs::remove_file(version.join("fullchain.pem")).unwrap();
     std::fs::hard_link(&outside, version.join("fullchain.pem")).unwrap();
-    assert_eq!(
-        store.collect_garbage().await,
-        Err(CertificateError::StoreUnavailable)
-    );
-    assert_eq!(std::fs::read(outside).unwrap(), b"keep");
+    let mut rejected = false;
+    for _ in 0..3 {
+        let result = store.collect_garbage().await;
+        assert_eq!(std::fs::read(&outside).unwrap(), b"keep");
+        assert_eq!(
+            std::fs::read(version.join("fullchain.pem")).unwrap(),
+            b"keep"
+        );
+        match result {
+            Err(CertificateError::StoreUnavailable) => {
+                rejected = true;
+                break;
+            }
+            Ok(()) => {}
+            other => panic!("unexpected cleanup result: {other:?}"),
+        }
+    }
+    assert!(rejected, "retained cursor must eventually revisit the hard link");
 }

@@ -1,4 +1,4 @@
-use super::fixtures::{host, request, trusted_ca_certificate};
+use super::fixtures::{TestDirectory, host, request, trusted_ca_certificate};
 use crate::{
     models::{
         AccessPolicy, AccessPolicyMode, ApplyOutcome, BasicAuth, BasicAuthAccount,
