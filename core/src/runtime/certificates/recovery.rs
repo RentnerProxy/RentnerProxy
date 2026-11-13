@@ -320,8 +320,18 @@ pub(super) fn persist_candidate_manifest(
         && previous.retired
         && previous.staged.material_id == candidate.staged.material_id
         && previous.base_material_id == candidate.base_material_id
-        && previous.staged.metadata.current_operation.as_ref().map(|operation| &operation.id)
-            == candidate.staged.metadata.current_operation.as_ref().map(|operation| &operation.id)
+        && previous
+            .staged
+            .metadata
+            .current_operation
+            .as_ref()
+            .map(|operation| &operation.id)
+            == candidate
+                .staged
+                .metadata
+                .current_operation
+                .as_ref()
+                .map(|operation| &operation.id)
     {
         return Err(CertificateError::StoreUnavailable);
     }

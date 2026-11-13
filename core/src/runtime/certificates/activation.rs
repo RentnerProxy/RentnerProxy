@@ -87,7 +87,10 @@ impl CertificateStore {
                 return Err(error);
             }
         };
-        match self.complete_candidate_retirement(id, &candidate, &certificates_dir).await {
+        match self
+            .complete_candidate_retirement(id, &candidate, &certificates_dir)
+            .await
+        {
             Ok(false) => {}
             result => {
                 self.release_lease(id).await;
@@ -274,7 +277,9 @@ impl CertificateStore {
         expected: &super::StoredCertificateCandidate,
         directory: &super::SafeDir,
     ) -> Result<bool, CertificateError> {
-        let Some(retired) = read_candidate_manifest(directory, id)?.filter(|candidate| candidate.retired) else {
+        let Some(retired) =
+            read_candidate_manifest(directory, id)?.filter(|candidate| candidate.retired)
+        else {
             return Ok(false);
         };
         if !candidate_is_valid(id, &retired) {
