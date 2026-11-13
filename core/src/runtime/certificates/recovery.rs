@@ -74,6 +74,13 @@ pub(super) fn reconcile_candidate_manifests(
     for id in certificate_ids {
         let mut sidecar = read_candidate_manifest(certificates_dir, &id)?;
         let mut indexed = index.pending_candidates.get(&id).cloned();
+        if let Some(candidate) = sidecar.as_ref().filter(|candidate| candidate.retired) {
+            if !candidate_is_valid(&id, candidate) {
+                return Err(CertificateError::StoreUnavailable);
+            }
+            changed |= retire_candidate(index, &id, candidate, RetirementContext::Recovery)?;
+            continue;
+        }
         if indexed.is_some() || sidecar.is_some() {
             let candidate_operation = indexed
                 .as_ref()
@@ -212,6 +219,72 @@ pub(super) fn reconcile_candidate_manifests(
     Ok(changed)
 }
 
+pub(super) enum RetirementContext {
+    Live,
+    Recovery,
+}
+
+pub(super) fn retire_candidate(
+    index: &mut CertificateIndex,
+    id: &str,
+    retired: &StoredCertificateCandidate,
+    context: RetirementContext,
+) -> Result<bool, CertificateError> {
+    let Some(candidate) = index.pending_candidates.get(id) else {
+        return Ok(false);
+    };
+    let operation = retired
+        .staged
+        .metadata
+        .current_operation
+        .as_ref()
+        .ok_or(CertificateError::StoreUnavailable)?;
+    let active = index
+        .certificates
+        .get_mut(id)
+        .ok_or(CertificateError::StoreUnavailable)?;
+    if !retired.retired
+        || operation.stage != CertificateOperationStage::Failed
+        || retired.activation.last_error_code.is_none()
+        || candidate.staged.material_id != retired.staged.material_id
+        || candidate.base_material_id != retired.base_material_id
+        || active.material_id != retired.base_material_id
+        || (active.metadata.operation != CertificateOperation::Idle
+            && !(matches!(context, RetirementContext::Recovery)
+                && active.metadata.operation == retired.activation_operation))
+        || candidate
+            .staged
+            .metadata
+            .current_operation
+            .as_ref()
+            .map(|op| &op.id)
+            != Some(&operation.id)
+        || active.metadata.current_operation.as_ref().map(|op| &op.id) != Some(&operation.id)
+    {
+        return Err(CertificateError::StoreUnavailable);
+    }
+    active.metadata.operation = CertificateOperation::Idle;
+    active.metadata.current_operation = Some(operation.clone());
+    active.metadata.last_error_code = retired.activation.last_error_code.clone();
+    active.metadata.last_error_at = Some(operation.updated_at.clone());
+    active.metadata.updated_at = operation.updated_at.clone();
+    active.metadata.status = if active.material_id.is_some() {
+        CertificateStatus::Valid
+    } else {
+        CertificateStatus::Failed
+    };
+    index.pending_candidates.remove(id);
+    operations::append_event(
+        index,
+        &operation.id,
+        id,
+        CertificateEventKind::Failed,
+        CertificateOperationStage::Failed,
+        retired.activation.last_error_code.clone(),
+    )?;
+    Ok(true)
+}
+
 pub(super) fn read_candidate_manifest(
     certificates_dir: &SafeDir,
     id: &str,
@@ -240,6 +313,26 @@ pub(super) fn persist_candidate_manifest(
     candidate: &StoredCertificateCandidate,
 ) -> Result<(), CertificateError> {
     if !candidate_is_valid(id, candidate) {
+        return Err(CertificateError::StoreUnavailable);
+    }
+    if !candidate.retired
+        && let Some(previous) = read_candidate_manifest(certificates_dir, id)?
+        && previous.retired
+        && previous.staged.material_id == candidate.staged.material_id
+        && previous.base_material_id == candidate.base_material_id
+        && previous
+            .staged
+            .metadata
+            .current_operation
+            .as_ref()
+            .map(|operation| &operation.id)
+            == candidate
+                .staged
+                .metadata
+                .current_operation
+                .as_ref()
+                .map(|operation| &operation.id)
+    {
         return Err(CertificateError::StoreUnavailable);
     }
     let certificate_dir = certificates_dir
@@ -282,6 +375,19 @@ pub(super) fn remove_candidate_manifest(
 pub(super) fn candidate_is_valid(id: &str, candidate: &StoredCertificateCandidate) -> bool {
     let staged = &candidate.staged;
     candidate.version == CANDIDATE_MANIFEST_VERSION
+        && (!candidate.retired
+            || (candidate
+                .staged
+                .metadata
+                .current_operation
+                .as_ref()
+                .is_some_and(|operation| {
+                    operations::current_operation_is_valid(operation)
+                        && operation.stage == CertificateOperationStage::Failed
+                })
+                && candidate.activation.last_error_code.is_some()
+                && candidate.activation.next_attempt_at.is_none()
+                && candidate.activation.retry_delay_seconds.is_none()))
         && is_canonical_uuid_v7(id)
         && staged.metadata.id == id
         && staged.metadata.source == CertificateSource::Acme
