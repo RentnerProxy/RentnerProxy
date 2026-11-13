@@ -113,7 +113,8 @@ pub(super) fn validate_candidate_material(
     certificates_dir: &SafeDir,
     id: &str,
     staged: &StoredCertificate,
-) -> Result<(), CertificateError> {
+    now: OffsetDateTime,
+) -> Result<CertificateValidity, CertificateError> {
     let material_id = staged
         .material_id
         .as_deref()
@@ -123,7 +124,13 @@ pub(super) fn validate_candidate_material(
         .map_err(|_| CertificateError::StoreUnavailable)?;
     let versions_dir = certificate_dir
         .open_dir("versions")
-        .map_err(|_| CertificateError::StoreUnavailable)?;
+        .map_err(|error| {
+            if error.kind() == ErrorKind::NotFound {
+                CertificateError::InvalidCertificate
+            } else {
+                CertificateError::StoreUnavailable
+            }
+        })?;
     let version_dir = versions_dir.open_dir(material_id).map_err(|error| {
         if error.kind() == ErrorKind::NotFound {
             CertificateError::InvalidCertificate
@@ -141,12 +148,12 @@ pub(super) fn validate_candidate_material(
         String::from_utf8(fullchain).map_err(|_| CertificateError::InvalidCertificate)?;
     let private_key =
         String::from_utf8(private_key).map_err(|_| CertificateError::InvalidCertificate)?;
-    let parsed = ParsedCertificate::parse(&CertificateImportRequest {
+    let (parsed, validity) = ParsedCertificate::parse_at(&CertificateImportRequest {
         certificate_pem: fullchain,
         private_key_pem: private_key,
         chain_pem: None,
         required_domains: None,
-    })?;
+    }, now)?;
     if parsed.domains != staged.metadata.domains
         || staged.metadata.fingerprint.as_deref() != Some(parsed.fingerprint.as_str())
         || staged.metadata.issued_at.as_deref() != Some(parsed.issued_at.as_str())
@@ -155,7 +162,7 @@ pub(super) fn validate_candidate_material(
     {
         return Err(CertificateError::InvalidCertificate);
     }
-    Ok(())
+    Ok(validity)
 }
 
 pub(super) fn public_metadata(stored: &StoredCertificate) -> CertificateMetadata {
@@ -235,8 +242,24 @@ pub(super) struct ParsedCertificate {
     pub(super) fingerprint: String,
 }
 
+pub(super) enum CertificateValidity {
+    Valid,
+    NotYetValid,
+}
+
 impl ParsedCertificate {
     pub(super) fn parse(request: &CertificateImportRequest) -> Result<Self, CertificateError> {
+        let (parsed, validity) = Self::parse_at(request, OffsetDateTime::now_utc())?;
+        match validity {
+            CertificateValidity::Valid => Ok(parsed),
+            CertificateValidity::NotYetValid => Err(CertificateError::CertificateExpired),
+        }
+    }
+
+    fn parse_at(
+        request: &CertificateImportRequest,
+        now: OffsetDateTime,
+    ) -> Result<(Self, CertificateValidity), CertificateError> {
         if !has_only_pem_blocks(&request.certificate_pem, &["CERTIFICATE"], false)
             || !request
                 .chain_pem
@@ -276,12 +299,17 @@ impl ParsedCertificate {
             .ok_or(CertificateError::InvalidCertificate)?;
         let (_, certificate) = parse_x509_certificate(leaf.as_ref())
             .map_err(|_| CertificateError::InvalidCertificate)?;
-        let now = OffsetDateTime::now_utc().unix_timestamp();
+        let now = now.unix_timestamp();
         let not_before = certificate.validity().not_before.timestamp();
         let not_after = certificate.validity().not_after.timestamp();
-        if not_before > now || not_after <= now {
+        if not_after <= now {
             return Err(CertificateError::CertificateExpired);
         }
+        let validity = if not_before > now {
+            CertificateValidity::NotYetValid
+        } else {
+            CertificateValidity::Valid
+        };
         let subject_alternative_names = certificate
             .subject_alternative_name()
             .map_err(|_| CertificateError::InvalidCertificate)?;
@@ -323,7 +351,7 @@ impl ParsedCertificate {
             }
             fullchain.push_str(chain);
         }
-        Ok(Self {
+        Ok((Self {
             fullchain,
             domains,
             issued_at: format_timestamp(not_before)?,
@@ -340,7 +368,7 @@ impl ParsedCertificate {
                         .collect::<String>()
                 )
             },
-        })
+        }, validity))
     }
 }
 

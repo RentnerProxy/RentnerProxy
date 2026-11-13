@@ -1,5 +1,102 @@
 use super::*;
 
+#[tokio::test]
+async fn candidate_becoming_not_yet_valid_after_clock_rollback_stays_retryable_across_restart() {
+    let (store, directory) = active_store().await;
+    let active_fingerprint = store.get(ID).await.unwrap().fingerprint;
+    let (_, request) = store.begin_renewal(ID).await.unwrap();
+    let now = OffsetDateTime::now_utc();
+    let not_before = now - time::Duration::days(1);
+    let mut parameters = rcgen::CertificateParams::new(request.domains.clone()).unwrap();
+    parameters.not_before = not_before;
+    parameters.not_after = now + time::Duration::days(30);
+    let key = rcgen::KeyPair::generate().unwrap();
+    let leaf = parameters.self_signed(&key).unwrap();
+    let staged = store.stage_acme(ID, &request, leaf.pem(), key.serialize_pem()).await.unwrap();
+    store.finish_candidate_failed(&staged, CertificateError::RuntimeApplyFailed).await;
+    let before = serde_json::to_value(&*store.index.lock().await).unwrap();
+    for _ in 0..3 {
+        assert!(matches!(store.begin_candidate_activation_at(ID, false, not_before - time::Duration::days(1)).await,
+            Err(CertificateError::CertificateExpired)));
+        assert_eq!(serde_json::to_value(&*store.index.lock().await).unwrap(), before);
+        assert_lease_released(&store).await;
+    }
+    drop(store);
+    let reopened = CertificateStore::new(directory.0.clone());
+    reopened.initialize().await.unwrap();
+    assert_eq!(serde_json::to_value(&*reopened.index.lock().await).unwrap(), before);
+    assert_eq!(reopened.get(ID).await.unwrap().fingerprint, active_fingerprint);
+    let ready = reopened.begin_candidate_activation_at(ID, false, not_before + time::Duration::seconds(1))
+        .await.unwrap().unwrap();
+    let activated = reopened.commit_staged(&ready).await.unwrap();
+    assert_ne!(activated.fingerprint, active_fingerprint);
+    assert!(reopened.pending_candidate_ids().await.unwrap().is_empty());
+    assert_lease_released(&reopened).await;
+}
+
+#[tokio::test]
+async fn missing_versions_directory_retires_candidate_and_preserves_initial_or_active_pointer() {
+    for renewal in [false, true] {
+        let (store, directory) = if renewal {
+            active_store().await
+        } else {
+            let directory = TestDirectory(state_dir());
+            std::fs::create_dir_all(&directory.0).unwrap();
+            let store = CertificateStore::new(directory.0.clone());
+            store.initialize().await.unwrap();
+            (store, directory)
+        };
+        let request = if renewal {
+            store.begin_renewal(ID).await.unwrap().1
+        } else {
+            let request = issue_request();
+            store.begin_issue(ID, request.clone(), false).await.unwrap();
+            request
+        };
+        let leaf = rcgen::generate_simple_self_signed(request.domains.clone()).unwrap();
+        let staged = store.stage_acme(ID, &request, leaf.cert.pem(), leaf.signing_key.serialize_pem()).await.unwrap();
+        store.finish_candidate_failed(&staged, CertificateError::RuntimeApplyFailed).await;
+        let active_material_id = store.index.lock().await.certificates[ID].material_id.clone();
+        let versions = directory.0.join("certificates").join(ID).join("versions");
+        std::fs::remove_dir_all(&versions).unwrap();
+        assert!(matches!(store.begin_candidate_activation(ID, false).await, Err(CertificateError::InvalidCertificate)));
+        assert!(store.pending_candidate_ids().await.unwrap().is_empty());
+        assert_eq!(store.index.lock().await.certificates[ID].material_id, active_material_id);
+        assert_lease_released(&store).await;
+        drop(store);
+        let reopened = CertificateStore::new(directory.0.clone());
+        reopened.initialize().await.unwrap();
+        assert_eq!(reopened.index.lock().await.certificates[ID].material_id, active_material_id);
+        let request = if renewal { reopened.begin_renewal(ID).await.unwrap().1 }
+            else { let request = issue_request(); reopened.begin_issue(ID, request.clone(), false).await.unwrap(); request };
+        let leaf = rcgen::generate_simple_self_signed(request.domains.clone()).unwrap();
+        let replacement = reopened.stage_acme(ID, &request, leaf.cert.pem(), leaf.signing_key.serialize_pem()).await.unwrap();
+        reopened.commit_staged(&replacement).await.unwrap();
+        assert!(versions.is_dir());
+        assert!(reopened.material(ID).await.unwrap().fullchain_path.is_file());
+        assert_lease_released(&reopened).await;
+    }
+}
+
+#[tokio::test]
+async fn nonregular_versions_directory_remains_pending_until_storage_is_repaired() {
+    let (store, _, directory) = retryable_candidate().await;
+    let versions = directory.0.join("certificates").join(ID).join("versions");
+    let saved_versions = directory.0.join("saved-versions");
+    std::fs::rename(&versions, &saved_versions).unwrap();
+    std::fs::write(&versions, b"unavailable versions directory").unwrap();
+    let before = serde_json::to_value(&*store.index.lock().await).unwrap();
+    assert!(matches!(store.begin_candidate_activation(ID, false).await, Err(CertificateError::StoreUnavailable)));
+    assert_eq!(serde_json::to_value(&*store.index.lock().await).unwrap(), before);
+    assert_lease_released(&store).await;
+    std::fs::remove_file(&versions).unwrap();
+    std::fs::rename(saved_versions, versions).unwrap();
+    let repaired = store.begin_candidate_activation(ID, false).await.unwrap().unwrap();
+    store.commit_staged(&repaired).await.unwrap();
+    assert!(store.pending_candidate_ids().await.unwrap().is_empty());
+    assert_lease_released(&store).await;
+}
+
 fn invalidate_candidate(staged: &StagedCertificate, directory: &TestDirectory, expired: bool) {
     let version = directory
         .0

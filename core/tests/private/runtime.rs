@@ -1,4 +1,4 @@
-use super::fixtures::{host, request, trusted_ca_certificate};
+use super::fixtures::{TestDirectory, host, request, trusted_ca_certificate};
 use crate::{
     models::{
         AccessPolicy, AccessPolicyMode, ApplyOutcome, BasicAuth, BasicAuthAccount,
@@ -1318,7 +1318,9 @@ async fn issued_candidate_survives_load_rejection_and_restart_without_an_acme_or
 #[tokio::test]
 async fn unusable_candidate_retirement_waits_for_confirmed_caddy_recovery() {
     let engine = FakeCaddy::new();
-    let (runtime, settings, old) = runtime_with_issued_candidate(engine.clone()).await;
+    let prepared = runtime_with_issued_candidate(engine.clone()).await;
+    let _directory = TestDirectory(prepared.1.state_dir.clone());
+    let (runtime, settings, old) = prepared;
     let before = runtime.active_config().await.unwrap();
     let certificate_directory = settings.state_dir.join("certificates").join(CERT_ID);
     let candidate: serde_json::Value = serde_json::from_slice(

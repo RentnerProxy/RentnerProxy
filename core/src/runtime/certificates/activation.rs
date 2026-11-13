@@ -1,4 +1,4 @@
-use super::material_files::validate_candidate_material;
+use super::material_files::{CertificateValidity, validate_candidate_material};
 use super::operations;
 use super::persistence::{persist_index, report_recovery_result};
 use super::recovery::{RetirementContext, persist_candidate_manifest, retire_candidate};
@@ -24,8 +24,16 @@ impl CertificateStore {
         id: &str,
         scheduled: bool,
     ) -> Result<Option<StagedCertificate>, CertificateError> {
+        self.begin_candidate_activation_at(id, scheduled, OffsetDateTime::now_utc()).await
+    }
+
+    pub(super) async fn begin_candidate_activation_at(
+        &self,
+        id: &str,
+        scheduled: bool,
+        now: OffsetDateTime,
+    ) -> Result<Option<StagedCertificate>, CertificateError> {
         self.acquire_lease(id).await?;
-        let now = OffsetDateTime::now_utc();
         let (candidate, active) = {
             let index = self.index.lock().await;
             let Some(candidate) = index.pending_candidates.get(id).cloned() else {
@@ -75,7 +83,12 @@ impl CertificateStore {
                 return Err(error);
             }
         };
-        if let Err(error) = validate_candidate_material(&certificates_dir, id, &candidate.staged) {
+        let validation = validate_candidate_material(&certificates_dir, id, &candidate.staged, now);
+        if matches!(validation, Ok(CertificateValidity::NotYetValid)) {
+            self.release_lease(id).await;
+            return Err(CertificateError::CertificateExpired);
+        }
+        if let Err(error) = validation {
             if !matches!(
                 error,
                 CertificateError::InvalidCertificate
