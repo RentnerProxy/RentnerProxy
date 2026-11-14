@@ -10,15 +10,35 @@ export interface BlogBenchmark {
     runUrl: string
 }
 
+export interface BlogCodeComparison {
+    id: string
+    title: string
+    unit: string
+    basis: 'configuration'
+    baseline: { label: string; value: number }
+    candidate: { label: string; value: number }
+    note: string
+    sources: { label: string; url: string }[]
+}
+
+export interface BlogDiagram {
+    title: string
+    caption: string
+    steps: { label: string; detail?: string }[]
+}
+
 export interface BlogLocale {
     title: string
     summary: string
+    topics?: string[]
     sections: {
         id: string
         title: string
         paragraphs: string[]
         code?: { language: string; value: string }
         links?: { label: string; url: string }[]
+        comparisons?: BlogCodeComparison[]
+        diagram?: BlogDiagram
     }[]
     benchmarks?: Record<string, { title: string; description: string }>
 }

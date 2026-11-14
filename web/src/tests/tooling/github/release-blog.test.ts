@@ -140,6 +140,77 @@ function fixture() {
     }
 }
 
+function configuredVisuals() {
+    return {
+        topics: ['Performance', 'Security'],
+        comparisons: [
+            {
+                id: 'monitoring-concurrency',
+                title: 'Configured monitoring concurrency',
+                unit: 'checks',
+                basis: 'configuration',
+                baseline: { label: 'Beta 3.1', value: 1 },
+                candidate: { label: 'Beta 3.2', value: 64 },
+                note: 'Configured ceiling, not measured throughput.',
+                sources: [
+                    {
+                        label: 'Versioned configuration',
+                        url: 'https://github.com/RentnerProxy/platform/blob/270301eddba47f8120af9bf3a0bb8b26d57ba7c7/web/src/config/host-monitoring.config.ts',
+                    },
+                ],
+            },
+        ],
+        diagram: {
+            title: 'Bounded monitoring flow',
+            caption: 'Results share a bounded persistence batch.',
+            steps: [{ label: 'Claim', detail: 'Reserve free worker slots.' }, { label: 'Persist' }],
+        },
+    }
+}
+
+test.each([
+    'valid',
+    'negative',
+    'nonfinite',
+    'benchmark-basis',
+    'unsafe-source',
+    'credential-source',
+    'duplicate-id',
+    'single-step',
+])('validates structured configuration comparisons and flows: %s', (mode) => {
+    const authored = source()
+    const visuals = configuredVisuals()
+    const comparison = visuals.comparisons[0]!
+    if (mode === 'negative') comparison.baseline.value = -1
+    if (mode === 'nonfinite') comparison.candidate.value = Number.POSITIVE_INFINITY
+    if (mode === 'benchmark-basis') comparison.basis = 'benchmark'
+    if (mode === 'unsafe-source') comparison.sources[0]!.url = 'javascript:alert(1)'
+    if (mode === 'credential-source')
+        comparison.sources[0]!.url = 'https://user:secret@example.com/source'
+    if (mode === 'duplicate-id') visuals.comparisons.push(structuredClone(comparison))
+    if (mode === 'single-step') visuals.diagram.steps.splice(1)
+    for (const localized of Object.values(authored.locales)) {
+        Object.assign(localized, { topics: visuals.topics })
+        Object.assign(localized.sections[0]!, {
+            comparisons: visuals.comparisons,
+            diagram: visuals.diagram,
+        })
+    }
+    if (mode !== 'valid') {
+        expect(() => buildReleaseBlog(readiness, authored)).toThrow()
+        return
+    }
+    const result = buildReleaseBlog(readiness, authored)
+    expect(JSON.parse(new TextDecoder().decode(blogBytes(result)))).toEqual(result)
+    for (const localized of Object.values(result.locales)) {
+        expect(localized).toMatchObject({ topics: visuals.topics })
+        expect(localized.sections[0]).toMatchObject({
+            comparisons: visuals.comparisons,
+            diagram: visuals.diagram,
+        })
+    }
+})
+
 describe('release blog contract', () => {
     test('uses assessed release identity and keeps four authored locales and code as text', () => {
         const post = buildReleaseBlog(readiness, source())

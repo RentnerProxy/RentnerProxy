@@ -1,16 +1,15 @@
 {
-    "contentRevision": 1,
+    "contentRevision": 2,
     "locales": {
         "de": {
             "title": "RentnerProxy Beta 3.2: Performance und Security mit PostgreSQL 18.7",
-            "summary": "Beta 3.2 ist ein Performance- und Security-Update: fairere Hintergrundarbeit, gebündelte Verarbeitung und weniger PostgreSQL-Koordination treffen auf die Sicherheitskorrekturen von PostgreSQL 18.7. Robustere Backups, Wiederherstellung, Zertifikatsjobs und Audit-Aufbewahrung ergänzen das Update.",
+            "summary": "Mehr Platz für Hintergrundarbeit. Gebündelte Datenbankzugriffe. PostgreSQL 18.7 mit Sicherheitskorrekturen. Beta 3.2 macht Monitoring, Backups und Wiederanlauf robuster.",
             "sections": [
                 {
                     "id": "postgresql-security",
                     "title": "PostgreSQL 18.7: Sicherheitskorrekturen für die Appliance",
                     "paragraphs": [
-                        "Beta 3.2 aktualisiert das gebündelte PostgreSQL von 18.6 auf 18.7. Das am 12. November 2026 veröffentlichte Sicherheits- und Fehlerkorrektur-Release enthält Korrekturen für den Datenbankserver und seine Verwaltungswerkzeuge.",
-                        "Unter anderem werden die Behandlung von Constraint-Namen in pg_dump und die Archivverarbeitung in pg_restore abgesichert. RentnerProxy nutzt beide Werkzeuge für vollständige logische Backups und Wiederherstellungen. Das Update bleibt innerhalb der PostgreSQL-18-Reihe."
+                        "PostgreSQL 18.7 behebt Sicherheitslücken und Fehler. Die enthaltenen Korrekturen härten unter anderem Constraint-Namen in pg_dump und die Archivverarbeitung in pg_restore; beide Werkzeuge nutzt RentnerProxy für vollständige logische Backups."
                     ],
                     "links": [
                         {
@@ -21,14 +20,32 @@
                             "label": "PostgreSQL 18.7 Release-Notes",
                             "url": "https://www.postgresql.org/docs/release/18.7/"
                         }
-                    ]
+                    ],
+                    "diagram": {
+                        "title": "PostgreSQL 18.7 im Überblick",
+                        "caption": "Sicherheits- und Fehlerkorrekturen innerhalb der PostgreSQL-18-Reihe.",
+                        "steps": [
+                            {
+                                "label": "PostgreSQL 18.6",
+                                "detail": "Bisher gebündelte Version"
+                            },
+                            {
+                                "label": "Update auf 18.7",
+                                "detail": "Sicherheitsrelease vom 12. November"
+                            },
+                            {
+                                "label": "Backup-Werkzeuge gehärtet",
+                                "detail": "pg_dump und pg_restore"
+                            }
+                        ]
+                    }
                 },
                 {
                     "id": "runtime-and-workers",
                     "title": "Performance durch fair geplante Hintergrundarbeit",
                     "paragraphs": [
-                        "Seit Beta 3.1 wurden die bestehenden Hintergrunddienste überarbeitet. Gemeinsame Ressourcenbudgets, begrenzte Parallelität und eine faire Einplanung helfen Monitoring, Benachrichtigungen und anderen Aufgaben, auch neben Dashboard-Anfragen voranzukommen. Weniger Koordinationszugriffe auf PostgreSQL reduzieren dabei unnötige Verwaltungsarbeit.",
-                        "Fehler der Web-Schicht werden besser von Caddy und dem Controller isoliert. Wiederanlauf, Herunterfahren und Restore-Wartung behalten die Zuständigkeit für bereits angenommene Arbeit bis zum Abschluss ihrer Aufräumschritte. Neue Fortschrittsdiagnosen unterscheiden laufende, wartende, pausierte und fehlgeschlagene Arbeit; fehlende Messwerte bleiben ausdrücklich unbekannt."
+                        "Gemeinsame Ressourcenbudgets verteilen Hintergrundarbeit fair neben Dashboard-Anfragen. Weniger Datenbankkoordination und gebündelte Verarbeitung reduzieren Verwaltungsarbeit.",
+                        "Web-Fehler werden besser von Caddy und Controller isoliert. Wiederanlauf und Aufräumen behalten die Zuständigkeit für angenommene Arbeit. Diagnosen zeigen laufende, wartende, pausierte und fehlgeschlagene Jobs."
                     ],
                     "links": [
                         {
@@ -43,14 +60,66 @@
                             "label": "Fortschrittsdiagnosen",
                             "url": "https://github.com/RentnerProxy/platform/pull/414"
                         }
+                    ],
+                    "comparisons": [
+                        {
+                            "id": "monitoring-concurrency",
+                            "title": "Monitoring: mehr parallele Prüfplätze",
+                            "unit": "Prüfplätze / Worker",
+                            "basis": "configuration",
+                            "baseline": {
+                                "label": "Beta 3.1",
+                                "value": 1
+                            },
+                            "candidate": {
+                                "label": "Beta 3.2",
+                                "value": 64
+                            },
+                            "note": "Konfigurierte Obergrenze pro Worker: von einem auf bis zu 64 gleichzeitige Checks. Gemeinsame Ressourcenbudgets begrenzen die tatsächlich zugelassene Arbeit. Das ist kein gemessener Geschwindigkeitsfaktor.",
+                            "sources": [
+                                {
+                                    "label": "Quellcode Beta 3.1",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.1/web/src/config/host-monitoring.config.ts#L4"
+                                },
+                                {
+                                    "label": "Quellcode Beta 3.2",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.2/web/src/config/host-monitoring.config.ts#L4"
+                                }
+                            ]
+                        },
+                        {
+                            "id": "monitoring-batch",
+                            "title": "Monitoring: Ergebnisse gemeinsam speichern",
+                            "unit": "Ergebnisse / Transaktion",
+                            "basis": "configuration",
+                            "baseline": {
+                                "label": "Beta 3.1",
+                                "value": 1
+                            },
+                            "candidate": {
+                                "label": "Beta 3.2",
+                                "value": 16
+                            },
+                            "note": "Bis zu 16 Ergebnisse teilen sich eine Datenbanktransaktion statt einer Transaktion pro Ergebnis. Einzelne Einträge behalten ihre eigenen Savepoints.",
+                            "sources": [
+                                {
+                                    "label": "Quellcode Beta 3.1",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.1/web/src/server/HostMonitoring/host-monitoring.repository.ts#L324"
+                                },
+                                {
+                                    "label": "Quellcode Beta 3.2",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.2/web/src/config/host-monitoring.config.ts#L6"
+                                }
+                            ]
+                        }
                     ]
                 },
                 {
                     "id": "monitoring-notifications-discovery",
                     "title": "Monitoring, Zustellung und Docker-Erkennung",
                     "paragraphs": [
-                        "Host-Prüfungen nutzen begrenzte parallele Verarbeitung und gebündelte Speicherung. Langsame Prüfungen blockieren dadurch nicht alle freien Plätze. Die Bereinigung der Historie verteilt ein gemeinsames Aufbewahrungsbudget fair auf die Richtlinien: Eine konfigurierte Grenze bleibt eine Obergrenze und garantiert keine feste Zahl gespeicherter Beobachtungen.",
-                        "Die vorhandenen Benachrichtigungen werden mit begrenzter Parallelität fair über Benutzer, Kanäle und Transporte eingeplant. Die Docker-Erkennung verfolgt Bestandsänderungen über begrenzte Änderungsbeobachtung und gleicht den Bestand nach einem Neustart erneut ab. Bestandsänderungen erreichen das Dashboard über den Live-Ereignisstrom."
+                        "Monitoring, Benachrichtigungen und Docker-Erkennung arbeiten mit begrenzter Parallelität und fairer Einplanung. Nach Neustarts gleicht die Docker-Erkennung den Bestand neu ab.",
+                        "Die Historienbereinigung teilt das gemeinsame Aufbewahrungsbudget fair auf. Eine konfigurierte Grenze ist eine Obergrenze und garantiert keine feste Zahl gespeicherter Beobachtungen."
                     ],
                     "links": [
                         {
@@ -65,14 +134,63 @@
                             "label": "Docker-Bestandsabgleich",
                             "url": "https://github.com/RentnerProxy/platform/pull/407"
                         }
-                    ]
+                    ],
+                    "comparisons": [
+                        {
+                            "id": "notification-setting-sql",
+                            "title": "Benachrichtigungen: weniger SQL bei bestehenden Einstellungen",
+                            "unit": "SQL-Anweisungen",
+                            "basis": "configuration",
+                            "baseline": {
+                                "label": "Beta 3.1",
+                                "value": 2
+                            },
+                            "candidate": {
+                                "label": "Beta 3.2",
+                                "value": 1
+                            },
+                            "note": "Der gesperrte Lesezugriff auf eine bereits vorhandene Einstellung braucht eine statt zwei SQL-Anweisungen. Das Anlegen neuer Einstellungen ist ein anderer Pfad.",
+                            "sources": [
+                                {
+                                    "label": "Quellcode Beta 3.1",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.1/web/src/server/Notifications/notification-storage.ts#L49"
+                                },
+                                {
+                                    "label": "Quellcode Beta 3.2",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.2/web/src/server/Notifications/notification-storage.ts#L49"
+                                }
+                            ]
+                        }
+                    ],
+                    "diagram": {
+                        "title": "So fließen Monitoring-Ergebnisse",
+                        "caption": "Begrenzte Parallelität und gemeinsames Speichern vermeiden unnötige Koordination.",
+                        "steps": [
+                            {
+                                "label": "Fällige Checks",
+                                "detail": "Faire Ressourcenbudgets"
+                            },
+                            {
+                                "label": "Parallel prüfen",
+                                "detail": "Langsame Checks belegen einzelne Plätze"
+                            },
+                            {
+                                "label": "Ergebnisse bündeln",
+                                "detail": "Bis zu 16 Ergebnisse pro Transaktion"
+                            },
+                            {
+                                "label": "Live-Dashboard",
+                                "detail": "Bestandsänderungen im Ereignisstrom"
+                            }
+                        ]
+                    }
                 },
                 {
                     "id": "backups-and-restore",
                     "title": "Große Backups und verlässlichere Wiederherstellung",
                     "paragraphs": [
-                        "Export, Download, externe Speicherung und Wiederherstellung unterstützen jetzt mehrere GiB große Backup-Dateien. Die Verarbeitung erfolgt mit Streaming, begrenzter Validierung und Kapazitätsprüfungen. Die Schutzgrenzen bleiben endlich: maximal 8 GiB pro Backup-Artefakt, eine Speicherplatzreserve von 2 GiB und ein äußeres Zeitlimit von vier Stunden pro Operation.",
-                        "Die Wiederherstellung behandelt Neustart- und Wartungsübergänge robuster. Das Dashboard bewahrt seinen Live-Zustand bei einer erneuten Verbindung und aktualisiert ihn anschließend; veraltete Identitätsprüfungen werden verworfen. Zusätzliche Prüfungen decken unterbrochene Wiederherstellung, sichere Downloads und den Umgang mit Backups im Besitz von root ab."
+                        "Export, Download, externe Speicherung und Restore unterstützen mehrere GiB große Dateien. Die Schutzgrenzen bleiben endlich und gelten pro erfasster Komponentendatei.",
+                        "Das Live-Dashboard behält bei erneuter Verbindung seinen Zustand und gleicht ihn danach ab. Zusätzliche Prüfungen decken unterbrochene Restores, sichere Downloads und Backups im Besitz von root ab."
                     ],
                     "links": [
                         {
@@ -83,7 +201,52 @@
                             "label": "Restore und Live-Dashboard",
                             "url": "https://github.com/RentnerProxy/platform/pull/440"
                         }
-                    ]
+                    ],
+                    "comparisons": [
+                        {
+                            "id": "backup-component-limit",
+                            "title": "Backups: größere einzelne Komponentendateien",
+                            "unit": "GiB / Komponentendatei",
+                            "basis": "configuration",
+                            "baseline": {
+                                "label": "Beta 3.1",
+                                "value": 0.5
+                            },
+                            "candidate": {
+                                "label": "Beta 3.2",
+                                "value": 8
+                            },
+                            "note": "Die konfigurierte Grenze steigt von 512 MiB auf 8 GiB pro erfasster Komponentendatei, etwa postgres.dump. Dies ist weder die Gesamtgröße des Backup-Bundles noch ein Durchsatz-Benchmark.",
+                            "sources": [
+                                {
+                                    "label": "Quellcode Beta 3.1",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.1/docker/production/backups/export.ts#L31"
+                                },
+                                {
+                                    "label": "Quellcode Beta 3.2",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.2/web/src/config/backup-runtime.config.ts#L2"
+                                }
+                            ]
+                        }
+                    ],
+                    "diagram": {
+                        "title": "Sicher durch den Backup-Ablauf",
+                        "caption": "Streaming und endliche Schutzgrenzen begleiten Export, Download und Wiederherstellung.",
+                        "steps": [
+                            {
+                                "label": "Streaming",
+                                "detail": "Große Dateien schrittweise verarbeiten"
+                            },
+                            {
+                                "label": "Kapazität prüfen",
+                                "detail": "2 GiB Reserve · 4 Stunden äußeres Zeitlimit"
+                            },
+                            {
+                                "label": "Wiederherstellen",
+                                "detail": "Wartung und Neustart sauber übergeben"
+                            }
+                        ]
+                    }
                 },
                 {
                     "id": "certificates-and-audit",
@@ -152,18 +315,23 @@
                         }
                     ]
                 }
+            ],
+            "topics": [
+                "Performance",
+                "PostgreSQL 18.7",
+                "Große Backups",
+                "Sicherer Wiederanlauf"
             ]
         },
         "en": {
             "title": "RentnerProxy Beta 3.2: performance and security with PostgreSQL 18.7",
-            "summary": "Beta 3.2 is a performance and security update: fairer background work, batched processing and fewer PostgreSQL coordination round trips, alongside PostgreSQL 18.7 security fixes. More robust backups, restore recovery, certificate jobs and audit retention complete the update.",
+            "summary": "More room for background work. Batched database access. PostgreSQL 18.7 security fixes. Beta 3.2 makes monitoring, backups and recovery more resilient.",
             "sections": [
                 {
                     "id": "postgresql-security",
                     "title": "PostgreSQL 18.7: security fixes for the appliance",
                     "paragraphs": [
-                        "Beta 3.2 upgrades bundled PostgreSQL from 18.6 to 18.7, the security and bugfix release published on 12 November 2026. It includes corrections in the database server and its administration tools.",
-                        "The update hardens constraint-name handling in pg_dump and archive processing in pg_restore. RentnerProxy uses both tools for full logical backups and restores. The update remains within the PostgreSQL 18 series."
+                        "PostgreSQL 18.7 fixes security issues and bugs. It hardens constraint-name handling in pg_dump and archive processing in pg_restore, both used by RentnerProxy for full logical backups."
                     ],
                     "links": [
                         {
@@ -174,14 +342,32 @@
                             "label": "PostgreSQL 18.7 release notes",
                             "url": "https://www.postgresql.org/docs/release/18.7/"
                         }
-                    ]
+                    ],
+                    "diagram": {
+                        "title": "PostgreSQL 18.7 at a glance",
+                        "caption": "Security and bug fixes within the PostgreSQL 18 series.",
+                        "steps": [
+                            {
+                                "label": "PostgreSQL 18.6",
+                                "detail": "Previously bundled version"
+                            },
+                            {
+                                "label": "Update to 18.7",
+                                "detail": "November 12 security release"
+                            },
+                            {
+                                "label": "Hardened backup tools",
+                                "detail": "pg_dump and pg_restore"
+                            }
+                        ]
+                    }
                 },
                 {
                     "id": "runtime-and-workers",
                     "title": "Performance through fair background scheduling",
                     "paragraphs": [
-                        "Since Beta 3.1, the existing background services have been reworked. Shared resource budgets, bounded concurrency and fair scheduling help monitoring, notifications and other tasks make progress alongside dashboard requests. Fewer PostgreSQL coordination round trips reduce unnecessary bookkeeping.",
-                        "Web faults are better isolated from Caddy and the controller. Recovery, shutdown and restore maintenance retain ownership of admitted work until cleanup settles. New progress diagnostics distinguish running, deferred, paused and failed work; missing measurements remain explicitly unknown."
+                        "Shared resource budgets schedule background work fairly alongside dashboard requests. Less database coordination and batched processing reduce bookkeeping.",
+                        "Web faults are better isolated from Caddy and the controller. Recovery and cleanup retain ownership of admitted work. Diagnostics distinguish running, deferred, paused and failed jobs."
                     ],
                     "links": [
                         {
@@ -196,14 +382,66 @@
                             "label": "Progress diagnostics",
                             "url": "https://github.com/RentnerProxy/platform/pull/414"
                         }
+                    ],
+                    "comparisons": [
+                        {
+                            "id": "monitoring-concurrency",
+                            "title": "Monitoring: more concurrent check slots",
+                            "unit": "slots / worker",
+                            "basis": "configuration",
+                            "baseline": {
+                                "label": "Beta 3.1",
+                                "value": 1
+                            },
+                            "candidate": {
+                                "label": "Beta 3.2",
+                                "value": 64
+                            },
+                            "note": "The configured per-worker ceiling rises from one to up to 64 concurrent checks. Shared resource budgets bound the work actually admitted. This is not a measured speedup.",
+                            "sources": [
+                                {
+                                    "label": "Beta 3.1 source",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.1/web/src/config/host-monitoring.config.ts#L4"
+                                },
+                                {
+                                    "label": "Beta 3.2 source",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.2/web/src/config/host-monitoring.config.ts#L4"
+                                }
+                            ]
+                        },
+                        {
+                            "id": "monitoring-batch",
+                            "title": "Monitoring: persist results together",
+                            "unit": "results / transaction",
+                            "basis": "configuration",
+                            "baseline": {
+                                "label": "Beta 3.1",
+                                "value": 1
+                            },
+                            "candidate": {
+                                "label": "Beta 3.2",
+                                "value": 16
+                            },
+                            "note": "Up to 16 results share one database transaction instead of one transaction per result. Individual entries retain their own savepoints.",
+                            "sources": [
+                                {
+                                    "label": "Beta 3.1 source",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.1/web/src/server/HostMonitoring/host-monitoring.repository.ts#L324"
+                                },
+                                {
+                                    "label": "Beta 3.2 source",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.2/web/src/config/host-monitoring.config.ts#L6"
+                                }
+                            ]
+                        }
                     ]
                 },
                 {
                     "id": "monitoring-notifications-discovery",
                     "title": "Monitoring, delivery and Docker discovery",
                     "paragraphs": [
-                        "Host checks use bounded parallel processing and batched persistence. Slow probes no longer block refilling every available slot. History cleanup shares a global retention budget fairly across policies: a configured retention limit remains an upper bound rather than a guaranteed number of stored observations.",
-                        "Existing notifications are scheduled fairly across owners, channels and transports with bounded concurrent delivery. Docker discovery follows inventory changes through bounded change watches and resynchronizes after a runtime restart. Inventory updates reach the dashboard through the live event stream."
+                        "Monitoring, notifications and Docker discovery use bounded concurrency and fair scheduling. Docker discovery reconciles inventory after restarts.",
+                        "History cleanup shares the retention budget fairly. A configured limit remains an upper bound and does not guarantee a fixed number of stored observations."
                     ],
                     "links": [
                         {
@@ -218,14 +456,63 @@
                             "label": "Docker inventory reconciliation",
                             "url": "https://github.com/RentnerProxy/platform/pull/407"
                         }
-                    ]
+                    ],
+                    "comparisons": [
+                        {
+                            "id": "notification-setting-sql",
+                            "title": "Notifications: less SQL for existing settings",
+                            "unit": "SQL statements",
+                            "basis": "configuration",
+                            "baseline": {
+                                "label": "Beta 3.1",
+                                "value": 2
+                            },
+                            "candidate": {
+                                "label": "Beta 3.2",
+                                "value": 1
+                            },
+                            "note": "A locked read of an existing setting takes one SQL statement instead of two. Creating a new setting follows a different path.",
+                            "sources": [
+                                {
+                                    "label": "Beta 3.1 source",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.1/web/src/server/Notifications/notification-storage.ts#L49"
+                                },
+                                {
+                                    "label": "Beta 3.2 source",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.2/web/src/server/Notifications/notification-storage.ts#L49"
+                                }
+                            ]
+                        }
+                    ],
+                    "diagram": {
+                        "title": "How monitoring results flow",
+                        "caption": "Bounded concurrency and shared persistence reduce unnecessary coordination.",
+                        "steps": [
+                            {
+                                "label": "Due checks",
+                                "detail": "Fair resource budgets"
+                            },
+                            {
+                                "label": "Check concurrently",
+                                "detail": "Slow checks occupy individual slots"
+                            },
+                            {
+                                "label": "Batch results",
+                                "detail": "Up to 16 results per transaction"
+                            },
+                            {
+                                "label": "Live dashboard",
+                                "detail": "Inventory changes over the event stream"
+                            }
+                        ]
+                    }
                 },
                 {
                     "id": "backups-and-restore",
                     "title": "Larger backups and more reliable restore recovery",
                     "paragraphs": [
-                        "Export, download, off-host storage and restore now support multi-GiB backup files. Processing uses streaming, bounded validation and capacity checks. Protective limits remain finite: an 8 GiB ceiling per backup artifact, a 2 GiB free-space reserve and a four-hour outer timeout per operation.",
-                        "Restore recovery handles restart and maintenance transitions more robustly. The dashboard preserves its live state across reconnects and refreshes it afterward, rejecting stale identity checks. Additional checks cover interrupted restores, secure downloads and root-owned backup boundaries."
+                        "Export, download, remote storage and restore support multi-GiB files. Safeguards remain finite and apply per captured component file.",
+                        "The live dashboard keeps its state when reconnecting, then reconciles it. Additional checks cover interrupted restores, secure downloads and root-owned backups."
                     ],
                     "links": [
                         {
@@ -236,7 +523,52 @@
                             "label": "Restore and live dashboard state",
                             "url": "https://github.com/RentnerProxy/platform/pull/440"
                         }
-                    ]
+                    ],
+                    "comparisons": [
+                        {
+                            "id": "backup-component-limit",
+                            "title": "Backups: larger individual component files",
+                            "unit": "GiB / component file",
+                            "basis": "configuration",
+                            "baseline": {
+                                "label": "Beta 3.1",
+                                "value": 0.5
+                            },
+                            "candidate": {
+                                "label": "Beta 3.2",
+                                "value": 8
+                            },
+                            "note": "The configured cap increases from 512 MiB to 8 GiB per captured component file, such as postgres.dump. This is neither the size of the whole backup bundle nor a throughput benchmark.",
+                            "sources": [
+                                {
+                                    "label": "Beta 3.1 source",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.1/docker/production/backups/export.ts#L31"
+                                },
+                                {
+                                    "label": "Beta 3.2 source",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.2/web/src/config/backup-runtime.config.ts#L2"
+                                }
+                            ]
+                        }
+                    ],
+                    "diagram": {
+                        "title": "Through the backup lifecycle",
+                        "caption": "Streaming and finite safeguards accompany export, download and restore.",
+                        "steps": [
+                            {
+                                "label": "Stream",
+                                "detail": "Process large files incrementally"
+                            },
+                            {
+                                "label": "Check capacity",
+                                "detail": "2 GiB reserve · 4-hour outer deadline"
+                            },
+                            {
+                                "label": "Restore",
+                                "detail": "Hand off maintenance and restarts safely"
+                            }
+                        ]
+                    }
                 },
                 {
                     "id": "certificates-and-audit",
@@ -305,18 +637,23 @@
                         }
                     ]
                 }
+            ],
+            "topics": [
+                "Performance",
+                "PostgreSQL 18.7",
+                "Large backups",
+                "Safer recovery"
             ]
         },
         "es": {
             "title": "RentnerProxy Beta 3.2: rendimiento y seguridad con PostgreSQL 18.7",
-            "summary": "Beta 3.2 es una actualización de rendimiento y seguridad: planificación más equitativa, procesamiento por lotes y menos intercambios de coordinación con PostgreSQL, junto con las correcciones de seguridad de PostgreSQL 18.7. También mejora las copias, las restauraciones, los certificados y la retención de auditoría.",
+            "summary": "Más capacidad para tareas en segundo plano. Accesos agrupados a la base de datos. Correcciones de seguridad de PostgreSQL 18.7. Beta 3.2 refuerza la supervisión, las copias y la recuperación.",
             "sections": [
                 {
                     "id": "postgresql-security",
                     "title": "PostgreSQL 18.7: correcciones de seguridad para la imagen integrada",
                     "paragraphs": [
-                        "Beta 3.2 actualiza PostgreSQL de 18.6 a 18.7, la versión de seguridad y corrección de errores publicada el 12 de noviembre de 2026. Incluye correcciones en el servidor de bases de datos y sus herramientas de administración.",
-                        "La actualización refuerza el tratamiento de nombres de restricciones en pg_dump y el procesamiento de archivos de copia en pg_restore. RentnerProxy utiliza ambas herramientas para copias lógicas completas y restauraciones. La actualización se mantiene dentro de la serie PostgreSQL 18."
+                        "PostgreSQL 18.7 corrige problemas de seguridad y errores. Refuerza los nombres de restricciones en pg_dump y el procesamiento de archivos en pg_restore; RentnerProxy utiliza ambas herramientas para copias lógicas completas."
                     ],
                     "links": [
                         {
@@ -327,14 +664,32 @@
                             "label": "Notas de PostgreSQL 18.7",
                             "url": "https://www.postgresql.org/docs/release/18.7/"
                         }
-                    ]
+                    ],
+                    "diagram": {
+                        "title": "PostgreSQL 18.7 de un vistazo",
+                        "caption": "Correcciones de seguridad y errores dentro de la serie PostgreSQL 18.",
+                        "steps": [
+                            {
+                                "label": "PostgreSQL 18.6",
+                                "detail": "Versión incluida anteriormente"
+                            },
+                            {
+                                "label": "Actualizar a 18.7",
+                                "detail": "Actualización de seguridad del 12 de noviembre"
+                            },
+                            {
+                                "label": "Herramientas reforzadas",
+                                "detail": "pg_dump y pg_restore"
+                            }
+                        ]
+                    }
                 },
                 {
                     "id": "runtime-and-workers",
                     "title": "Rendimiento mediante una planificación equitativa",
                     "paragraphs": [
-                        "Desde Beta 3.1 se han revisado los servicios existentes en segundo plano. Los presupuestos compartidos de recursos, la concurrencia limitada y una planificación equitativa permiten que la supervisión, las notificaciones y otras tareas avancen junto con las solicitudes del panel. Menos intercambios de coordinación con PostgreSQL reducen el trabajo administrativo innecesario.",
-                        "Los fallos de la capa web quedan mejor aislados de Caddy y del controlador. La recuperación, el apagado y el mantenimiento durante la restauración conservan la responsabilidad sobre el trabajo admitido hasta terminar la limpieza. Los nuevos diagnósticos distinguen tareas en ejecución, aplazadas, pausadas y fallidas; las mediciones ausentes siguen figurando como desconocidas."
+                        "Los presupuestos compartidos reparten las tareas en segundo plano junto a las solicitudes del panel. Menos coordinación con la base de datos y el procesamiento agrupado reducen trabajo administrativo.",
+                        "Los fallos web quedan mejor aislados de Caddy y del controlador. La recuperación y la limpieza conservan la responsabilidad del trabajo admitido. Los diagnósticos distinguen tareas activas, pendientes, pausadas y fallidas."
                     ],
                     "links": [
                         {
@@ -349,14 +704,66 @@
                             "label": "Diagnósticos de progreso",
                             "url": "https://github.com/RentnerProxy/platform/pull/414"
                         }
+                    ],
+                    "comparisons": [
+                        {
+                            "id": "monitoring-concurrency",
+                            "title": "Supervisión: más comprobaciones simultáneas",
+                            "unit": "plazas / trabajador",
+                            "basis": "configuration",
+                            "baseline": {
+                                "label": "Beta 3.1",
+                                "value": 1
+                            },
+                            "candidate": {
+                                "label": "Beta 3.2",
+                                "value": 64
+                            },
+                            "note": "El límite configurado por trabajador pasa de una a un máximo de 64 comprobaciones simultáneas. Los presupuestos compartidos limitan el trabajo admitido. No es una aceleración medida.",
+                            "sources": [
+                                {
+                                    "label": "Código de Beta 3.1",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.1/web/src/config/host-monitoring.config.ts#L4"
+                                },
+                                {
+                                    "label": "Código de Beta 3.2",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.2/web/src/config/host-monitoring.config.ts#L4"
+                                }
+                            ]
+                        },
+                        {
+                            "id": "monitoring-batch",
+                            "title": "Supervisión: guardar resultados juntos",
+                            "unit": "resultados / transacción",
+                            "basis": "configuration",
+                            "baseline": {
+                                "label": "Beta 3.1",
+                                "value": 1
+                            },
+                            "candidate": {
+                                "label": "Beta 3.2",
+                                "value": 16
+                            },
+                            "note": "Hasta 16 resultados comparten una transacción en vez de una transacción por resultado. Cada entrada conserva su propio savepoint.",
+                            "sources": [
+                                {
+                                    "label": "Código de Beta 3.1",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.1/web/src/server/HostMonitoring/host-monitoring.repository.ts#L324"
+                                },
+                                {
+                                    "label": "Código de Beta 3.2",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.2/web/src/config/host-monitoring.config.ts#L6"
+                                }
+                            ]
+                        }
                     ]
                 },
                 {
                     "id": "monitoring-notifications-discovery",
                     "title": "Supervisión, entrega y descubrimiento de Docker",
                     "paragraphs": [
-                        "Las comprobaciones de hosts usan procesamiento paralelo limitado y almacenamiento por lotes. Las comprobaciones lentas ya no impiden ocupar todas las plazas disponibles. La limpieza del historial reparte equitativamente un presupuesto global de retención entre las políticas: el límite configurado es un máximo, no una garantía del número de observaciones almacenadas.",
-                        "Las notificaciones existentes se planifican equitativamente entre propietarios, canales y transportes, con entrega concurrente limitada. El descubrimiento de Docker sigue los cambios del inventario mediante observación acotada y vuelve a sincronizarlo tras un reinicio del entorno de ejecución. El panel recibe las actualizaciones del inventario a través del flujo de eventos en vivo."
+                        "La supervisión, las notificaciones y el descubrimiento de Docker utilizan concurrencia limitada y planificación justa. Docker vuelve a conciliar el inventario tras un reinicio.",
+                        "La limpieza del historial reparte el presupuesto de retención. El límite configurado es un máximo y no garantiza un número fijo de observaciones guardadas."
                     ],
                     "links": [
                         {
@@ -371,14 +778,63 @@
                             "label": "Conciliación del inventario de Docker",
                             "url": "https://github.com/RentnerProxy/platform/pull/407"
                         }
-                    ]
+                    ],
+                    "comparisons": [
+                        {
+                            "id": "notification-setting-sql",
+                            "title": "Notificaciones: menos SQL para ajustes existentes",
+                            "unit": "sentencias SQL",
+                            "basis": "configuration",
+                            "baseline": {
+                                "label": "Beta 3.1",
+                                "value": 2
+                            },
+                            "candidate": {
+                                "label": "Beta 3.2",
+                                "value": 1
+                            },
+                            "note": "Leer con bloqueo un ajuste ya existente requiere una sentencia SQL en vez de dos. Crear un ajuste nuevo sigue otro recorrido.",
+                            "sources": [
+                                {
+                                    "label": "Código de Beta 3.1",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.1/web/src/server/Notifications/notification-storage.ts#L49"
+                                },
+                                {
+                                    "label": "Código de Beta 3.2",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.2/web/src/server/Notifications/notification-storage.ts#L49"
+                                }
+                            ]
+                        }
+                    ],
+                    "diagram": {
+                        "title": "El recorrido de los resultados",
+                        "caption": "La concurrencia limitada y el guardado conjunto reducen la coordinación innecesaria.",
+                        "steps": [
+                            {
+                                "label": "Comprobaciones pendientes",
+                                "detail": "Presupuestos justos de recursos"
+                            },
+                            {
+                                "label": "Comprobar en paralelo",
+                                "detail": "Las comprobaciones lentas ocupan plazas individuales"
+                            },
+                            {
+                                "label": "Agrupar resultados",
+                                "detail": "Hasta 16 resultados por transacción"
+                            },
+                            {
+                                "label": "Panel en vivo",
+                                "detail": "Cambios de inventario por eventos"
+                            }
+                        ]
+                    }
                 },
                 {
                     "id": "backups-and-restore",
                     "title": "Copias más grandes y recuperación de restauraciones más fiable",
                     "paragraphs": [
-                        "La exportación, la descarga, el almacenamiento externo y la restauración admiten ahora archivos de copia de seguridad de varios GiB. El procesamiento utiliza transmisión de datos, validación acotada y comprobaciones de capacidad. Se mantienen límites finitos: un máximo de 8 GiB por archivo de copia, una reserva de espacio libre de 2 GiB y un límite total de cuatro horas por operación.",
-                        "La recuperación de restauraciones gestiona mejor las transiciones de reinicio y mantenimiento. El panel conserva su estado en vivo al reconectarse y lo actualiza después, rechazando las comprobaciones de identidad obsoletas. Las verificaciones adicionales cubren restauraciones interrumpidas, descargas seguras y los límites de acceso a copias propiedad de root."
+                        "La exportación, descarga, almacenamiento remoto y restauración admiten archivos de varios GiB. Las protecciones siguen siendo finitas y se aplican por archivo de componente.",
+                        "El panel conserva su estado al reconectar y después lo concilia. Las comprobaciones adicionales cubren restauraciones interrumpidas, descargas seguras y copias propiedad de root."
                     ],
                     "links": [
                         {
@@ -389,7 +845,52 @@
                             "label": "Restauración y estado en vivo del panel",
                             "url": "https://github.com/RentnerProxy/platform/pull/440"
                         }
-                    ]
+                    ],
+                    "comparisons": [
+                        {
+                            "id": "backup-component-limit",
+                            "title": "Copias: archivos de componentes más grandes",
+                            "unit": "GiB / archivo de componente",
+                            "basis": "configuration",
+                            "baseline": {
+                                "label": "Beta 3.1",
+                                "value": 0.5
+                            },
+                            "candidate": {
+                                "label": "Beta 3.2",
+                                "value": 8
+                            },
+                            "note": "El límite configurado aumenta de 512 MiB a 8 GiB por archivo de componente capturado, como postgres.dump. No es el tamaño total de la copia ni una prueba de rendimiento.",
+                            "sources": [
+                                {
+                                    "label": "Código de Beta 3.1",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.1/docker/production/backups/export.ts#L31"
+                                },
+                                {
+                                    "label": "Código de Beta 3.2",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.2/web/src/config/backup-runtime.config.ts#L2"
+                                }
+                            ]
+                        }
+                    ],
+                    "diagram": {
+                        "title": "El ciclo de las copias de seguridad",
+                        "caption": "El streaming y las protecciones finitas acompañan la exportación, descarga y restauración.",
+                        "steps": [
+                            {
+                                "label": "Streaming",
+                                "detail": "Procesar archivos grandes por partes"
+                            },
+                            {
+                                "label": "Comprobar capacidad",
+                                "detail": "Reserva de 2 GiB · plazo exterior de 4 horas"
+                            },
+                            {
+                                "label": "Restaurar",
+                                "detail": "Traspasar mantenimiento y reinicios de forma segura"
+                            }
+                        ]
+                    }
                 },
                 {
                     "id": "certificates-and-audit",
@@ -458,18 +959,23 @@
                         }
                     ]
                 }
+            ],
+            "topics": [
+                "Rendimiento",
+                "PostgreSQL 18.7",
+                "Copias grandes",
+                "Recuperación segura"
             ]
         },
         "zh": {
             "title": "RentnerProxy Beta 3.2：性能与安全更新，内置 PostgreSQL 18.7",
-            "summary": "Beta 3.2 聚焦性能与安全：通过更公平的后台调度、批量处理和减少 PostgreSQL 协调往返改进任务执行，并引入 PostgreSQL 18.7 的安全修复，同时增强备份、还原恢复、证书任务与审计保留机制。",
+            "summary": "为后台任务提供更多并发空间，批量访问数据库，并引入 PostgreSQL 18.7 安全修复。Beta 3.2 让监控、备份和恢复更加可靠。",
             "sections": [
                 {
                     "id": "postgresql-security",
                     "title": "PostgreSQL 18.7：集成镜像的安全修复",
                     "paragraphs": [
-                        "Beta 3.2 将内置 PostgreSQL 从 18.6 更新至 18.7。该版本于 2026 年 11 月 12 日发布，包含数据库服务器及管理工具的安全修复和错误修复。",
-                        "本次更新加强了 pg_dump 对约束名称的处理，以及 pg_restore 对备份归档的处理。RentnerProxy 使用这两个工具执行完整逻辑备份和还原。此次更新仍属于 PostgreSQL 18 系列。"
+                        "PostgreSQL 18.7 修复安全问题和错误，其中包括加固 pg_dump 的约束名称处理和 pg_restore 的归档处理。RentnerProxy 使用这两个工具执行完整逻辑备份与恢复。"
                     ],
                     "links": [
                         {
@@ -480,14 +986,32 @@
                             "label": "PostgreSQL 18.7 版本说明",
                             "url": "https://www.postgresql.org/docs/release/18.7/"
                         }
-                    ]
+                    ],
+                    "diagram": {
+                        "title": "PostgreSQL 18.7 一览",
+                        "caption": "PostgreSQL 18 系列内的安全与错误修复。",
+                        "steps": [
+                            {
+                                "label": "PostgreSQL 18.6",
+                                "detail": "此前内置版本"
+                            },
+                            {
+                                "label": "升级到 18.7",
+                                "detail": "11 月 12 日安全更新"
+                            },
+                            {
+                                "label": "加固备份工具",
+                                "detail": "pg_dump 与 pg_restore"
+                            }
+                        ]
+                    }
                 },
                 {
                     "id": "runtime-and-workers",
                     "title": "通过公平的后台调度改善性能",
                     "paragraphs": [
-                        "自 Beta 3.1 以来，现有后台服务经过了重新设计。共享资源预算、受限并发和公平调度，让监控、通知等任务能够在处理控制面板请求的同时继续推进。减少与 PostgreSQL 之间的协调往返，也降低了不必要的管理开销。",
-                        "Web 层故障与 Caddy、控制器之间的隔离得到改善。恢复、关闭和还原维护期间，已接纳的任务会一直保留明确的执行归属，直到清理完成。新的进度诊断区分运行中、延后、暂停和失败的任务；缺失的测量值会明确保持为未知状态。"
+                        "共享资源预算让后台任务与面板请求公平共存。减少数据库协调并合并处理，降低不必要的管理开销。",
+                        "Web 故障与 Caddy、控制器之间的隔离更加完善。恢复与清理会持续跟踪已接纳的任务。诊断可区分运行、等待、暂停和失败的任务。"
                     ],
                     "links": [
                         {
@@ -502,14 +1026,66 @@
                             "label": "进度诊断",
                             "url": "https://github.com/RentnerProxy/platform/pull/414"
                         }
+                    ],
+                    "comparisons": [
+                        {
+                            "id": "monitoring-concurrency",
+                            "title": "监控：更多并发检查槽位",
+                            "unit": "槽位 / 工作进程",
+                            "basis": "configuration",
+                            "baseline": {
+                                "label": "Beta 3.1",
+                                "value": 1
+                            },
+                            "candidate": {
+                                "label": "Beta 3.2",
+                                "value": 64
+                            },
+                            "note": "每个工作进程的配置上限从 1 项提高到最多 64 项并发检查。共享资源预算仍会限制实际接纳的任务。这不是实测加速倍数。",
+                            "sources": [
+                                {
+                                    "label": "Beta 3.1 源码",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.1/web/src/config/host-monitoring.config.ts#L4"
+                                },
+                                {
+                                    "label": "Beta 3.2 源码",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.2/web/src/config/host-monitoring.config.ts#L4"
+                                }
+                            ]
+                        },
+                        {
+                            "id": "monitoring-batch",
+                            "title": "监控：合并保存结果",
+                            "unit": "结果 / 事务",
+                            "basis": "configuration",
+                            "baseline": {
+                                "label": "Beta 3.1",
+                                "value": 1
+                            },
+                            "candidate": {
+                                "label": "Beta 3.2",
+                                "value": 16
+                            },
+                            "note": "最多 16 项结果共享一个数据库事务，而不是每项结果单独开启事务。每个条目仍保留独立的保存点。",
+                            "sources": [
+                                {
+                                    "label": "Beta 3.1 源码",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.1/web/src/server/HostMonitoring/host-monitoring.repository.ts#L324"
+                                },
+                                {
+                                    "label": "Beta 3.2 源码",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.2/web/src/config/host-monitoring.config.ts#L6"
+                                }
+                            ]
+                        }
                     ]
                 },
                 {
                     "id": "monitoring-notifications-discovery",
                     "title": "监控、通知投递与 Docker 发现",
                     "paragraphs": [
-                        "主机检查采用受限并行处理和批量持久化。较慢的探测不再阻止补充其他空闲执行槽位。历史清理会在各策略间公平分配全局保留预算：配置的保留限制是上限，并不保证一定保存对应数量的观测记录。",
-                        "现有通知通过受限并发，在不同所有者、渠道和传输方式之间公平调度。Docker 发现通过有界的变更监听跟踪资源清单，并在运行环境重启后重新同步。清单更新会通过实时事件流传递到控制面板。"
+                        "监控、通知和 Docker 发现采用有界并发与公平调度。Docker 发现会在重启后重新核对资源清单。",
+                        "历史清理公平分配保留预算。配置的限制是上限，并不保证固定数量的历史观测记录。"
                     ],
                     "links": [
                         {
@@ -524,14 +1100,63 @@
                             "label": "Docker 资源清单同步",
                             "url": "https://github.com/RentnerProxy/platform/pull/407"
                         }
-                    ]
+                    ],
+                    "comparisons": [
+                        {
+                            "id": "notification-setting-sql",
+                            "title": "通知：读取现有设置所需 SQL 更少",
+                            "unit": "SQL 语句",
+                            "basis": "configuration",
+                            "baseline": {
+                                "label": "Beta 3.1",
+                                "value": 2
+                            },
+                            "candidate": {
+                                "label": "Beta 3.2",
+                                "value": 1
+                            },
+                            "note": "对已有设置进行加锁读取时，SQL 语句从 2 条减少到 1 条。创建新设置使用不同的流程。",
+                            "sources": [
+                                {
+                                    "label": "Beta 3.1 源码",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.1/web/src/server/Notifications/notification-storage.ts#L49"
+                                },
+                                {
+                                    "label": "Beta 3.2 源码",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.2/web/src/server/Notifications/notification-storage.ts#L49"
+                                }
+                            ]
+                        }
+                    ],
+                    "diagram": {
+                        "title": "监控结果如何流转",
+                        "caption": "有界并发与共享写入减少不必要的协调开销。",
+                        "steps": [
+                            {
+                                "label": "到期检查",
+                                "detail": "公平的资源预算"
+                            },
+                            {
+                                "label": "并行执行",
+                                "detail": "慢检查只占用各自槽位"
+                            },
+                            {
+                                "label": "批量保存",
+                                "detail": "每个事务最多 16 项结果"
+                            },
+                            {
+                                "label": "实时面板",
+                                "detail": "通过事件流同步资源变化"
+                            }
+                        ]
+                    }
                 },
                 {
                     "id": "backups-and-restore",
                     "title": "更大的备份与更可靠的还原恢复",
                     "paragraphs": [
-                        "导出、下载、异地存储和还原现在支持数 GiB 的备份文件。处理过程采用流式传输、有界验证和容量检查。保护性限制仍然存在：单个备份文件最大 8 GiB，保留 2 GiB 可用空间，每项操作的外层超时为四小时。",
-                        "还原恢复对重启和维护状态转换的处理更加稳健。控制面板会在重新连接时保留实时状态并随后刷新，同时拒绝过期的身份检查。新增验证覆盖中断的还原、安全下载，以及 root 所有的备份文件的访问边界。"
+                        "导出、下载、远程存储与恢复支持多 GiB 文件。保护边界仍然有限，并按每个采集组件文件计算。",
+                        "实时面板在重新连接时保留状态，随后进行核对。新增检查涵盖中断恢复、安全下载及 root 所有的备份。"
                     ],
                     "links": [
                         {
@@ -542,7 +1167,52 @@
                             "label": "还原与控制面板实时状态",
                             "url": "https://github.com/RentnerProxy/platform/pull/440"
                         }
-                    ]
+                    ],
+                    "comparisons": [
+                        {
+                            "id": "backup-component-limit",
+                            "title": "备份：支持更大的单个组件文件",
+                            "unit": "GiB / 组件文件",
+                            "basis": "configuration",
+                            "baseline": {
+                                "label": "Beta 3.1",
+                                "value": 0.5
+                            },
+                            "candidate": {
+                                "label": "Beta 3.2",
+                                "value": 8
+                            },
+                            "note": "每个采集组件文件的配置上限从 512 MiB 提高到 8 GiB，例如 postgres.dump。这既不是整个备份包的大小，也不是吞吐量测试。",
+                            "sources": [
+                                {
+                                    "label": "Beta 3.1 源码",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.1/docker/production/backups/export.ts#L31"
+                                },
+                                {
+                                    "label": "Beta 3.2 源码",
+                                    "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.2/web/src/config/backup-runtime.config.ts#L2"
+                                }
+                            ]
+                        }
+                    ],
+                    "diagram": {
+                        "title": "备份处理流程",
+                        "caption": "导出、下载和恢复始终采用流式处理与有限保护边界。",
+                        "steps": [
+                            {
+                                "label": "流式处理",
+                                "detail": "分块处理大型文件"
+                            },
+                            {
+                                "label": "检查容量",
+                                "detail": "预留 2 GiB · 外层时限 4 小时"
+                            },
+                            {
+                                "label": "恢复",
+                                "detail": "可靠交接维护和重启状态"
+                            }
+                        ]
+                    }
                 },
                 {
                     "id": "certificates-and-audit",
@@ -611,6 +1281,12 @@
                         }
                     ]
                 }
+            ],
+            "topics": [
+                "性能",
+                "PostgreSQL 18.7",
+                "大型备份",
+                "更可靠的恢复"
             ]
         }
     }
