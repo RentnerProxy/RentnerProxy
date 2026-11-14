@@ -437,7 +437,9 @@ esac
                 expect(uploaded).not.toContain('release-banner.png')
                 expect(uploaded).toContain('RentnerProxy-v1.0.0-CHANGELOG.md')
             }
-            expect(await readFile(body, 'utf8')).toBe(success || failure === 'blog' ? 'final' : 'building')
+            expect(await readFile(body, 'utf8')).toBe(
+                success || failure === 'blog' ? 'final' : 'building',
+            )
         } finally {
             await rm(directory, { recursive: true, force: true })
         }
