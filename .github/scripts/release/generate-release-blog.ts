@@ -8,6 +8,8 @@ import { deriveReleaseChannel, validateReleaseTag } from '../lib/release-notes.t
 import type {
     BlogBenchmark,
     BlogLocale,
+    BlogCodeComparison,
+    BlogDiagram,
     ReleaseBlogPost,
     ReleaseBlogReady,
 } from './Types/release-blog.types.ts'
@@ -115,6 +117,51 @@ function benchmark(value: unknown, tag: string, revision: string): BlogBenchmark
     }
 }
 
+function codeComparison(input: unknown): BlogCodeComparison {
+    const record = blogRecord(input)
+    if (record.basis !== 'configuration')
+        throw new Error('Code comparisons require configuration evidence')
+    const side = (value: unknown) => {
+        const entry = blogRecord(value)
+        if (
+            typeof entry.value !== 'number' ||
+            !Number.isFinite(entry.value) ||
+            entry.value < 0 ||
+            entry.value > 1e15
+        )
+            throw new Error('Invalid code comparison value')
+        return { label: text(entry.label, 160), value: entry.value }
+    }
+    return {
+        id: identifier(record.id),
+        title: text(record.title, 300),
+        unit: text(record.unit, 64),
+        basis: 'configuration',
+        baseline: side(record.baseline),
+        candidate: side(record.candidate),
+        note: text(record.note, 2000),
+        sources: array(record.sources, 8).map((value) => {
+            const entry = blogRecord(value)
+            return { label: text(entry.label, 300), url: url(entry.url) }
+        }),
+    }
+}
+
+function diagram(input: unknown): BlogDiagram {
+    const record = blogRecord(input)
+    return {
+        title: text(record.title, 300),
+        caption: text(record.caption, 2000),
+        steps: array(record.steps, 8, 2).map((value) => {
+            const step = blogRecord(value)
+            return {
+                label: text(step.label, 160),
+                ...(step.detail === undefined ? {} : { detail: text(step.detail, 500) }),
+            }
+        }),
+    }
+}
+
 function locale(input: unknown, benchmarkIds: string[]): BlogLocale {
     const record = blogRecord(input)
     const sections = array(record.sections, 30).map((sectionInput) => {
@@ -141,11 +188,22 @@ function locale(input: unknown, benchmarkIds: string[]): BlogLocale {
             ].includes(language)
         )
             throw new Error('Unsupported blog code language')
+        const comparisons =
+            section.comparisons === undefined
+                ? undefined
+                : array(section.comparisons, 8).map(codeComparison)
+        if (
+            comparisons &&
+            new Set(comparisons.map((value) => value.id)).size !== comparisons.length
+        )
+            throw new Error('Duplicate code comparison IDs')
         return {
             id: identifier(section.id),
             title: text(section.title, 300),
             paragraphs: array(section.paragraphs, 30).map((value) => text(value)),
             ...(code && language ? { code: { language, value: text(code.value, 30_000) } } : {}),
+            ...(comparisons === undefined ? {} : { comparisons }),
+            ...(section.diagram === undefined ? {} : { diagram: diagram(section.diagram) }),
             ...(section.links === undefined
                 ? {}
                 : {
@@ -179,6 +237,9 @@ function locale(input: unknown, benchmarkIds: string[]): BlogLocale {
     return {
         title: text(record.title, 300),
         summary: text(record.summary, 2000),
+        ...(record.topics === undefined
+            ? {}
+            : { topics: array(record.topics, 8).map((value) => text(value, 120)) }),
         sections,
         ...(benchmarks === undefined ? {} : { benchmarks }),
     }
