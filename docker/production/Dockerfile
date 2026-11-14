@@ -129,7 +129,7 @@ RUN set -eux; \
 
 FROM mirror.gcr.io/valkey/valkey:9.1.3-trixie@sha256:3add1a336a920ea54770a001ab6feb3da5fceea96a40373a3a2cd469b815f0b7 AS valkey-runtime
 
-FROM mirror.gcr.io/library/postgres:18.6@sha256:e3d24f6906d0760bf4da0dae872415391ededefad23fd471c47dc53b0ddf3c42 AS runtime
+FROM mirror.gcr.io/library/postgres:18.7@sha256:9f4fd4aa918f52ae3d6f3b687f1de90d8f867cd4d520021545a9a50c120eae3b AS runtime
 
 ARG TARGETOS
 ARG TARGETARCH
