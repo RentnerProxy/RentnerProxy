@@ -1,0 +1,341 @@
+{
+    "contentRevision": 1,
+    "locales": {
+        "de": {
+            "title": "RentnerProxy Beta 3.1: Caddy-Sicherheitsupdate und neue Image-Adresse",
+            "summary": "Beta 3.1 aktualisiert Caddy auf 2.11.9 und führt neue Veröffentlichungen unter ghcr.io/rentnerproxy/platform zusammen. Die Funktionen aus Beta 3 bleiben dabei die Grundlage für DNS-01, Überwachung, Backups und OIDC.",
+            "sections": [
+                {
+                    "id": "maintenance-release",
+                    "title": "Was sich seit Beta 3 geändert hat",
+                    "paragraphs": [
+                        "Die am 8. November 2026 veröffentlichte Version v1.0.0-beta.3.1 ist ein Wartungsrelease. Caddy wurde von 2.11.7 auf 2.11.9 aktualisiert und bringt damit Sicherheits- und Fehlerkorrekturen des Upstream-Projekts mit. Die Integration passt auch den bestehenden Reload-Backport und die Build-Prüfungen an diese Caddy-Version an.",
+                        "Zum Release-Zeitraum gehören außerdem aktualisierte Abhängigkeiten und Arbeiten an CI, geschützter Veröffentlichung und Wiederaufnahme bereits veröffentlichter Releases. Das sind Wartungsarbeiten; die unten beschriebenen größeren Produktfunktionen stammen bereits aus Beta 3."
+                    ],
+                    "links": [
+                        {
+                            "label": "Beta 3.1 Release",
+                            "url": "https://github.com/RentnerProxy/platform/releases/tag/v1.0.0-beta.3.1"
+                        },
+                        {
+                            "label": "Caddy-Integration in PR #376",
+                            "url": "https://github.com/RentnerProxy/platform/pull/376"
+                        },
+                        {
+                            "label": "Vergleich Beta 3 bis Beta 3.1",
+                            "url": "https://github.com/RentnerProxy/platform/compare/v1.0.0-beta.3...v1.0.0-beta.3.1"
+                        }
+                    ]
+                },
+                {
+                    "id": "image-migration",
+                    "title": "Die Image-Adresse einmal ausdrücklich umstellen",
+                    "paragraphs": [
+                        "Neue Images erscheinen unter ghcr.io/rentnerproxy/platform. Bestehende Installationen wechseln nicht automatisch aus ghcr.io/rentnerkev/rentnerproxy: Ältere Clients erwarten weiterhin die bisherige Registry- und Quellidentität. Nach dem Backup muss deshalb die konfigurierte Image-Adresse ausdrücklich geändert und der Compose-Dienst neu erstellt werden; bei Paketinstallationen ist das Paket für die neue Registry zu installieren.",
+                        "Für genau dieses Release lautet der feste Tag ghcr.io/rentnerproxy/platform:v1.0.0-beta.3.1. Der bewegliche Tag :beta folgt dagegen dem jeweils neuesten Beta-Release. Bereits veröffentlichte Beta-1-, Beta-2- und Beta-3-Images bleiben unter ihrer ursprünglichen Adresse erhalten."
+                    ],
+                    "code": {
+                        "language": "bash",
+                        "value": "docker pull ghcr.io/rentnerproxy/platform:v1.0.0-beta.3.1"
+                    },
+                    "links": [
+                        {
+                            "label": "Registry-Umstellung in PR #377",
+                            "url": "https://github.com/RentnerProxy/platform/pull/377"
+                        },
+                        {
+                            "label": "Upgrade-Anleitung für Beta 3.1",
+                            "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.1/README.md#upgrade"
+                        }
+                    ]
+                },
+                {
+                    "id": "beta-three-foundation",
+                    "title": "Weiter dabei: die Funktionen aus Beta 3",
+                    "paragraphs": [
+                        "Beta 3 hat gemeinsam nutzbare DNS-Verbindungen für ACME und DDNS eingeführt, darunter deSEC und Hetzner Cloud DNS. Dazu kommen manuelle und delegierte DNS-01-Verfahren sowie ein geführter Assistent für Einrichtung und Validierung. Diese Funktionen stehen auch in Beta 3.1 zur Verfügung.",
+                        "Ebenfalls aus Beta 3 stammen geführte Prüfungen von DNS, Upstream-Erreichbarkeit und TLS, geplante Verfügbarkeitsprüfungen pro Host mit Verlauf und Ausfall-/Wiederherstellungsbenachrichtigungen sowie Upstream-Pools mit Lastverteilung, gesundheitsabhängigem Failover und konfigurierbaren Wiederholungen.",
+                        "Geplante Backups mit Aufbewahrung, Verlauf und verschlüsselter externer Speicherung sowie OIDC-Anmeldung mit ausdrücklicher Kontoverknüpfung und Gruppen-zu-Rollen-Zuordnung ergänzen diese Grundlage. Sie sind keine neuen Funktionen des Patches 3.1."
+                    ],
+                    "links": [
+                        {
+                            "label": "Funktionsumfang des Beta-3-Releases",
+                            "url": "https://github.com/RentnerProxy/platform/releases/tag/v1.0.0-beta.3"
+                        }
+                    ]
+                },
+                {
+                    "id": "installation-and-upgrades",
+                    "title": "Installation und unterstützte Upgrade-Wege",
+                    "paragraphs": [
+                        "Das Release bietet das Appliance-Image für AMD64 und ARM64, Docker/Compose und Podman/Quadlet sowie signierte Debian-13- und Fedora-44-Pakete. Die Linux-Pakete verwenden rootful Podman/Quadlet, systemd und cgroup v2. Die versionierte Installationsanleitung enthält Einrichtung und Verifikation.",
+                        "Beta 1 ist die älteste unterstützte Ausgangsversion für ein Upgrade. Alpha-Installationen müssen zuerst auf exakt v1.0.0-beta.1 unter der alten Image-Adresse wechseln, vollständig starten und ihre Konfiguration abgleichen sowie ein neues v4-Backup erstellen. Der bewegliche :beta-Tag überspringt diesen notwendigen Zwischenschritt.",
+                        "Alpha-v3-Backups müssen zuerst mit Beta 1 und dessen Restore-Werkzeugen wiederhergestellt und anschließend als v4 gesichert werden. Direkte Alpha-Upgrades und v3-Wiederherstellungen in Beta 3.1 sind nicht unterstützt. Für einen Rollback werden ein Backup vor dem Upgrade, ein frisches Volume und die genaue Ausgangsversion benötigt. Beta 3.1 bleibt Vorabsoftware; vor dem Wechsel den Zustand sichern."
+                    ],
+                    "links": [
+                        {
+                            "label": "Versionierte Installationsanleitung",
+                            "url": "https://github.com/RentnerProxy/platform/releases/download/v1.0.0-beta.3.1/INSTALL.txt"
+                        },
+                        {
+                            "label": "Installation mit Docker/Compose",
+                            "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.1/README.md#installation"
+                        }
+                    ]
+                }
+            ]
+        },
+        "en": {
+            "title": "RentnerProxy Beta 3.1: Caddy security update and a new image address",
+            "summary": "Beta 3.1 updates Caddy to 2.11.9 and moves new publications to ghcr.io/rentnerproxy/platform. Beta 3's DNS-01, monitoring, backup and OIDC features remain the foundation of this maintenance release.",
+            "sections": [
+                {
+                    "id": "maintenance-release",
+                    "title": "What changed since Beta 3",
+                    "paragraphs": [
+                        "Published on 8 November 2026, v1.0.0-beta.3.1 is a maintenance release. It upgrades Caddy from 2.11.7 to 2.11.9, bringing upstream security fixes and bug fixes. The integration also adapts the existing reload backport and build checks to this Caddy version.",
+                        "The release window also includes dependency updates and maintenance of CI, protected publishing and recovery of already published releases. The larger product features described below were introduced in Beta 3 rather than in this patch."
+                    ],
+                    "links": [
+                        {
+                            "label": "Beta 3.1 release",
+                            "url": "https://github.com/RentnerProxy/platform/releases/tag/v1.0.0-beta.3.1"
+                        },
+                        {
+                            "label": "Caddy integration in PR #376",
+                            "url": "https://github.com/RentnerProxy/platform/pull/376"
+                        },
+                        {
+                            "label": "Beta 3 to Beta 3.1 comparison",
+                            "url": "https://github.com/RentnerProxy/platform/compare/v1.0.0-beta.3...v1.0.0-beta.3.1"
+                        }
+                    ]
+                },
+                {
+                    "id": "image-migration",
+                    "title": "Make the image-address change explicitly",
+                    "paragraphs": [
+                        "New images are published as ghcr.io/rentnerproxy/platform. Existing installations do not automatically switch from ghcr.io/rentnerkev/rentnerproxy: older clients still expect the previous registry and source identity. After backing up, explicitly change the configured image address and recreate the Compose service, or install the package published for the new registry.",
+                        "The fixed tag for this release is ghcr.io/rentnerproxy/platform:v1.0.0-beta.3.1. The moving :beta tag follows the newest beta release instead. Previously published Beta 1, Beta 2 and Beta 3 images remain at their original address."
+                    ],
+                    "code": {
+                        "language": "bash",
+                        "value": "docker pull ghcr.io/rentnerproxy/platform:v1.0.0-beta.3.1"
+                    },
+                    "links": [
+                        {
+                            "label": "Registry migration in PR #377",
+                            "url": "https://github.com/RentnerProxy/platform/pull/377"
+                        },
+                        {
+                            "label": "Beta 3.1 upgrade instructions",
+                            "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.1/README.md#upgrade"
+                        }
+                    ]
+                },
+                {
+                    "id": "beta-three-foundation",
+                    "title": "Carried forward from Beta 3",
+                    "paragraphs": [
+                        "Beta 3 introduced shared DNS connections for ACME and DDNS, including deSEC and Hetzner Cloud DNS. Manual and delegated DNS-01 workflows and a guided setup and validation assistant are also available in Beta 3.1.",
+                        "Guided DNS, upstream-connectivity and TLS diagnostics, scheduled per-host availability checks with history and outage/recovery notifications, and upstream pools with load balancing, health-aware failover and configurable retries also come from Beta 3.",
+                        "Scheduled backups with retention, history and encrypted off-host storage, plus OIDC sign-in with explicit account linking and group-to-role mapping, complete this foundation. These are not new features of the 3.1 patch."
+                    ],
+                    "links": [
+                        {
+                            "label": "Beta 3 feature release",
+                            "url": "https://github.com/RentnerProxy/platform/releases/tag/v1.0.0-beta.3"
+                        }
+                    ]
+                },
+                {
+                    "id": "installation-and-upgrades",
+                    "title": "Installation and supported upgrade paths",
+                    "paragraphs": [
+                        "The release provides the appliance image for AMD64 and ARM64, Docker/Compose and Podman/Quadlet deployment, and signed Debian 13 and Fedora 44 packages. Linux packages use rootful Podman/Quadlet, systemd and cgroup v2. The versioned installation guide covers setup and verification.",
+                        "Beta 1 is the minimum supported upgrade source. Alpha installations must first move to exactly v1.0.0-beta.1 at the old image address, complete startup and configuration reconciliation, and create a new v4 backup. The moving :beta tag skips that required intermediate step.",
+                        "Alpha v3 backups must first be restored with Beta 1 and its restore tools, then backed up again as v4. Direct Alpha upgrades and v3 restores into Beta 3.1 are unsupported. Rollback requires a pre-upgrade backup, a fresh volume and the exact source release. Beta 3.1 remains prerelease software; back up your state before upgrading."
+                    ],
+                    "links": [
+                        {
+                            "label": "Versioned installation guide",
+                            "url": "https://github.com/RentnerProxy/platform/releases/download/v1.0.0-beta.3.1/INSTALL.txt"
+                        },
+                        {
+                            "label": "Docker/Compose installation",
+                            "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.1/README.md#installation"
+                        }
+                    ]
+                }
+            ]
+        },
+        "es": {
+            "title": "RentnerProxy Beta 3.1: actualización de seguridad de Caddy y nueva dirección de imagen",
+            "summary": "Beta 3.1 actualiza Caddy a 2.11.9 y publica las nuevas imágenes en ghcr.io/rentnerproxy/platform. Las funciones de DNS-01, supervisión, copias de seguridad y OIDC de Beta 3 siguen siendo la base de esta versión de mantenimiento.",
+            "sections": [
+                {
+                    "id": "maintenance-release",
+                    "title": "Qué ha cambiado desde Beta 3",
+                    "paragraphs": [
+                        "Publicada el 8 de noviembre de 2026, v1.0.0-beta.3.1 es una versión de mantenimiento. Actualiza Caddy de 2.11.7 a 2.11.9 e incorpora correcciones de seguridad y de errores del proyecto original. La integración también adapta el parche de recarga existente y las comprobaciones de compilación a esta versión de Caddy.",
+                        "El período de esta versión también incluye actualizaciones de dependencias y mantenimiento de la integración continua, la publicación protegida y la recuperación de versiones ya publicadas. Las funciones principales descritas más abajo se introdujeron en Beta 3, no en este parche."
+                    ],
+                    "links": [
+                        {
+                            "label": "Versión Beta 3.1",
+                            "url": "https://github.com/RentnerProxy/platform/releases/tag/v1.0.0-beta.3.1"
+                        },
+                        {
+                            "label": "Integración de Caddy en PR #376",
+                            "url": "https://github.com/RentnerProxy/platform/pull/376"
+                        },
+                        {
+                            "label": "Comparación de Beta 3 con Beta 3.1",
+                            "url": "https://github.com/RentnerProxy/platform/compare/v1.0.0-beta.3...v1.0.0-beta.3.1"
+                        }
+                    ]
+                },
+                {
+                    "id": "image-migration",
+                    "title": "Cambiar expresamente la dirección de la imagen",
+                    "paragraphs": [
+                        "Las nuevas imágenes se publican como ghcr.io/rentnerproxy/platform. Las instalaciones existentes no cambian automáticamente desde ghcr.io/rentnerkev/rentnerproxy: los clientes antiguos siguen esperando el registro y la identidad de origen anteriores. Después de crear una copia de seguridad, hay que cambiar expresamente la dirección configurada y recrear el servicio de Compose, o instalar el paquete publicado para el nuevo registro.",
+                        "La etiqueta fija de esta versión es ghcr.io/rentnerproxy/platform:v1.0.0-beta.3.1. La etiqueta móvil :beta sigue la versión beta más reciente. Las imágenes ya publicadas de Beta 1, Beta 2 y Beta 3 conservan su dirección original."
+                    ],
+                    "code": {
+                        "language": "bash",
+                        "value": "docker pull ghcr.io/rentnerproxy/platform:v1.0.0-beta.3.1"
+                    },
+                    "links": [
+                        {
+                            "label": "Migración del registro en PR #377",
+                            "url": "https://github.com/RentnerProxy/platform/pull/377"
+                        },
+                        {
+                            "label": "Instrucciones de actualización de Beta 3.1",
+                            "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.1/README.md#upgrade"
+                        }
+                    ]
+                },
+                {
+                    "id": "beta-three-foundation",
+                    "title": "Funciones que continúan desde Beta 3",
+                    "paragraphs": [
+                        "Beta 3 introdujo conexiones DNS compartidas para ACME y DDNS, incluidas deSEC y Hetzner Cloud DNS. Los procedimientos DNS-01 manuales y delegados y el asistente de configuración y validación también están disponibles en Beta 3.1.",
+                        "También proceden de Beta 3 los diagnósticos guiados de DNS, conectividad con los servidores de destino y TLS; las comprobaciones programadas de disponibilidad por host, con historial y notificaciones de caída y recuperación; y los grupos de servidores de destino con balanceo de carga, conmutación según su estado y reintentos configurables.",
+                        "Completan esta base las copias de seguridad programadas con retención, historial y almacenamiento externo cifrado, además del inicio de sesión OIDC con vinculación explícita de cuentas y asignación de grupos a roles. No son funciones nuevas del parche 3.1."
+                    ],
+                    "links": [
+                        {
+                            "label": "Funciones de la versión Beta 3",
+                            "url": "https://github.com/RentnerProxy/platform/releases/tag/v1.0.0-beta.3"
+                        }
+                    ]
+                },
+                {
+                    "id": "installation-and-upgrades",
+                    "title": "Instalación y rutas de actualización compatibles",
+                    "paragraphs": [
+                        "La versión ofrece la imagen integrada para AMD64 y ARM64, despliegue con Docker/Compose y Podman/Quadlet, y paquetes firmados para Debian 13 y Fedora 44. Los paquetes Linux utilizan Podman/Quadlet con privilegios de root, systemd y cgroup v2. La guía de instalación de esta versión explica la configuración y la verificación.",
+                        "Beta 1 es la versión de origen mínima admitida para actualizar. Las instalaciones Alpha deben pasar primero exactamente por v1.0.0-beta.1 en la dirección de imagen antigua, completar el arranque y la conciliación de la configuración y crear una nueva copia v4. La etiqueta móvil :beta omite ese paso intermedio obligatorio.",
+                        "Las copias Alpha v3 deben restaurarse primero con Beta 1 y sus herramientas y volver a guardarse como v4. No se admiten actualizaciones directas desde Alpha ni restauraciones v3 en Beta 3.1. Volver a una versión anterior requiere una copia previa a la actualización, un volumen nuevo y la versión de origen exacta. Beta 3.1 sigue siendo una versión preliminar: guarda una copia del estado antes de actualizar."
+                    ],
+                    "links": [
+                        {
+                            "label": "Guía de instalación de esta versión",
+                            "url": "https://github.com/RentnerProxy/platform/releases/download/v1.0.0-beta.3.1/INSTALL.txt"
+                        },
+                        {
+                            "label": "Instalación con Docker/Compose",
+                            "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.1/README.md#installation"
+                        }
+                    ]
+                }
+            ]
+        },
+        "zh": {
+            "title": "RentnerProxy Beta 3.1：Caddy 安全更新与新的镜像地址",
+            "summary": "Beta 3.1 将 Caddy 更新至 2.11.9，并将新镜像发布到 ghcr.io/rentnerproxy/platform。Beta 3 引入的 DNS-01、监控、备份和 OIDC 功能继续作为本次维护版本的基础。",
+            "sections": [
+                {
+                    "id": "maintenance-release",
+                    "title": "相较 Beta 3 的变化",
+                    "paragraphs": [
+                        "v1.0.0-beta.3.1 于 2026 年 11 月 8 日发布，是一个维护版本。它将 Caddy 从 2.11.7 升级至 2.11.9，包含上游项目的安全修复和错误修复。集成工作还调整了现有的重载回移补丁和构建检查，使其适配这一 Caddy 版本。",
+                        "本次版本范围还包括依赖更新，以及持续集成、受保护的发布流程和已发布版本恢复流程的维护。下文介绍的主要产品功能已经在 Beta 3 中推出，并非本次补丁新增。"
+                    ],
+                    "links": [
+                        {
+                            "label": "Beta 3.1 发布说明",
+                            "url": "https://github.com/RentnerProxy/platform/releases/tag/v1.0.0-beta.3.1"
+                        },
+                        {
+                            "label": "PR #376：Caddy 集成",
+                            "url": "https://github.com/RentnerProxy/platform/pull/376"
+                        },
+                        {
+                            "label": "Beta 3 与 Beta 3.1 的差异",
+                            "url": "https://github.com/RentnerProxy/platform/compare/v1.0.0-beta.3...v1.0.0-beta.3.1"
+                        }
+                    ]
+                },
+                {
+                    "id": "image-migration",
+                    "title": "需要明确修改镜像地址",
+                    "paragraphs": [
+                        "新镜像发布在 ghcr.io/rentnerproxy/platform。现有安装不会自动从 ghcr.io/rentnerkev/rentnerproxy 切换：旧客户端仍然要求原来的镜像仓库和源码身份。备份后，需要明确修改配置中的镜像地址并重新创建 Compose 服务；使用软件包安装的用户则需要安装面向新镜像仓库发布的软件包。",
+                        "本次版本的固定标签是 ghcr.io/rentnerproxy/platform:v1.0.0-beta.3.1。浮动标签 :beta 则始终跟随最新的 Beta 版本。已经发布的 Beta 1、Beta 2 和 Beta 3 镜像仍保留在原地址。"
+                    ],
+                    "code": {
+                        "language": "bash",
+                        "value": "docker pull ghcr.io/rentnerproxy/platform:v1.0.0-beta.3.1"
+                    },
+                    "links": [
+                        {
+                            "label": "PR #377：镜像仓库迁移",
+                            "url": "https://github.com/RentnerProxy/platform/pull/377"
+                        },
+                        {
+                            "label": "Beta 3.1 升级说明",
+                            "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.1/README.md#upgrade"
+                        }
+                    ]
+                },
+                {
+                    "id": "beta-three-foundation",
+                    "title": "延续 Beta 3 的功能",
+                    "paragraphs": [
+                        "Beta 3 引入了可供 ACME 和 DDNS 共用的 DNS 连接，包括 deSEC 和 Hetzner Cloud DNS。手动与委派式 DNS-01 流程，以及引导式设置和验证助手，也继续在 Beta 3.1 中提供。",
+                        "同样来自 Beta 3 的功能包括 DNS、上游连通性和 TLS 的引导式诊断，带历史记录及故障与恢复通知的定时主机可用性检查，以及支持负载均衡、基于健康状态的故障转移和可配置重试的上游池。",
+                        "带保留策略、历史记录和加密异机存储的定时备份，以及支持显式账户关联和组到角色映射的 OIDC 登录，共同构成了这一功能基础。这些都不是 3.1 补丁新增的功能。"
+                    ],
+                    "links": [
+                        {
+                            "label": "Beta 3 功能发布说明",
+                            "url": "https://github.com/RentnerProxy/platform/releases/tag/v1.0.0-beta.3"
+                        }
+                    ]
+                },
+                {
+                    "id": "installation-and-upgrades",
+                    "title": "安装方式与支持的升级路径",
+                    "paragraphs": [
+                        "本次版本提供适用于 AMD64 和 ARM64 的一体化镜像，支持 Docker/Compose、Podman/Quadlet 部署，并提供签名的 Debian 13 和 Fedora 44 软件包。Linux 软件包使用以 root 权限运行的 Podman/Quadlet、systemd 和 cgroup v2。该版本的安装指南涵盖设置和验证步骤。",
+                        "升级所支持的最低起始版本为 Beta 1。Alpha 安装必须先升级到旧镜像地址下的确切版本 v1.0.0-beta.1，完成启动和配置协调，并创建新的 v4 备份。浮动标签 :beta 会跳过这个必需的中间步骤。",
+                        "Alpha v3 备份必须先使用 Beta 1 及其恢复工具进行恢复，再重新备份为 v4。不支持直接从 Alpha 升级至 Beta 3.1，也不支持在 Beta 3.1 中直接恢复 v3 备份。回滚需要升级前的备份、全新数据卷和确切的原始版本。Beta 3.1 仍是预发布软件，升级前请备份当前状态。"
+                    ],
+                    "links": [
+                        {
+                            "label": "本次版本的安装指南",
+                            "url": "https://github.com/RentnerProxy/platform/releases/download/v1.0.0-beta.3.1/INSTALL.txt"
+                        },
+                        {
+                            "label": "Docker/Compose 安装",
+                            "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.1/README.md#installation"
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+}

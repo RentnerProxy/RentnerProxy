@@ -2,8 +2,208 @@ import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { expect, test } from 'bun:test'
+import { createHash } from 'node:crypto'
 
 const root = resolve(import.meta.dir, '../../../../..')
+
+test.each([
+    'same',
+    'different',
+    'partial-starter',
+    'partial-empty',
+    'bad-hash',
+    'wrong-revision',
+    'wrong-release',
+    'bad-marker',
+    'missing-post',
+    'bad-digest',
+])(
+    'preserves committed release assets before a recovery digest gate: %s',
+    async (mode) => {
+        const directory = await mkdtemp(join(tmpdir(), 'committed-blog-recovery-'))
+        try {
+            const scripts = join(directory, '.github/scripts/release')
+            const assets = join(directory, '.github/assets/release-banners')
+            const bin = join(directory, 'bin')
+            await Promise.all([
+                mkdir(scripts, { recursive: true }),
+                mkdir(assets, { recursive: true }),
+                mkdir(bin),
+            ])
+            await Promise.all(
+                [
+                    'publish-building-release.sh',
+                    'committed-blog-digest.sh',
+                    'verify-release-identity.sh',
+                    'validate-release-event.sh',
+                ].map((name) =>
+                    copyFile(join(root, '.github/scripts/release', name), join(scripts, name)),
+                ),
+            )
+            await writeFile(
+                join(assets, 'building-release-banner.png'),
+                Buffer.from('89504e470d0a1a0a', 'hex'),
+            )
+            const digest = `sha256:${'d'.repeat(64)}`
+            const identity = {
+                schemaVersion: 1,
+                releaseId: 123,
+                tag: 'v1.0.0',
+                revision: 'a'.repeat(40),
+                publishedAt: '2026-10-22T00:00:00Z',
+                contentRevision: 1,
+            }
+            const post = JSON.stringify({
+                ...identity,
+                channel: 'stable',
+                image: {
+                    repository: 'ghcr.io/rentnerproxy/platform',
+                    digest: mode === 'bad-digest' ? 'invalid' : digest,
+                },
+            })
+            const marker = {
+                ...identity,
+                postAsset: 'rentnerproxy-blog-post-r1.json',
+                postSha256: createHash('sha256').update(post).digest('hex'),
+                readyAt: '2026-10-22T00:01:00.000Z',
+            }
+            if (mode === 'bad-hash') marker.postSha256 = 'e'.repeat(64)
+            if (mode === 'wrong-revision') marker.revision = 'b'.repeat(40)
+            if (mode === 'wrong-release') marker.releaseId = 124
+            await writeFile(
+                join(directory, 'marker.json'),
+                mode === 'bad-marker' ? '{' : JSON.stringify(marker),
+            )
+            await writeFile(join(directory, 'post.json'), post)
+            const events = join(directory, 'events')
+            const output = join(directory, 'output')
+            await Promise.all([writeFile(events, ''), writeFile(output, '')])
+            await writeFile(
+                join(bin, 'gh'),
+                `#!/usr/bin/env bash
+set -Eeuo pipefail
+if [[ "$1 $2" == 'release edit' && "$FIXTURE_MODE" == partial-* ]]; then printf 'edit\\n' >> "$FIXTURE_EVENTS"; exit 0; fi
+if [[ "$1" != api || "$2" == --method ]]; then printf 'mutation\\n' >> "$FIXTURE_EVENTS"; exit 91; fi
+case "$2" in
+    */releases/123/assets)
+        printf '30\\trentnerproxy-blog-ready.json\\n'
+        if [[ "$FIXTURE_MODE" != missing-post ]]; then printf '31\\trentnerproxy-blog-post-r1.json\\n'; fi ;;
+    */releases/assets/30)
+        if [[ "$*" == *--jq* ]]; then
+            if [[ "$FIXTURE_MODE" == partial-starter ]]; then printf '30\\trentnerproxy-blog-ready.json\\tstarter\\t0\\n'
+            elif [[ "$FIXTURE_MODE" == partial-empty ]]; then printf '30\\trentnerproxy-blog-ready.json\\tuploaded\\t0\\n'
+            else printf '30\\trentnerproxy-blog-ready.json\\tuploaded\\t1000\\n'; fi
+        else cat "$FIXTURE_DIRECTORY/marker.json"; fi ;;
+    */releases/assets/31) cat "$FIXTURE_DIRECTORY/post.json" ;;
+    */releases/123) printf '123\\tv1.0.0\\tfalse\\tfalse\\t2026-10-22T00:00:00Z\\n' ;;
+    *) exit 92 ;;
+esac
+`,
+                { mode: 0o700 },
+            )
+            await writeFile(
+                join(bin, 'bun'),
+                `#!/usr/bin/env bash
+set -Eeuo pipefail
+printf building > "$RUNNER_TEMP/rentnerproxy-release/building-body.md"
+`,
+                { mode: 0o700 },
+            )
+            const bash = process.platform === 'win32' ? 'C:/Program Files/Git/bin/bash.exe' : 'bash'
+            const prefix =
+                process.platform === 'win32'
+                    ? 'export PATH="$(cygpath -u "$FIXTURE_BIN"):$PATH"; '
+                    : 'export PATH="$FIXTURE_BIN:$PATH"; '
+            const env = {
+                ...process.env,
+                FIXTURE_BIN: bin,
+                FIXTURE_DIRECTORY: directory,
+                FIXTURE_EVENTS: events,
+                FIXTURE_MODE: mode,
+                FIXTURE_SCRIPT: join(scripts, 'publish-building-release.sh'),
+                RUNNER_TEMP: directory,
+                GITHUB_OUTPUT: output,
+                GITHUB_REPOSITORY: 'RentnerProxy/platform',
+                RELEASE_ID: '123',
+                RELEASE_TAG: identity.tag,
+                RELEASE_REVISION: identity.revision,
+                RELEASE_CHANNEL: 'stable',
+                RELEASE_PRERELEASE: 'false',
+                RELEASE_PUBLISHED_AT: identity.publishedAt,
+            }
+            const child = Bun.spawn([bash, '-c', prefix + 'exec bash "$FIXTURE_SCRIPT"'], {
+                env,
+                stdout: 'pipe',
+                stderr: 'pipe',
+            })
+            const [code, stderr, stdout] = await Promise.all([
+                child.exited,
+                new Response(child.stderr).text(),
+                new Response(child.stdout).text(),
+            ])
+            expect(code, stderr + stdout).toBe(
+                ['same', 'different', 'partial-starter', 'partial-empty'].includes(mode) ? 0 : 1,
+            )
+            expect(await readFile(events, 'utf8')).toBe(mode.startsWith('partial-') ? 'edit\n' : '')
+            if (mode === 'same' || mode === 'different') {
+                expect(await readFile(output, 'utf8')).toBe(`committed_blog_digest=${digest}\n`)
+                const workflow = Bun.YAML.parse(
+                    await readFile(
+                        join(root, '.github/workflows/build-assessed-image.yml'),
+                        'utf8',
+                    ),
+                ) as { jobs: Record<string, { steps: { name: string; run?: string }[] }> }
+                const gate = workflow.jobs['candidate-index']!.steps.find(
+                    (step) => step.name === 'Preserve the committed release image digest',
+                )?.run
+                expect(gate).toBeDefined()
+                const verify = Bun.spawn(
+                    [bash, '-c', gate + '\nprintf publish >> "$FIXTURE_EVENTS"'],
+                    {
+                        env: {
+                            ...env,
+                            EXPECTED_DIGEST: digest,
+                            REBUILT_DIGEST: mode === 'same' ? digest : `sha256:${'f'.repeat(64)}`,
+                        },
+                        stdout: 'pipe',
+                        stderr: 'pipe',
+                    },
+                )
+                expect(await verify.exited).toBe(mode === 'same' ? 0 : 1)
+                expect(await readFile(events, 'utf8')).toBe(mode === 'same' ? 'publish' : '')
+            } else expect(await readFile(output, 'utf8')).toBe('')
+        } finally {
+            await rm(directory, { recursive: true, force: true })
+        }
+    },
+    10_000,
+)
+
+test('passes the committed digest through the release build before any publisher can run', async () => {
+    const pipeline = Bun.YAML.parse(
+        await readFile(join(root, '.github/workflows/release-pipeline.yml'), 'utf8'),
+    ) as {
+        jobs: Record<
+            string,
+            {
+                outputs?: Record<string, string>
+                with?: Record<string, string>
+                needs?: string | string[]
+            }
+        >
+    }
+    expect(pipeline.jobs.building?.outputs?.committed_blog_digest).toBe(
+        '${{ steps.status.outputs.committed_blog_digest }}',
+    )
+    expect(pipeline.jobs.prepare?.outputs?.committed_blog_digest).toBe(
+        '${{ needs.building.outputs.committed_blog_digest }}',
+    )
+    expect(pipeline.jobs.build?.with?.expected_digest).toBe(
+        '${{ needs.prepare.outputs.committed_blog_digest }}',
+    )
+    expect(pipeline.jobs['sign-distribution']?.needs).toContain('build')
+    expect(pipeline.jobs['publish-image']?.needs).toContain('build')
+})
 
 test.each(['valid', 'absent', 'empty', 'oversized', 'invalid-name', 'invalid-png'])(
     'validates optional contributor assets before publication: %s',
@@ -162,6 +362,7 @@ test.each(['success', 'stale', 'tag', 'banner', 'identity', 'delete-identity', '
             await Promise.all(
                 [
                     'publish-building-release.sh',
+                    'committed-blog-digest.sh',
                     'validate-release-event.sh',
                     'verify-release-identity.sh',
                 ].map((name) =>
@@ -180,7 +381,7 @@ if [[ "$1" == api ]]; then
     if [[ "$2" == --method ]]; then
         printf 'delete %s\\n' "$(basename "$4")" >> "$FIXTURE_EVENTS"
         [[ "$FIXTURE_FAILURE" != delete-failure ]]
-        [[ "$4" == "repos/RentnerProxy/platform/releases/assets/11" || "$4" == "repos/RentnerProxy/platform/releases/assets/12" || "$4" == "repos/RentnerProxy/platform/releases/assets/13" || "$4" == "repos/RentnerProxy/platform/releases/assets/14" || "$4" == "repos/RentnerProxy/platform/releases/assets/15" || "$4" == "repos/RentnerProxy/platform/releases/assets/26" ]]
+        [[ "$4" == "repos/RentnerProxy/platform/releases/assets/11" || "$4" == "repos/RentnerProxy/platform/releases/assets/12" || "$4" == "repos/RentnerProxy/platform/releases/assets/13" || "$4" == "repos/RentnerProxy/platform/releases/assets/14" || "$4" == "repos/RentnerProxy/platform/releases/assets/15" || "$4" == "repos/RentnerProxy/platform/releases/assets/26" || "$4" == "repos/RentnerProxy/platform/releases/assets/30" ]]
         exit
     elif [[ "$2" == */assets ]]; then
         [[ "$2" == 'repos/RentnerProxy/platform/releases/123/assets' ]]
@@ -257,13 +458,13 @@ printf 'building' > "$RUNNER_TEMP/rentnerproxy-release/building-body.md"
             }
             expect(await readFile(events, 'utf8')).toBe(
                 failure === 'stale'
-                    ? 'edit\nlist 123\ndelete 11\ndelete 26\ndelete 12\ndelete 13\ndelete 14\ndelete 15\n'
+                    ? 'list 123\ndelete 11\ndelete 26\ndelete 12\ndelete 13\ndelete 14\ndelete 15\nedit\n'
                     : failure === 'success'
-                      ? 'edit\nlist 123\ndelete 26\n'.repeat(2)
+                      ? 'list 123\ndelete 26\nedit\n'.repeat(2)
                       : failure === 'delete-identity'
-                        ? 'edit\nlist 123\n'
+                        ? 'list 123\n'
                         : failure === 'delete-failure'
-                          ? 'edit\nlist 123\ndelete 11\n'
+                          ? 'list 123\ndelete 11\n'
                           : '',
             )
         } finally {
@@ -285,6 +486,7 @@ test.each([
     'readiness',
     'identity',
     'body',
+    'blog',
 ])(
     'keeps the final body behind every publication gate: %s',
     async (failure) => {
@@ -355,6 +557,9 @@ case "$2" in
         printf 'policy\\n' >> "$FIXTURE_EVENTS"
         [[ "$FIXTURE_FAILURE" != policy ]]
         if [[ "$FIXTURE_FAILURE" == policy-recheck && -f "$FIXTURE_ASSETS" ]]; then exit 1; fi ;;
+    */publish-release-blog.ts)
+        printf 'blog\\n' >> "$FIXTURE_EVENTS"
+        [[ "$FIXTURE_FAILURE" != blog ]] ;;
     */generate-release-readiness.ts)
         printf 'generate\\n' >> "$FIXTURE_EVENTS"
         [[ "$FIXTURE_FAILURE" != generate ]] ;;
@@ -416,6 +621,7 @@ esac
                 'readiness',
                 'identity',
                 'body',
+                'blog',
             ]
             const stop = success
                 ? expected.length
@@ -432,7 +638,9 @@ esac
                 expect(uploaded).not.toContain('release-banner.png')
                 expect(uploaded).toContain('RentnerProxy-v1.0.0-CHANGELOG.md')
             }
-            expect(await readFile(body, 'utf8')).toBe(success ? 'final' : 'building')
+            expect(await readFile(body, 'utf8')).toBe(
+                success || failure === 'blog' ? 'final' : 'building',
+            )
         } finally {
             await rm(directory, { recursive: true, force: true })
         }

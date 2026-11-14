@@ -33,6 +33,11 @@ on:
                 required: false
                 type: boolean
                 default: false
+            expected_digest:
+                description: Previously committed release image digest that recovery must retain
+                required: false
+                type: string
+                default: ''
         outputs:
             digest:
                 value: ${{ jobs.assemble.outputs.digest }}
@@ -248,6 +253,17 @@ jobs:
                   ARM64_DIGEST: ${{ needs.arm64.outputs.digest }}
                   ARM64_ARCHIVE_SHA256: ${{ needs.arm64.outputs.archive_sha256 }}
               run: bash automation/.github/scripts/release/assemble-candidate.sh
+            - name: Preserve the committed release image digest
+              env:
+                  EXPECTED_DIGEST: ${{ inputs.expected_digest }}
+                  REBUILT_DIGEST: ${{ steps.assemble.outputs.digest }}
+              run: |
+                  if [[ -n "$EXPECTED_DIGEST" ]]; then
+                      [[ "$EXPECTED_DIGEST" =~ ^sha256:[a-f0-9]{64}$ && "$REBUILT_DIGEST" == "$EXPECTED_DIGEST" ]] || {
+                          echo '::error::Rebuilt image differs from the committed release; publication is blocked.'
+                          exit 1
+                      }
+                  fi
             - name: Store immutable unassessed root
               uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
               with:

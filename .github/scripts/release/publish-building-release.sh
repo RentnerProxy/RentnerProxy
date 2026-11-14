@@ -24,10 +24,6 @@ bun --no-env-file "$script_directory/generate-building-release-notes.ts"
     exit 1
 }
 
-bash "$script_directory/verify-release-identity.sh"
-gh release edit "$RELEASE_TAG" --notes-file "$artifact_directory/building-body.md" \
-    --repo "$GITHUB_REPOSITORY"
-
 release_assets="$(
     gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets" --paginate \
         --jq '.[] | [.id, .name] | @tsv'
@@ -35,6 +31,16 @@ release_assets="$(
     echo "::error::Listing stale release control assets failed."
     exit 1
 }
+committed_digest="$(RELEASE_ASSETS="$release_assets" bash "$script_directory/committed-blog-digest.sh")" || {
+    echo '::error::The committed release blog could not be verified; leaving the release untouched.'
+    exit 1
+}
+if [[ -n "$committed_digest" ]]; then
+    [[ "$committed_digest" =~ ^sha256:[a-f0-9]{64}$ ]] || exit 1
+    printf 'committed_blog_digest=%s\n' "$committed_digest" >> "$GITHUB_OUTPUT"
+    echo 'Preserving the committed release while checking a digest-identical recovery.'
+    exit 0
+fi
 for control_asset in 'rentnerproxy-update.json' 'building-banner.png' 'release-banner.png' "RentnerProxy-$RELEASE_TAG-CHANGELOG.md" 'contributor-avatar'; do
     while IFS=$'\t' read -r asset_id asset_name; do
         if [[ "$control_asset" == 'contributor-avatar' ]]; then
@@ -53,3 +59,7 @@ for control_asset in 'rentnerproxy-update.json' 'building-banner.png' 'release-b
         }
     done <<< "$release_assets"
 done
+
+bash "$script_directory/verify-release-identity.sh"
+gh release edit "$RELEASE_TAG" --notes-file "$artifact_directory/building-body.md" \
+    --repo "$GITHUB_REPOSITORY"

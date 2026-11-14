@@ -4,7 +4,7 @@ FROM mirror.gcr.io/library/postgres:18.7@sha256:9f4fd4aa918f52ae3d6f3b687f1de90d
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates apt-utils createrepo-c gnupg gpgv podman rpm rpm2cpio skopeo \
+    && apt-get install -y --no-install-recommends git jq ca-certificates apt-utils createrepo-c gnupg gpgv podman rpm rpm2cpio skopeo \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10002 rentnerproxy \
     && useradd --uid 10002 --gid rentnerproxy --no-create-home rentnerproxy \
