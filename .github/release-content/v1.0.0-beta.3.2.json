@@ -2,12 +2,30 @@
     "contentRevision": 1,
     "locales": {
         "de": {
-            "title": "RentnerProxy Beta 3.2: zuverlässigere Hintergrundarbeit und robustere Backups",
-            "summary": "Beta 3.2 überarbeitet Hintergrundworker, Host-Monitoring, Benachrichtigungen und Docker-Erkennung. Dazu kommen robustere Wiederherstellung, Unterstützung für mehrere GiB große Backups sowie Verbesserungen an Zertifikatsjobs, Audit-Aufbewahrung und Laufzeitdiagnose.",
+            "title": "RentnerProxy Beta 3.2: Performance und Security mit PostgreSQL 18.7",
+            "summary": "Beta 3.2 ist ein Performance- und Security-Update: fairere Hintergrundarbeit, gebündelte Verarbeitung und weniger PostgreSQL-Koordination treffen auf die Sicherheitskorrekturen von PostgreSQL 18.7. Robustere Backups, Wiederherstellung, Zertifikatsjobs und Audit-Aufbewahrung ergänzen das Update.",
             "sections": [
                 {
+                    "id": "postgresql-security",
+                    "title": "PostgreSQL 18.7: Sicherheitskorrekturen für die Appliance",
+                    "paragraphs": [
+                        "Beta 3.2 aktualisiert das gebündelte PostgreSQL von 18.6 auf 18.7. Das am 12. November 2026 veröffentlichte Sicherheits- und Fehlerkorrektur-Release enthält Korrekturen für den Datenbankserver und seine Verwaltungswerkzeuge.",
+                        "Unter anderem werden die Behandlung von Constraint-Namen in pg_dump und die Archivverarbeitung in pg_restore abgesichert. RentnerProxy nutzt beide Werkzeuge für vollständige logische Backups und Wiederherstellungen. Das Update bleibt innerhalb der PostgreSQL-18-Reihe."
+                    ],
+                    "links": [
+                        {
+                            "label": "Offizielle PostgreSQL-Sicherheitsankündigung",
+                            "url": "https://www.postgresql.org/about/news/postgresql-187-1712-1616-1520-1425-and-19-rc-2-released-3442/"
+                        },
+                        {
+                            "label": "PostgreSQL 18.7 Release-Notes",
+                            "url": "https://www.postgresql.org/docs/release/18.7/"
+                        }
+                    ]
+                },
+                {
                     "id": "runtime-and-workers",
-                    "title": "Hintergrundarbeit mit klaren Grenzen",
+                    "title": "Performance durch fair geplante Hintergrundarbeit",
                     "paragraphs": [
                         "Seit Beta 3.1 wurden die bestehenden Hintergrunddienste überarbeitet. Gemeinsame Ressourcenbudgets, begrenzte Parallelität und eine faire Einplanung helfen Monitoring, Benachrichtigungen und anderen Aufgaben, auch neben Dashboard-Anfragen voranzukommen. Weniger Koordinationszugriffe auf PostgreSQL reduzieren dabei unnötige Verwaltungsarbeit.",
                         "Fehler der Web-Schicht werden besser von Caddy und dem Controller isoliert. Wiederanlauf, Herunterfahren und Restore-Wartung behalten die Zuständigkeit für bereits angenommene Arbeit bis zum Abschluss ihrer Aufräumschritte. Neue Fortschrittsdiagnosen unterscheiden laufende, wartende, pausierte und fehlgeschlagene Arbeit; fehlende Messwerte bleiben ausdrücklich unbekannt."
@@ -137,12 +155,30 @@
             ]
         },
         "en": {
-            "title": "RentnerProxy Beta 3.2: reliable background work and more robust backups",
-            "summary": "Beta 3.2 reworks background workers, host monitoring, notifications and Docker discovery. It also improves restore recovery, supports multi-GiB backups, and strengthens certificate jobs, audit retention and runtime diagnostics.",
+            "title": "RentnerProxy Beta 3.2: performance and security with PostgreSQL 18.7",
+            "summary": "Beta 3.2 is a performance and security update: fairer background work, batched processing and fewer PostgreSQL coordination round trips, alongside PostgreSQL 18.7 security fixes. More robust backups, restore recovery, certificate jobs and audit retention complete the update.",
             "sections": [
                 {
+                    "id": "postgresql-security",
+                    "title": "PostgreSQL 18.7: security fixes for the appliance",
+                    "paragraphs": [
+                        "Beta 3.2 upgrades bundled PostgreSQL from 18.6 to 18.7, the security and bugfix release published on 12 November 2026. It includes corrections in the database server and its administration tools.",
+                        "The update hardens constraint-name handling in pg_dump and archive processing in pg_restore. RentnerProxy uses both tools for full logical backups and restores. The update remains within the PostgreSQL 18 series."
+                    ],
+                    "links": [
+                        {
+                            "label": "Official PostgreSQL security announcement",
+                            "url": "https://www.postgresql.org/about/news/postgresql-187-1712-1616-1520-1425-and-19-rc-2-released-3442/"
+                        },
+                        {
+                            "label": "PostgreSQL 18.7 release notes",
+                            "url": "https://www.postgresql.org/docs/release/18.7/"
+                        }
+                    ]
+                },
+                {
                     "id": "runtime-and-workers",
-                    "title": "Clear boundaries for background work",
+                    "title": "Performance through fair background scheduling",
                     "paragraphs": [
                         "Since Beta 3.1, the existing background services have been reworked. Shared resource budgets, bounded concurrency and fair scheduling help monitoring, notifications and other tasks make progress alongside dashboard requests. Fewer PostgreSQL coordination round trips reduce unnecessary bookkeeping.",
                         "Web faults are better isolated from Caddy and the controller. Recovery, shutdown and restore maintenance retain ownership of admitted work until cleanup settles. New progress diagnostics distinguish running, deferred, paused and failed work; missing measurements remain explicitly unknown."
@@ -272,12 +308,30 @@
             ]
         },
         "es": {
-            "title": "RentnerProxy Beta 3.2: tareas en segundo plano más fiables y copias de seguridad más robustas",
-            "summary": "Beta 3.2 revisa las tareas en segundo plano, la supervisión de hosts, las notificaciones y el descubrimiento de Docker. También mejora la recuperación tras restauraciones, admite copias de varios GiB y refuerza los trabajos de certificados, la retención de auditoría y los diagnósticos.",
+            "title": "RentnerProxy Beta 3.2: rendimiento y seguridad con PostgreSQL 18.7",
+            "summary": "Beta 3.2 es una actualización de rendimiento y seguridad: planificación más equitativa, procesamiento por lotes y menos intercambios de coordinación con PostgreSQL, junto con las correcciones de seguridad de PostgreSQL 18.7. También mejora las copias, las restauraciones, los certificados y la retención de auditoría.",
             "sections": [
                 {
+                    "id": "postgresql-security",
+                    "title": "PostgreSQL 18.7: correcciones de seguridad para la imagen integrada",
+                    "paragraphs": [
+                        "Beta 3.2 actualiza PostgreSQL de 18.6 a 18.7, la versión de seguridad y corrección de errores publicada el 12 de noviembre de 2026. Incluye correcciones en el servidor de bases de datos y sus herramientas de administración.",
+                        "La actualización refuerza el tratamiento de nombres de restricciones en pg_dump y el procesamiento de archivos de copia en pg_restore. RentnerProxy utiliza ambas herramientas para copias lógicas completas y restauraciones. La actualización se mantiene dentro de la serie PostgreSQL 18."
+                    ],
+                    "links": [
+                        {
+                            "label": "Anuncio oficial de seguridad de PostgreSQL",
+                            "url": "https://www.postgresql.org/about/news/postgresql-187-1712-1616-1520-1425-and-19-rc-2-released-3442/"
+                        },
+                        {
+                            "label": "Notas de PostgreSQL 18.7",
+                            "url": "https://www.postgresql.org/docs/release/18.7/"
+                        }
+                    ]
+                },
+                {
                     "id": "runtime-and-workers",
-                    "title": "Límites claros para las tareas en segundo plano",
+                    "title": "Rendimiento mediante una planificación equitativa",
                     "paragraphs": [
                         "Desde Beta 3.1 se han revisado los servicios existentes en segundo plano. Los presupuestos compartidos de recursos, la concurrencia limitada y una planificación equitativa permiten que la supervisión, las notificaciones y otras tareas avancen junto con las solicitudes del panel. Menos intercambios de coordinación con PostgreSQL reducen el trabajo administrativo innecesario.",
                         "Los fallos de la capa web quedan mejor aislados de Caddy y del controlador. La recuperación, el apagado y el mantenimiento durante la restauración conservan la responsabilidad sobre el trabajo admitido hasta terminar la limpieza. Los nuevos diagnósticos distinguen tareas en ejecución, aplazadas, pausadas y fallidas; las mediciones ausentes siguen figurando como desconocidas."
@@ -407,12 +461,30 @@
             ]
         },
         "zh": {
-            "title": "RentnerProxy Beta 3.2：更可靠的后台任务与更稳健的备份",
-            "summary": "Beta 3.2 改进了后台工作进程、主机监控、通知和 Docker 发现，并增强了恢复流程，支持数 GiB 的备份文件，同时完善证书任务、审计保留策略与运行诊断。",
+            "title": "RentnerProxy Beta 3.2：性能与安全更新，内置 PostgreSQL 18.7",
+            "summary": "Beta 3.2 聚焦性能与安全：通过更公平的后台调度、批量处理和减少 PostgreSQL 协调往返改进任务执行，并引入 PostgreSQL 18.7 的安全修复，同时增强备份、还原恢复、证书任务与审计保留机制。",
             "sections": [
                 {
+                    "id": "postgresql-security",
+                    "title": "PostgreSQL 18.7：集成镜像的安全修复",
+                    "paragraphs": [
+                        "Beta 3.2 将内置 PostgreSQL 从 18.6 更新至 18.7。该版本于 2026 年 11 月 12 日发布，包含数据库服务器及管理工具的安全修复和错误修复。",
+                        "本次更新加强了 pg_dump 对约束名称的处理，以及 pg_restore 对备份归档的处理。RentnerProxy 使用这两个工具执行完整逻辑备份和还原。此次更新仍属于 PostgreSQL 18 系列。"
+                    ],
+                    "links": [
+                        {
+                            "label": "PostgreSQL 官方安全公告",
+                            "url": "https://www.postgresql.org/about/news/postgresql-187-1712-1616-1520-1425-and-19-rc-2-released-3442/"
+                        },
+                        {
+                            "label": "PostgreSQL 18.7 版本说明",
+                            "url": "https://www.postgresql.org/docs/release/18.7/"
+                        }
+                    ]
+                },
+                {
                     "id": "runtime-and-workers",
-                    "title": "为后台任务建立清晰边界",
+                    "title": "通过公平的后台调度改善性能",
                     "paragraphs": [
                         "自 Beta 3.1 以来，现有后台服务经过了重新设计。共享资源预算、受限并发和公平调度，让监控、通知等任务能够在处理控制面板请求的同时继续推进。减少与 PostgreSQL 之间的协调往返，也降低了不必要的管理开销。",
                         "Web 层故障与 Caddy、控制器之间的隔离得到改善。恢复、关闭和还原维护期间，已接纳的任务会一直保留明确的执行归属，直到清理完成。新的进度诊断区分运行中、延后、暂停和失败的任务；缺失的测量值会明确保持为未知状态。"
