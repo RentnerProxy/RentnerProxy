@@ -12,12 +12,12 @@
   <a href="https://github.com/RentnerProxy/platform/actions/workflows/ci.yml"><img src="https://github.com/RentnerProxy/platform/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
   <a href="https://github.com/RentnerProxy/platform/actions/workflows/codeql.yml"><img src="https://github.com/RentnerProxy/platform/actions/workflows/codeql.yml/badge.svg?branch=main" alt="CodeQL status"></a>
   <a href="https://www.bestpractices.dev/projects/14354"><img src="https://www.bestpractices.dev/projects/14354/badge" alt="OpenSSF Best Practices badge"></a>
-  <a href="https://github.com/RentnerProxy/platform/releases/tag/v1.0.0-beta.3.1"><img src="https://img.shields.io/github/v/release/RentnerProxy/platform?include_prereleases&amp;sort=semver" alt="Current GitHub release"></a>
+  <a href="https://github.com/RentnerProxy/platform/releases/tag/v1.0.0-beta.3.2"><img src="https://img.shields.io/github/v/release/RentnerProxy/platform?include_prereleases&amp;sort=semver" alt="Current GitHub release"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/github/license/RentnerProxy/platform" alt="MIT license"></a>
 </p>
 
 > [!IMPORTANT]
-> Current public release: [v1.0.0-beta.3.1](https://github.com/RentnerProxy/platform/releases/tag/v1.0.0-beta.3.1).
+> Current public release: [v1.0.0-beta.3.2](https://github.com/RentnerProxy/platform/releases/tag/v1.0.0-beta.3.2).
 > This is beta software: breaking changes are possible. Back up your data before upgrades.
 >
 > **Image migration:** Beta 3.1 and newer images use `ghcr.io/rentnerproxy/platform`.
@@ -53,7 +53,7 @@ manual challenges, supported delegation targets, renewal and recovery.
 
 ## Installation
 
-Beta 3.1 is available for `linux/amd64` and `linux/arm64`.
+Beta 3.2 is available for `linux/amd64` and `linux/arm64`.
 
 | Installation        | Get started                                                                                      |
 | ------------------- | ------------------------------------------------------------------------------------------------ |
@@ -70,8 +70,8 @@ Requirements:
 - Free ports `80/tcp`, `443/tcp`, and `443/udp`.
 - HTTPS management origin and SMTP credentials.
 
-This Compose example is pinned to the Beta 3.1 image:
-`ghcr.io/rentnerproxy/platform:v1.0.0-beta.3.1`. The public image supports
+This Compose example is pinned to the Beta 3.2 image:
+`ghcr.io/rentnerproxy/platform:v1.0.0-beta.3.2`. The public image supports
 anonymous pulls; no GitHub or registry login is required.
 
 Save this as `docker-compose.yml` (or use the [repository file](docker-compose.yml)):
@@ -107,8 +107,8 @@ volumes:
 Create `.env` beside it (see also [`.env.production.example`](.env.production.example)):
 
 ```dotenv
-# Pin the public Beta 3.1 image; use :beta to follow the latest beta instead.
-RENTNERPROXY_IMAGE=ghcr.io/rentnerproxy/platform:v1.0.0-beta.3.1
+# Pin the public Beta 3.2 image; use :beta to follow the latest beta instead.
+RENTNERPROXY_IMAGE=ghcr.io/rentnerproxy/platform:v1.0.0-beta.3.2
 PUBLIC_ORIGIN=https://management.example.com
 SMTP_HOST=smtp.example.com
 SMTP_PORT=587
@@ -155,7 +155,7 @@ Podman 5.4 or newer, systemd 252 or newer, cgroup v2 and nftables. Rootless depl
 Follow the [installation and verification guide](https://rentnerproxy.github.io/platform/INSTALL.txt)
 to verify the signing-key fingerprint, configure APT or DNF, or install a versioned DEB, RPM or
 Quadlet archive. Versioned packages, checksums, signatures and architecture-specific instructions
-are also available in the [Beta 3.1 downloads](https://github.com/RentnerProxy/platform/releases/tag/v1.0.0-beta.3.1).
+are also available in the [Beta 3.2 downloads](https://github.com/RentnerProxy/platform/releases/tag/v1.0.0-beta.3.2).
 
 ## Upgrade
 
@@ -187,7 +187,7 @@ See [upgrade, backup and rollback instructions](docs/operations.md#upgrades).
 New RentnerProxy images are published to the public package `ghcr.io/rentnerproxy/platform`.
 All tags in this package, including `:dev`, can be pulled without authentication.
 
-The immutable image for this release is `ghcr.io/rentnerproxy/platform:v1.0.0-beta.3.1`.
+The immutable image for this release is `ghcr.io/rentnerproxy/platform:v1.0.0-beta.3.2`.
 
 | Tag       | Channel                                                                        |
 | --------- | ------------------------------------------------------------------------------ |
