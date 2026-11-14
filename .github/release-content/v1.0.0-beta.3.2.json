@@ -1,0 +1,545 @@
+{
+    "contentRevision": 1,
+    "locales": {
+        "de": {
+            "title": "RentnerProxy Beta 3.2: zuverlässigere Hintergrundarbeit und robustere Backups",
+            "summary": "Beta 3.2 überarbeitet Hintergrundworker, Host-Monitoring, Benachrichtigungen und Docker-Erkennung. Dazu kommen robustere Wiederherstellung, Unterstützung für mehrere GiB große Backups sowie Verbesserungen an Zertifikatsjobs, Audit-Aufbewahrung und Laufzeitdiagnose.",
+            "sections": [
+                {
+                    "id": "runtime-and-workers",
+                    "title": "Hintergrundarbeit mit klaren Grenzen",
+                    "paragraphs": [
+                        "Seit Beta 3.1 wurden die bestehenden Hintergrunddienste überarbeitet. Gemeinsame Ressourcenbudgets, begrenzte Parallelität und eine faire Einplanung helfen Monitoring, Benachrichtigungen und anderen Aufgaben, auch neben Dashboard-Anfragen voranzukommen. Weniger Koordinationszugriffe auf PostgreSQL reduzieren dabei unnötige Verwaltungsarbeit.",
+                        "Fehler der Web-Schicht werden besser von Caddy und dem Controller isoliert. Wiederanlauf, Herunterfahren und Restore-Wartung behalten die Zuständigkeit für bereits angenommene Arbeit bis zum Abschluss ihrer Aufräumschritte. Neue Fortschrittsdiagnosen unterscheiden laufende, wartende, pausierte und fehlgeschlagene Arbeit; fehlende Messwerte bleiben ausdrücklich unbekannt."
+                    ],
+                    "links": [
+                        {
+                            "label": "Gemeinsame Ressourcenbudgets",
+                            "url": "https://github.com/RentnerProxy/platform/pull/419"
+                        },
+                        {
+                            "label": "Fehlerisolation und Wiederanlauf",
+                            "url": "https://github.com/RentnerProxy/platform/pull/405"
+                        },
+                        {
+                            "label": "Fortschrittsdiagnosen",
+                            "url": "https://github.com/RentnerProxy/platform/pull/414"
+                        }
+                    ]
+                },
+                {
+                    "id": "monitoring-notifications-discovery",
+                    "title": "Monitoring, Zustellung und Docker-Erkennung",
+                    "paragraphs": [
+                        "Host-Prüfungen nutzen begrenzte parallele Verarbeitung und gebündelte Speicherung. Langsame Prüfungen blockieren dadurch nicht alle freien Plätze. Die Bereinigung der Historie verteilt ein gemeinsames Aufbewahrungsbudget fair auf die Richtlinien: Eine konfigurierte Grenze bleibt eine Obergrenze und garantiert keine feste Zahl gespeicherter Beobachtungen.",
+                        "Die vorhandenen Benachrichtigungen werden mit begrenzter Parallelität fair über Benutzer, Kanäle und Transporte eingeplant. Die Docker-Erkennung verfolgt Bestandsänderungen über begrenzte Änderungsbeobachtung und gleicht den Bestand nach einem Neustart erneut ab. Bestandsänderungen erreichen das Dashboard über den Live-Ereignisstrom."
+                    ],
+                    "links": [
+                        {
+                            "label": "Gebündelte Host-Prüfungen",
+                            "url": "https://github.com/RentnerProxy/platform/pull/404"
+                        },
+                        {
+                            "label": "Faire Benachrichtigungszustellung",
+                            "url": "https://github.com/RentnerProxy/platform/pull/406"
+                        },
+                        {
+                            "label": "Docker-Bestandsabgleich",
+                            "url": "https://github.com/RentnerProxy/platform/pull/407"
+                        }
+                    ]
+                },
+                {
+                    "id": "backups-and-restore",
+                    "title": "Große Backups und verlässlichere Wiederherstellung",
+                    "paragraphs": [
+                        "Export, Download, externe Speicherung und Wiederherstellung unterstützen jetzt mehrere GiB große Backup-Dateien. Die Verarbeitung erfolgt mit Streaming, begrenzter Validierung und Kapazitätsprüfungen. Die Schutzgrenzen bleiben endlich: maximal 8 GiB pro Backup-Artefakt, eine Speicherplatzreserve von 2 GiB und ein äußeres Zeitlimit von vier Stunden pro Operation.",
+                        "Die Wiederherstellung behandelt Neustart- und Wartungsübergänge robuster. Das Dashboard bewahrt seinen Live-Zustand bei einer erneuten Verbindung und aktualisiert ihn anschließend; veraltete Identitätsprüfungen werden verworfen. Zusätzliche Prüfungen decken unterbrochene Wiederherstellung, sichere Downloads und den Umgang mit Backups im Besitz von root ab."
+                    ],
+                    "links": [
+                        {
+                            "label": "Backups mit mehreren GiB",
+                            "url": "https://github.com/RentnerProxy/platform/pull/441"
+                        },
+                        {
+                            "label": "Restore und Live-Dashboard",
+                            "url": "https://github.com/RentnerProxy/platform/pull/440"
+                        }
+                    ]
+                },
+                {
+                    "id": "certificates-and-audit",
+                    "title": "Zertifikatsjobs, Audit-Daten und Aufräumen",
+                    "paragraphs": [
+                        "ACME-Jobs und das Speichern von Zertifikaten besitzen klarere Zuständigkeiten im Controller. Aktivierung und Wiederherstellung schützen ausstehende Kandidaten und bereits bestätigtes Zertifikatsmaterial; Fehler und transaktionale Laufzeitarbeit bleiben nachvollziehbar.",
+                        "Audit-Metadaten werden als abfragbare JSONB-Objekte gespeichert. Die Aufbewahrung verfolgt den tatsächlichen Datenbestand und entfernt überzählige Einträge in begrenzten Schritten. Verwaiste oder ausgemusterte TLS-Dateien werden aufgeräumt, während aktiver und für Wiederherstellung benötigter Zertifikatszustand erhalten bleibt. Abgeschlossene Laufzeitexperimente wurden aus dem Repository entfernt."
+                    ],
+                    "links": [
+                        {
+                            "label": "Zertifikats- und ACME-Zuständigkeit",
+                            "url": "https://github.com/RentnerProxy/platform/pull/413"
+                        },
+                        {
+                            "label": "Audit-Aufbewahrung und TLS-Bereinigung",
+                            "url": "https://github.com/RentnerProxy/platform/pull/436"
+                        },
+                        {
+                            "label": "Entfernte Laufzeitexperimente",
+                            "url": "https://github.com/RentnerProxy/platform/pull/444"
+                        }
+                    ]
+                },
+                {
+                    "id": "release-content-and-maintenance",
+                    "title": "Release-Artikel und Wartungsupdates",
+                    "paragraphs": [
+                        "Release-Artikel werden jetzt auf Deutsch, Englisch, Spanisch und Chinesisch als versionierte Inhalte veröffentlicht. Der Blog-Publisher bindet den Artikel an die bestätigte Release-Identität und das veröffentlichte Image. Ein Artikel wird erst freigegeben, wenn Pakete, Update-Freigabe und Release-Notizen vollständig vorliegen.",
+                        "Die gebündelte PostgreSQL-Version steigt von 18.6 auf 18.7. Caddy bleibt bei 2.11.9; weitere Abhängigkeiten und Build-Eingaben wurden aktualisiert. Für alle Änderungen seit Beta 3.1 steht der vollständige Versionsvergleich bereit."
+                    ],
+                    "links": [
+                        {
+                            "label": "Mehrsprachige Release-Artikel",
+                            "url": "https://github.com/RentnerProxy/platform/pull/445"
+                        },
+                        {
+                            "label": "Alle Änderungen seit Beta 3.1",
+                            "url": "https://github.com/RentnerProxy/platform/compare/v1.0.0-beta.3.1...v1.0.0-beta.3.2"
+                        }
+                    ]
+                },
+                {
+                    "id": "installation-and-upgrades",
+                    "title": "Installation und Upgrade auf Beta 3.2",
+                    "paragraphs": [
+                        "Beta 3.2 verwendet weiterhin ghcr.io/rentnerproxy/platform. Für Installationen von Beta 3.1 ist kein erneuter Registry-Wechsel nötig. Der feste Image-Tag für dieses Release lautet v1.0.0-beta.3.2. Die Appliance wird für AMD64 und ARM64 sowie mit signierten Debian-13- und Fedora-44-Paketen für die unterstützte Podman/Quadlet-Installation bereitgestellt.",
+                        "Vor dem Upgrade ein geprüftes Backup mit den Werkzeugen der Ausgangsversion erstellen. Beim Start werden neue Datenbankmigrationen für die Audit-Aufbewahrung angewendet. Nur das Image zurückzusetzen macht solche Änderungen nicht rückgängig; für einen Rollback werden das Backup vor dem Upgrade, ein frisches Volume und die genaue Ausgangsversion benötigt.",
+                        "Die bestehenden Kompatibilitätsregeln bleiben erhalten: Beta 1 ist die älteste unterstützte Ausgangsversion, Backups verwenden Format v4. Alpha-Installationen müssen zuerst auf exakt v1.0.0-beta.1 unter der ursprünglichen Image-Adresse wechseln; Alpha-v3-Backups müssen dort wiederhergestellt und neu als v4 gesichert werden. Beta 3.2 bleibt Vorabsoftware."
+                    ],
+                    "code": {
+                        "language": "bash",
+                        "value": "docker pull ghcr.io/rentnerproxy/platform:v1.0.0-beta.3.2"
+                    },
+                    "links": [
+                        {
+                            "label": "Beta 3.2 Release",
+                            "url": "https://github.com/RentnerProxy/platform/releases/tag/v1.0.0-beta.3.2"
+                        },
+                        {
+                            "label": "Versionierte Installationsanleitung",
+                            "url": "https://github.com/RentnerProxy/platform/releases/download/v1.0.0-beta.3.2/INSTALL.txt"
+                        },
+                        {
+                            "label": "Upgrade-Anleitung",
+                            "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.2/README.md#upgrade"
+                        }
+                    ]
+                }
+            ]
+        },
+        "en": {
+            "title": "RentnerProxy Beta 3.2: reliable background work and more robust backups",
+            "summary": "Beta 3.2 reworks background workers, host monitoring, notifications and Docker discovery. It also improves restore recovery, supports multi-GiB backups, and strengthens certificate jobs, audit retention and runtime diagnostics.",
+            "sections": [
+                {
+                    "id": "runtime-and-workers",
+                    "title": "Clear boundaries for background work",
+                    "paragraphs": [
+                        "Since Beta 3.1, the existing background services have been reworked. Shared resource budgets, bounded concurrency and fair scheduling help monitoring, notifications and other tasks make progress alongside dashboard requests. Fewer PostgreSQL coordination round trips reduce unnecessary bookkeeping.",
+                        "Web faults are better isolated from Caddy and the controller. Recovery, shutdown and restore maintenance retain ownership of admitted work until cleanup settles. New progress diagnostics distinguish running, deferred, paused and failed work; missing measurements remain explicitly unknown."
+                    ],
+                    "links": [
+                        {
+                            "label": "Shared resource budgets",
+                            "url": "https://github.com/RentnerProxy/platform/pull/419"
+                        },
+                        {
+                            "label": "Fault isolation and recovery",
+                            "url": "https://github.com/RentnerProxy/platform/pull/405"
+                        },
+                        {
+                            "label": "Progress diagnostics",
+                            "url": "https://github.com/RentnerProxy/platform/pull/414"
+                        }
+                    ]
+                },
+                {
+                    "id": "monitoring-notifications-discovery",
+                    "title": "Monitoring, delivery and Docker discovery",
+                    "paragraphs": [
+                        "Host checks use bounded parallel processing and batched persistence. Slow probes no longer block refilling every available slot. History cleanup shares a global retention budget fairly across policies: a configured retention limit remains an upper bound rather than a guaranteed number of stored observations.",
+                        "Existing notifications are scheduled fairly across owners, channels and transports with bounded concurrent delivery. Docker discovery follows inventory changes through bounded change watches and resynchronizes after a runtime restart. Inventory updates reach the dashboard through the live event stream."
+                    ],
+                    "links": [
+                        {
+                            "label": "Batched host checks",
+                            "url": "https://github.com/RentnerProxy/platform/pull/404"
+                        },
+                        {
+                            "label": "Fair notification delivery",
+                            "url": "https://github.com/RentnerProxy/platform/pull/406"
+                        },
+                        {
+                            "label": "Docker inventory reconciliation",
+                            "url": "https://github.com/RentnerProxy/platform/pull/407"
+                        }
+                    ]
+                },
+                {
+                    "id": "backups-and-restore",
+                    "title": "Larger backups and more reliable restore recovery",
+                    "paragraphs": [
+                        "Export, download, off-host storage and restore now support multi-GiB backup files. Processing uses streaming, bounded validation and capacity checks. Protective limits remain finite: an 8 GiB ceiling per backup artifact, a 2 GiB free-space reserve and a four-hour outer timeout per operation.",
+                        "Restore recovery handles restart and maintenance transitions more robustly. The dashboard preserves its live state across reconnects and refreshes it afterward, rejecting stale identity checks. Additional checks cover interrupted restores, secure downloads and root-owned backup boundaries."
+                    ],
+                    "links": [
+                        {
+                            "label": "Multi-GiB backups",
+                            "url": "https://github.com/RentnerProxy/platform/pull/441"
+                        },
+                        {
+                            "label": "Restore and live dashboard state",
+                            "url": "https://github.com/RentnerProxy/platform/pull/440"
+                        }
+                    ]
+                },
+                {
+                    "id": "certificates-and-audit",
+                    "title": "Certificate jobs, audit data and housekeeping",
+                    "paragraphs": [
+                        "ACME jobs and certificate persistence have clearer ownership in the controller. Activation and recovery protect pending candidates and previously committed certificate material, while preserving errors and transactional runtime work.",
+                        "Audit metadata is stored as queryable JSONB objects. Retention tracks actual cardinality and prunes excess entries in bounded batches. Orphaned or retired TLS files are reclaimed while preserving active and recoverable certificate state. Completed runtime experiments have been removed from the repository."
+                    ],
+                    "links": [
+                        {
+                            "label": "Certificate and ACME ownership",
+                            "url": "https://github.com/RentnerProxy/platform/pull/413"
+                        },
+                        {
+                            "label": "Audit retention and TLS housekeeping",
+                            "url": "https://github.com/RentnerProxy/platform/pull/436"
+                        },
+                        {
+                            "label": "Removed runtime experiments",
+                            "url": "https://github.com/RentnerProxy/platform/pull/444"
+                        }
+                    ]
+                },
+                {
+                    "id": "release-content-and-maintenance",
+                    "title": "Release articles and maintenance updates",
+                    "paragraphs": [
+                        "Authored release articles are now published in German, English, Spanish and Chinese as versioned content. The blog publisher binds each article to the verified release identity and published image. An article becomes ready only after package delivery, updater readiness and final release notes are complete.",
+                        "The bundled PostgreSQL version moves from 18.6 to 18.7. Caddy remains at 2.11.9; other dependencies and build inputs have also been refreshed. The complete version comparison lists every change since Beta 3.1."
+                    ],
+                    "links": [
+                        {
+                            "label": "Multilingual release articles",
+                            "url": "https://github.com/RentnerProxy/platform/pull/445"
+                        },
+                        {
+                            "label": "All changes since Beta 3.1",
+                            "url": "https://github.com/RentnerProxy/platform/compare/v1.0.0-beta.3.1...v1.0.0-beta.3.2"
+                        }
+                    ]
+                },
+                {
+                    "id": "installation-and-upgrades",
+                    "title": "Installing and upgrading to Beta 3.2",
+                    "paragraphs": [
+                        "Beta 3.2 continues to use ghcr.io/rentnerproxy/platform. Beta 3.1 installations do not need another registry migration. The fixed image tag for this release is v1.0.0-beta.3.2. The appliance is available for AMD64 and ARM64, with signed Debian 13 and Fedora 44 packages for the supported Podman/Quadlet installation.",
+                        "Before upgrading, create and verify a backup with the source release's tools. Startup applies new database migrations for audit retention. Reverting the image alone does not reverse those changes; rollback requires the pre-upgrade backup, a fresh volume and the exact source release.",
+                        "The existing compatibility rules remain: Beta 1 is the minimum supported upgrade source, and backups use format v4. Alpha installations must first move to exactly v1.0.0-beta.1 at the original image address; Alpha v3 backups must be restored there and backed up again as v4. Beta 3.2 remains prerelease software."
+                    ],
+                    "code": {
+                        "language": "bash",
+                        "value": "docker pull ghcr.io/rentnerproxy/platform:v1.0.0-beta.3.2"
+                    },
+                    "links": [
+                        {
+                            "label": "Beta 3.2 release",
+                            "url": "https://github.com/RentnerProxy/platform/releases/tag/v1.0.0-beta.3.2"
+                        },
+                        {
+                            "label": "Versioned installation guide",
+                            "url": "https://github.com/RentnerProxy/platform/releases/download/v1.0.0-beta.3.2/INSTALL.txt"
+                        },
+                        {
+                            "label": "Upgrade instructions",
+                            "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.2/README.md#upgrade"
+                        }
+                    ]
+                }
+            ]
+        },
+        "es": {
+            "title": "RentnerProxy Beta 3.2: tareas en segundo plano más fiables y copias de seguridad más robustas",
+            "summary": "Beta 3.2 revisa las tareas en segundo plano, la supervisión de hosts, las notificaciones y el descubrimiento de Docker. También mejora la recuperación tras restauraciones, admite copias de varios GiB y refuerza los trabajos de certificados, la retención de auditoría y los diagnósticos.",
+            "sections": [
+                {
+                    "id": "runtime-and-workers",
+                    "title": "Límites claros para las tareas en segundo plano",
+                    "paragraphs": [
+                        "Desde Beta 3.1 se han revisado los servicios existentes en segundo plano. Los presupuestos compartidos de recursos, la concurrencia limitada y una planificación equitativa permiten que la supervisión, las notificaciones y otras tareas avancen junto con las solicitudes del panel. Menos intercambios de coordinación con PostgreSQL reducen el trabajo administrativo innecesario.",
+                        "Los fallos de la capa web quedan mejor aislados de Caddy y del controlador. La recuperación, el apagado y el mantenimiento durante la restauración conservan la responsabilidad sobre el trabajo admitido hasta terminar la limpieza. Los nuevos diagnósticos distinguen tareas en ejecución, aplazadas, pausadas y fallidas; las mediciones ausentes siguen figurando como desconocidas."
+                    ],
+                    "links": [
+                        {
+                            "label": "Presupuestos compartidos de recursos",
+                            "url": "https://github.com/RentnerProxy/platform/pull/419"
+                        },
+                        {
+                            "label": "Aislamiento de fallos y recuperación",
+                            "url": "https://github.com/RentnerProxy/platform/pull/405"
+                        },
+                        {
+                            "label": "Diagnósticos de progreso",
+                            "url": "https://github.com/RentnerProxy/platform/pull/414"
+                        }
+                    ]
+                },
+                {
+                    "id": "monitoring-notifications-discovery",
+                    "title": "Supervisión, entrega y descubrimiento de Docker",
+                    "paragraphs": [
+                        "Las comprobaciones de hosts usan procesamiento paralelo limitado y almacenamiento por lotes. Las comprobaciones lentas ya no impiden ocupar todas las plazas disponibles. La limpieza del historial reparte equitativamente un presupuesto global de retención entre las políticas: el límite configurado es un máximo, no una garantía del número de observaciones almacenadas.",
+                        "Las notificaciones existentes se planifican equitativamente entre propietarios, canales y transportes, con entrega concurrente limitada. El descubrimiento de Docker sigue los cambios del inventario mediante observación acotada y vuelve a sincronizarlo tras un reinicio del entorno de ejecución. El panel recibe las actualizaciones del inventario a través del flujo de eventos en vivo."
+                    ],
+                    "links": [
+                        {
+                            "label": "Comprobaciones de hosts por lotes",
+                            "url": "https://github.com/RentnerProxy/platform/pull/404"
+                        },
+                        {
+                            "label": "Entrega equitativa de notificaciones",
+                            "url": "https://github.com/RentnerProxy/platform/pull/406"
+                        },
+                        {
+                            "label": "Conciliación del inventario de Docker",
+                            "url": "https://github.com/RentnerProxy/platform/pull/407"
+                        }
+                    ]
+                },
+                {
+                    "id": "backups-and-restore",
+                    "title": "Copias más grandes y recuperación de restauraciones más fiable",
+                    "paragraphs": [
+                        "La exportación, la descarga, el almacenamiento externo y la restauración admiten ahora archivos de copia de seguridad de varios GiB. El procesamiento utiliza transmisión de datos, validación acotada y comprobaciones de capacidad. Se mantienen límites finitos: un máximo de 8 GiB por archivo de copia, una reserva de espacio libre de 2 GiB y un límite total de cuatro horas por operación.",
+                        "La recuperación de restauraciones gestiona mejor las transiciones de reinicio y mantenimiento. El panel conserva su estado en vivo al reconectarse y lo actualiza después, rechazando las comprobaciones de identidad obsoletas. Las verificaciones adicionales cubren restauraciones interrumpidas, descargas seguras y los límites de acceso a copias propiedad de root."
+                    ],
+                    "links": [
+                        {
+                            "label": "Copias de varios GiB",
+                            "url": "https://github.com/RentnerProxy/platform/pull/441"
+                        },
+                        {
+                            "label": "Restauración y estado en vivo del panel",
+                            "url": "https://github.com/RentnerProxy/platform/pull/440"
+                        }
+                    ]
+                },
+                {
+                    "id": "certificates-and-audit",
+                    "title": "Trabajos de certificados, auditoría y limpieza",
+                    "paragraphs": [
+                        "Los trabajos ACME y el almacenamiento de certificados tienen responsabilidades más claras en el controlador. La activación y la recuperación protegen los certificados candidatos pendientes y el material ya confirmado, preservando los errores y el trabajo transaccional del entorno de ejecución.",
+                        "Los metadatos de auditoría se almacenan como objetos JSONB consultables. La retención controla el número real de registros y elimina los sobrantes en lotes limitados. Se recupera el espacio de archivos TLS huérfanos o retirados, conservando el estado de certificados activo y necesario para la recuperación. Se han eliminado del repositorio los experimentos de ejecución ya concluidos."
+                    ],
+                    "links": [
+                        {
+                            "label": "Responsabilidad de certificados y ACME",
+                            "url": "https://github.com/RentnerProxy/platform/pull/413"
+                        },
+                        {
+                            "label": "Retención de auditoría y limpieza TLS",
+                            "url": "https://github.com/RentnerProxy/platform/pull/436"
+                        },
+                        {
+                            "label": "Experimentos de ejecución eliminados",
+                            "url": "https://github.com/RentnerProxy/platform/pull/444"
+                        }
+                    ]
+                },
+                {
+                    "id": "release-content-and-maintenance",
+                    "title": "Artículos de versiones y actualizaciones de mantenimiento",
+                    "paragraphs": [
+                        "Los artículos editoriales de cada versión se publican ahora en alemán, inglés, español y chino como contenido versionado. El publicador vincula cada artículo a la identidad verificada de la versión y a la imagen publicada. El artículo solo queda disponible cuando se han completado la entrega de paquetes, la preparación del actualizador y las notas finales de la versión.",
+                        "La versión integrada de PostgreSQL pasa de 18.6 a 18.7. Caddy se mantiene en 2.11.9; también se han actualizado otras dependencias y componentes de compilación. La comparación completa de versiones recoge todos los cambios desde Beta 3.1."
+                    ],
+                    "links": [
+                        {
+                            "label": "Artículos de versiones multilingües",
+                            "url": "https://github.com/RentnerProxy/platform/pull/445"
+                        },
+                        {
+                            "label": "Todos los cambios desde Beta 3.1",
+                            "url": "https://github.com/RentnerProxy/platform/compare/v1.0.0-beta.3.1...v1.0.0-beta.3.2"
+                        }
+                    ]
+                },
+                {
+                    "id": "installation-and-upgrades",
+                    "title": "Instalación y actualización a Beta 3.2",
+                    "paragraphs": [
+                        "Beta 3.2 sigue usando ghcr.io/rentnerproxy/platform. Las instalaciones de Beta 3.1 no necesitan otra migración de registro. La etiqueta fija de esta versión es v1.0.0-beta.3.2. La imagen integrada está disponible para AMD64 y ARM64, con paquetes firmados para Debian 13 y Fedora 44 destinados a la instalación compatible con Podman/Quadlet.",
+                        "Antes de actualizar, crea y verifica una copia de seguridad con las herramientas de la versión de origen. El arranque aplica nuevas migraciones de base de datos para la retención de auditoría. Cambiar únicamente a la imagen anterior no revierte esas modificaciones; volver atrás requiere la copia previa a la actualización, un volumen nuevo y la versión de origen exacta.",
+                        "Se mantienen las reglas de compatibilidad: Beta 1 es la versión de origen mínima admitida y las copias usan el formato v4. Las instalaciones Alpha deben pasar primero exactamente por v1.0.0-beta.1 en la dirección de imagen original; las copias Alpha v3 deben restaurarse allí y volver a guardarse como v4. Beta 3.2 sigue siendo una versión preliminar."
+                    ],
+                    "code": {
+                        "language": "bash",
+                        "value": "docker pull ghcr.io/rentnerproxy/platform:v1.0.0-beta.3.2"
+                    },
+                    "links": [
+                        {
+                            "label": "Versión Beta 3.2",
+                            "url": "https://github.com/RentnerProxy/platform/releases/tag/v1.0.0-beta.3.2"
+                        },
+                        {
+                            "label": "Guía de instalación de esta versión",
+                            "url": "https://github.com/RentnerProxy/platform/releases/download/v1.0.0-beta.3.2/INSTALL.txt"
+                        },
+                        {
+                            "label": "Instrucciones de actualización",
+                            "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.2/README.md#upgrade"
+                        }
+                    ]
+                }
+            ]
+        },
+        "zh": {
+            "title": "RentnerProxy Beta 3.2：更可靠的后台任务与更稳健的备份",
+            "summary": "Beta 3.2 改进了后台工作进程、主机监控、通知和 Docker 发现，并增强了恢复流程，支持数 GiB 的备份文件，同时完善证书任务、审计保留策略与运行诊断。",
+            "sections": [
+                {
+                    "id": "runtime-and-workers",
+                    "title": "为后台任务建立清晰边界",
+                    "paragraphs": [
+                        "自 Beta 3.1 以来，现有后台服务经过了重新设计。共享资源预算、受限并发和公平调度，让监控、通知等任务能够在处理控制面板请求的同时继续推进。减少与 PostgreSQL 之间的协调往返，也降低了不必要的管理开销。",
+                        "Web 层故障与 Caddy、控制器之间的隔离得到改善。恢复、关闭和还原维护期间，已接纳的任务会一直保留明确的执行归属，直到清理完成。新的进度诊断区分运行中、延后、暂停和失败的任务；缺失的测量值会明确保持为未知状态。"
+                    ],
+                    "links": [
+                        {
+                            "label": "共享资源预算",
+                            "url": "https://github.com/RentnerProxy/platform/pull/419"
+                        },
+                        {
+                            "label": "故障隔离与恢复",
+                            "url": "https://github.com/RentnerProxy/platform/pull/405"
+                        },
+                        {
+                            "label": "进度诊断",
+                            "url": "https://github.com/RentnerProxy/platform/pull/414"
+                        }
+                    ]
+                },
+                {
+                    "id": "monitoring-notifications-discovery",
+                    "title": "监控、通知投递与 Docker 发现",
+                    "paragraphs": [
+                        "主机检查采用受限并行处理和批量持久化。较慢的探测不再阻止补充其他空闲执行槽位。历史清理会在各策略间公平分配全局保留预算：配置的保留限制是上限，并不保证一定保存对应数量的观测记录。",
+                        "现有通知通过受限并发，在不同所有者、渠道和传输方式之间公平调度。Docker 发现通过有界的变更监听跟踪资源清单，并在运行环境重启后重新同步。清单更新会通过实时事件流传递到控制面板。"
+                    ],
+                    "links": [
+                        {
+                            "label": "批量主机检查",
+                            "url": "https://github.com/RentnerProxy/platform/pull/404"
+                        },
+                        {
+                            "label": "公平的通知投递",
+                            "url": "https://github.com/RentnerProxy/platform/pull/406"
+                        },
+                        {
+                            "label": "Docker 资源清单同步",
+                            "url": "https://github.com/RentnerProxy/platform/pull/407"
+                        }
+                    ]
+                },
+                {
+                    "id": "backups-and-restore",
+                    "title": "更大的备份与更可靠的还原恢复",
+                    "paragraphs": [
+                        "导出、下载、异地存储和还原现在支持数 GiB 的备份文件。处理过程采用流式传输、有界验证和容量检查。保护性限制仍然存在：单个备份文件最大 8 GiB，保留 2 GiB 可用空间，每项操作的外层超时为四小时。",
+                        "还原恢复对重启和维护状态转换的处理更加稳健。控制面板会在重新连接时保留实时状态并随后刷新，同时拒绝过期的身份检查。新增验证覆盖中断的还原、安全下载，以及 root 所有的备份文件的访问边界。"
+                    ],
+                    "links": [
+                        {
+                            "label": "数 GiB 备份支持",
+                            "url": "https://github.com/RentnerProxy/platform/pull/441"
+                        },
+                        {
+                            "label": "还原与控制面板实时状态",
+                            "url": "https://github.com/RentnerProxy/platform/pull/440"
+                        }
+                    ]
+                },
+                {
+                    "id": "certificates-and-audit",
+                    "title": "证书任务、审计数据与清理",
+                    "paragraphs": [
+                        "控制器内的 ACME 任务和证书持久化具有更清晰的职责归属。激活与恢复流程会保护待处理的候选证书和已提交的证书材料，同时保留错误信息和事务性运行工作。",
+                        "审计元数据以可查询的 JSONB 对象保存。保留机制跟踪实际记录数量，并以有界批次删除超额条目。清理会回收孤立或已退役的 TLS 文件，同时保留活动证书及恢复所需的状态。已完成的运行实验也已从仓库中移除。"
+                    ],
+                    "links": [
+                        {
+                            "label": "证书与 ACME 的职责归属",
+                            "url": "https://github.com/RentnerProxy/platform/pull/413"
+                        },
+                        {
+                            "label": "审计保留与 TLS 清理",
+                            "url": "https://github.com/RentnerProxy/platform/pull/436"
+                        },
+                        {
+                            "label": "移除已完成的运行实验",
+                            "url": "https://github.com/RentnerProxy/platform/pull/444"
+                        }
+                    ]
+                },
+                {
+                    "id": "release-content-and-maintenance",
+                    "title": "版本文章与维护更新",
+                    "paragraphs": [
+                        "版本文章现在以德语、英语、西班牙语和中文发布，并作为具有版本号的内容保存。博客发布工具会将每篇文章绑定到经过验证的版本身份和已发布镜像。只有软件包交付、更新器就绪信息和最终版本说明全部完成后，文章才会被标记为可用。",
+                        "内置 PostgreSQL 从 18.6 更新至 18.7。Caddy 仍为 2.11.9；其他依赖和构建输入也已更新。完整版本对比列出了自 Beta 3.1 以来的所有变更。"
+                    ],
+                    "links": [
+                        {
+                            "label": "多语言版本文章",
+                            "url": "https://github.com/RentnerProxy/platform/pull/445"
+                        },
+                        {
+                            "label": "Beta 3.1 以来的全部变更",
+                            "url": "https://github.com/RentnerProxy/platform/compare/v1.0.0-beta.3.1...v1.0.0-beta.3.2"
+                        }
+                    ]
+                },
+                {
+                    "id": "installation-and-upgrades",
+                    "title": "安装与升级到 Beta 3.2",
+                    "paragraphs": [
+                        "Beta 3.2 继续使用 ghcr.io/rentnerproxy/platform。Beta 3.1 安装无需再次迁移镜像仓库。本版本的固定镜像标签为 v1.0.0-beta.3.2。集成镜像提供 AMD64 和 ARM64 支持，并为受支持的 Podman/Quadlet 安装提供已签名的 Debian 13 和 Fedora 44 软件包。",
+                        "升级前，请使用原版本的工具创建并验证备份。启动时会应用新的审计保留数据库迁移。仅切回旧镜像不会撤销这些变更；回滚需要升级前的备份、新卷和准确的原版本。",
+                        "现有兼容性规则保持不变：最低支持从 Beta 1 升级，备份使用 v4 格式。Alpha 安装必须先升级到原镜像地址下准确的 v1.0.0-beta.1；Alpha v3 备份必须先在那里还原，再重新备份为 v4。Beta 3.2 仍是预发布软件。"
+                    ],
+                    "code": {
+                        "language": "bash",
+                        "value": "docker pull ghcr.io/rentnerproxy/platform:v1.0.0-beta.3.2"
+                    },
+                    "links": [
+                        {
+                            "label": "Beta 3.2 版本",
+                            "url": "https://github.com/RentnerProxy/platform/releases/tag/v1.0.0-beta.3.2"
+                        },
+                        {
+                            "label": "对应版本的安装指南",
+                            "url": "https://github.com/RentnerProxy/platform/releases/download/v1.0.0-beta.3.2/INSTALL.txt"
+                        },
+                        {
+                            "label": "升级说明",
+                            "url": "https://github.com/RentnerProxy/platform/blob/v1.0.0-beta.3.2/README.md#upgrade"
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+}
