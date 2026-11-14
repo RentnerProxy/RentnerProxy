@@ -6,29 +6,81 @@ import { createHash } from 'node:crypto'
 
 const root = resolve(import.meta.dir, '../../../../..')
 
-test.each(['same', 'different', 'partial-starter', 'partial-empty', 'bad-hash', 'wrong-revision', 'wrong-release', 'bad-marker', 'missing-post', 'bad-digest'])(
-    'preserves committed release assets before a recovery digest gate: %s', async mode => {
+test.each([
+    'same',
+    'different',
+    'partial-starter',
+    'partial-empty',
+    'bad-hash',
+    'wrong-revision',
+    'wrong-release',
+    'bad-marker',
+    'missing-post',
+    'bad-digest',
+])(
+    'preserves committed release assets before a recovery digest gate: %s',
+    async (mode) => {
         const directory = await mkdtemp(join(tmpdir(), 'committed-blog-recovery-'))
         try {
             const scripts = join(directory, '.github/scripts/release')
             const assets = join(directory, '.github/assets/release-banners')
             const bin = join(directory, 'bin')
-            await Promise.all([mkdir(scripts, { recursive: true }), mkdir(assets, { recursive: true }), mkdir(bin)])
-            await Promise.all(['publish-building-release.sh', 'committed-blog-digest.sh', 'verify-release-identity.sh', 'validate-release-event.sh'].map(name => copyFile(join(root, '.github/scripts/release', name), join(scripts, name))))
-            await writeFile(join(assets, 'building-release-banner.png'), Buffer.from('89504e470d0a1a0a', 'hex'))
+            await Promise.all([
+                mkdir(scripts, { recursive: true }),
+                mkdir(assets, { recursive: true }),
+                mkdir(bin),
+            ])
+            await Promise.all(
+                [
+                    'publish-building-release.sh',
+                    'committed-blog-digest.sh',
+                    'verify-release-identity.sh',
+                    'validate-release-event.sh',
+                ].map((name) =>
+                    copyFile(join(root, '.github/scripts/release', name), join(scripts, name)),
+                ),
+            )
+            await writeFile(
+                join(assets, 'building-release-banner.png'),
+                Buffer.from('89504e470d0a1a0a', 'hex'),
+            )
             const digest = `sha256:${'d'.repeat(64)}`
-            const identity = { schemaVersion: 1, releaseId: 123, tag: 'v1.0.0', revision: 'a'.repeat(40), publishedAt: '2026-10-22T00:00:00Z', contentRevision: 1 }
-            const post = JSON.stringify({ ...identity, channel: 'stable', image: { repository: 'ghcr.io/rentnerproxy/platform', digest: mode === 'bad-digest' ? 'invalid' : digest } })
-            const marker = { ...identity, postAsset: 'rentnerproxy-blog-post-r1.json', postSha256: createHash('sha256').update(post).digest('hex'), readyAt: '2026-10-22T00:01:00.000Z' }
+            const identity = {
+                schemaVersion: 1,
+                releaseId: 123,
+                tag: 'v1.0.0',
+                revision: 'a'.repeat(40),
+                publishedAt: '2026-10-22T00:00:00Z',
+                contentRevision: 1,
+            }
+            const post = JSON.stringify({
+                ...identity,
+                channel: 'stable',
+                image: {
+                    repository: 'ghcr.io/rentnerproxy/platform',
+                    digest: mode === 'bad-digest' ? 'invalid' : digest,
+                },
+            })
+            const marker = {
+                ...identity,
+                postAsset: 'rentnerproxy-blog-post-r1.json',
+                postSha256: createHash('sha256').update(post).digest('hex'),
+                readyAt: '2026-10-22T00:01:00.000Z',
+            }
             if (mode === 'bad-hash') marker.postSha256 = 'e'.repeat(64)
             if (mode === 'wrong-revision') marker.revision = 'b'.repeat(40)
             if (mode === 'wrong-release') marker.releaseId = 124
-            await writeFile(join(directory, 'marker.json'), mode === 'bad-marker' ? '{' : JSON.stringify(marker))
+            await writeFile(
+                join(directory, 'marker.json'),
+                mode === 'bad-marker' ? '{' : JSON.stringify(marker),
+            )
             await writeFile(join(directory, 'post.json'), post)
             const events = join(directory, 'events')
             const output = join(directory, 'output')
             await Promise.all([writeFile(events, ''), writeFile(output, '')])
-            await writeFile(join(bin, 'gh'), `#!/usr/bin/env bash
+            await writeFile(
+                join(bin, 'gh'),
+                `#!/usr/bin/env bash
 set -Eeuo pipefail
 if [[ "$1 $2" == 'release edit' && "$FIXTURE_MODE" == partial-* ]]; then printf 'edit\\n' >> "$FIXTURE_EVENTS"; exit 0; fi
 if [[ "$1" != api || "$2" == --method ]]; then printf 'mutation\\n' >> "$FIXTURE_EVENTS"; exit 91; fi
@@ -46,37 +98,109 @@ case "$2" in
     */releases/123) printf '123\\tv1.0.0\\tfalse\\tfalse\\t2026-10-22T00:00:00Z\\n' ;;
     *) exit 92 ;;
 esac
-`, { mode: 0o700 })
-            await writeFile(join(bin, 'bun'), `#!/usr/bin/env bash
+`,
+                { mode: 0o700 },
+            )
+            await writeFile(
+                join(bin, 'bun'),
+                `#!/usr/bin/env bash
 set -Eeuo pipefail
 printf building > "$RUNNER_TEMP/rentnerproxy-release/building-body.md"
-`, { mode: 0o700 })
+`,
+                { mode: 0o700 },
+            )
             const bash = process.platform === 'win32' ? 'C:/Program Files/Git/bin/bash.exe' : 'bash'
-            const prefix = process.platform === 'win32' ? 'export PATH="$(cygpath -u "$FIXTURE_BIN"):$PATH"; ' : 'export PATH="$FIXTURE_BIN:$PATH"; '
-            const env = { ...process.env, FIXTURE_BIN: bin, FIXTURE_DIRECTORY: directory, FIXTURE_EVENTS: events, FIXTURE_MODE: mode, FIXTURE_SCRIPT: join(scripts, 'publish-building-release.sh'), RUNNER_TEMP: directory, GITHUB_OUTPUT: output, GITHUB_REPOSITORY: 'RentnerProxy/platform', RELEASE_ID: '123', RELEASE_TAG: identity.tag, RELEASE_REVISION: identity.revision, RELEASE_CHANNEL: 'stable', RELEASE_PRERELEASE: 'false', RELEASE_PUBLISHED_AT: identity.publishedAt }
-            const child = Bun.spawn([bash, '-c', prefix + 'exec bash "$FIXTURE_SCRIPT"'], { env, stdout: 'pipe', stderr: 'pipe' })
-            const [code, stderr, stdout] = await Promise.all([child.exited, new Response(child.stderr).text(), new Response(child.stdout).text()])
-            expect(code, stderr + stdout).toBe(['same', 'different', 'partial-starter', 'partial-empty'].includes(mode) ? 0 : 1)
+            const prefix =
+                process.platform === 'win32'
+                    ? 'export PATH="$(cygpath -u "$FIXTURE_BIN"):$PATH"; '
+                    : 'export PATH="$FIXTURE_BIN:$PATH"; '
+            const env = {
+                ...process.env,
+                FIXTURE_BIN: bin,
+                FIXTURE_DIRECTORY: directory,
+                FIXTURE_EVENTS: events,
+                FIXTURE_MODE: mode,
+                FIXTURE_SCRIPT: join(scripts, 'publish-building-release.sh'),
+                RUNNER_TEMP: directory,
+                GITHUB_OUTPUT: output,
+                GITHUB_REPOSITORY: 'RentnerProxy/platform',
+                RELEASE_ID: '123',
+                RELEASE_TAG: identity.tag,
+                RELEASE_REVISION: identity.revision,
+                RELEASE_CHANNEL: 'stable',
+                RELEASE_PRERELEASE: 'false',
+                RELEASE_PUBLISHED_AT: identity.publishedAt,
+            }
+            const child = Bun.spawn([bash, '-c', prefix + 'exec bash "$FIXTURE_SCRIPT"'], {
+                env,
+                stdout: 'pipe',
+                stderr: 'pipe',
+            })
+            const [code, stderr, stdout] = await Promise.all([
+                child.exited,
+                new Response(child.stderr).text(),
+                new Response(child.stdout).text(),
+            ])
+            expect(code, stderr + stdout).toBe(
+                ['same', 'different', 'partial-starter', 'partial-empty'].includes(mode) ? 0 : 1,
+            )
             expect(await readFile(events, 'utf8')).toBe(mode.startsWith('partial-') ? 'edit\n' : '')
             if (mode === 'same' || mode === 'different') {
                 expect(await readFile(output, 'utf8')).toBe(`committed_blog_digest=${digest}\n`)
-                const workflow = Bun.YAML.parse(await readFile(join(root, '.github/workflows/build-assessed-image.yml'), 'utf8')) as { jobs: Record<string, { steps: { name: string; run?: string }[] }> }
-                const gate = workflow.jobs['candidate-index']!.steps.find(step => step.name === 'Preserve the committed release image digest')?.run
+                const workflow = Bun.YAML.parse(
+                    await readFile(
+                        join(root, '.github/workflows/build-assessed-image.yml'),
+                        'utf8',
+                    ),
+                ) as { jobs: Record<string, { steps: { name: string; run?: string }[] }> }
+                const gate = workflow.jobs['candidate-index']!.steps.find(
+                    (step) => step.name === 'Preserve the committed release image digest',
+                )?.run
                 expect(gate).toBeDefined()
-                const verify = Bun.spawn([bash, '-c', gate + '\nprintf publish >> "$FIXTURE_EVENTS"'], { env: { ...env, EXPECTED_DIGEST: digest, REBUILT_DIGEST: mode === 'same' ? digest : `sha256:${'f'.repeat(64)}` }, stdout: 'pipe', stderr: 'pipe' })
+                const verify = Bun.spawn(
+                    [bash, '-c', gate + '\nprintf publish >> "$FIXTURE_EVENTS"'],
+                    {
+                        env: {
+                            ...env,
+                            EXPECTED_DIGEST: digest,
+                            REBUILT_DIGEST: mode === 'same' ? digest : `sha256:${'f'.repeat(64)}`,
+                        },
+                        stdout: 'pipe',
+                        stderr: 'pipe',
+                    },
+                )
                 expect(await verify.exited).toBe(mode === 'same' ? 0 : 1)
                 expect(await readFile(events, 'utf8')).toBe(mode === 'same' ? 'publish' : '')
             } else expect(await readFile(output, 'utf8')).toBe('')
-        } finally { await rm(directory, { recursive: true, force: true }) }
+        } finally {
+            await rm(directory, { recursive: true, force: true })
+        }
     },
     10_000,
 )
 
 test('passes the committed digest through the release build before any publisher can run', async () => {
-    const pipeline = Bun.YAML.parse(await readFile(join(root, '.github/workflows/release-pipeline.yml'), 'utf8')) as { jobs: Record<string, { outputs?: Record<string, string>; with?: Record<string, string>; needs?: string | string[] }> }
-    expect(pipeline.jobs.building?.outputs?.committed_blog_digest).toBe('${{ steps.status.outputs.committed_blog_digest }}')
-    expect(pipeline.jobs.prepare?.outputs?.committed_blog_digest).toBe('${{ needs.building.outputs.committed_blog_digest }}')
-    expect(pipeline.jobs.build?.with?.expected_digest).toBe('${{ needs.prepare.outputs.committed_blog_digest }}')
+    const pipeline = Bun.YAML.parse(
+        await readFile(join(root, '.github/workflows/release-pipeline.yml'), 'utf8'),
+    ) as {
+        jobs: Record<
+            string,
+            {
+                outputs?: Record<string, string>
+                with?: Record<string, string>
+                needs?: string | string[]
+            }
+        >
+    }
+    expect(pipeline.jobs.building?.outputs?.committed_blog_digest).toBe(
+        '${{ steps.status.outputs.committed_blog_digest }}',
+    )
+    expect(pipeline.jobs.prepare?.outputs?.committed_blog_digest).toBe(
+        '${{ needs.building.outputs.committed_blog_digest }}',
+    )
+    expect(pipeline.jobs.build?.with?.expected_digest).toBe(
+        '${{ needs.prepare.outputs.committed_blog_digest }}',
+    )
     expect(pipeline.jobs['sign-distribution']?.needs).toContain('build')
     expect(pipeline.jobs['publish-image']?.needs).toContain('build')
 })

@@ -10,7 +10,10 @@ import {
 
 import { blogBytes } from '../../../../../.github/scripts/release/generate-release-blog.ts'
 import { publishReleaseBlog } from '../../../../../.github/scripts/release/publish-release-blog.ts'
-import { renderReleaseNotes, renderBuildingReleaseNotes } from '../../../../../.github/scripts/lib/release-notes.ts'
+import {
+    renderReleaseNotes,
+    renderBuildingReleaseNotes,
+} from '../../../../../.github/scripts/lib/release-notes.ts'
 
 function fixture() {
     const readiness = {
@@ -48,9 +51,14 @@ function fixture() {
         prerelease: false,
         published_at: readiness.publishedAt,
         body: renderReleaseNotes({
-            repository: 'RentnerProxy/platform', tagName: readiness.tag, channel: 'beta',
-            publishedAt: readiness.publishedAt, image: readiness.image.repository,
-            bannerRevision: readiness.revision, issues: [], initialRelease: false,
+            repository: 'RentnerProxy/platform',
+            tagName: readiness.tag,
+            channel: 'beta',
+            publishedAt: readiness.publishedAt,
+            image: readiness.image.repository,
+            bannerRevision: readiness.revision,
+            issues: [],
+            initialRelease: false,
             config: { excludedLabels: [], highlightLabels: [], categories: [] },
         }).body,
     }
@@ -194,36 +202,79 @@ describe('operator release blog backfill', () => {
         ).rejects.toThrow()
     })
 
-    test.each(['building', 'missing-body', 'wrong-tag', 'wrong-date', 'missing-changelog', 'unfinished-changelog'])(
-        'requires completed canonical final notes in addition to readiness and delivery assets: %s', async (mode) => {
+    test.each([
+        'building',
+        'missing-body',
+        'wrong-tag',
+        'wrong-date',
+        'missing-changelog',
+        'unfinished-changelog',
+    ])(
+        'requires completed canonical final notes in addition to readiness and delivery assets: %s',
+        async (mode) => {
             const state = fixture()
-            if (mode === 'building') state.release.body = renderBuildingReleaseNotes({ repository: 'RentnerProxy/platform', tagName: state.readiness.tag, bannerRevision: state.readiness.revision })
+            if (mode === 'building')
+                state.release.body = renderBuildingReleaseNotes({
+                    repository: 'RentnerProxy/platform',
+                    tagName: state.readiness.tag,
+                    bannerRevision: state.readiness.revision,
+                })
             if (mode === 'missing-body') state.release.body = ''
-            if (mode === 'wrong-tag') state.release.body = state.release.body.replaceAll(state.readiness.tag, 'v1.0.0-beta.9')
-            if (mode === 'wrong-date') state.release.body = state.release.body.replace('Published **', 'Published **2099 ')
+            if (mode === 'wrong-tag')
+                state.release.body = state.release.body.replaceAll(
+                    state.readiness.tag,
+                    'v1.0.0-beta.9',
+                )
+            if (mode === 'wrong-date')
+                state.release.body = state.release.body.replace('Published **', 'Published **2099 ')
             const changelog = state.assets.find((asset) => asset.name.endsWith('-CHANGELOG.md'))!
-            if (mode === 'missing-changelog') state.assets.splice(state.assets.indexOf(changelog), 1)
+            if (mode === 'missing-changelog')
+                state.assets.splice(state.assets.indexOf(changelog), 1)
             if (mode === 'unfinished-changelog') changelog.state = 'starter'
-            await expect(prepareBackfillReleaseBlog(state.readiness.tag, state.source, state.evidence)).rejects.toThrow()
+            await expect(
+                prepareBackfillReleaseBlog(state.readiness.tag, state.source, state.evidence),
+            ).rejects.toThrow()
             expect(state.events.some((event) => event.startsWith('image:'))).toBeFalse()
         },
     )
 
     test('revalidates final notes before publishing the blog commit marker', async () => {
         const state = fixture()
-        const original = await prepareBackfillReleaseBlog(state.readiness.tag, state.source, state.evidence)
+        const original = await prepareBackfillReleaseBlog(
+            state.readiness.tag,
+            state.source,
+            state.evidence,
+        )
         const uploaded: string[] = []
-        await expect(publishReleaseBlog(original.post, {
-            async verifyIdentity() { await prepareBackfillReleaseBlog(state.readiness.tag, state.source, state.evidence) },
-            async listAssets() { return [] },
-            async readAsset() { return blogBytes(original.post) },
-            async uploadAsset(name) {
-                uploaded.push(name)
-                state.release.body = renderBuildingReleaseNotes({ repository: 'RentnerProxy/platform', tagName: state.readiness.tag, bannerRevision: state.readiness.revision })
-                return { id: 100, name }
-            },
-            async deleteAsset() { throw new Error('Unexpected deletion') },
-        })).rejects.toThrow('completed final release notes')
+        await expect(
+            publishReleaseBlog(original.post, {
+                async verifyIdentity() {
+                    await prepareBackfillReleaseBlog(
+                        state.readiness.tag,
+                        state.source,
+                        state.evidence,
+                    )
+                },
+                async listAssets() {
+                    return []
+                },
+                async readAsset() {
+                    return blogBytes(original.post)
+                },
+                async uploadAsset(name) {
+                    uploaded.push(name)
+                    state.release.body = renderBuildingReleaseNotes({
+                        repository: 'RentnerProxy/platform',
+                        tagName: state.readiness.tag,
+                        bannerRevision: state.readiness.revision,
+                    })
+                    return { id: 100, name }
+                },
+                async deleteAsset() {
+                    throw new Error('Unexpected deletion')
+                },
+            }),
+        ).rejects.toThrow('completed final release notes')
         expect(uploaded).toEqual(['rentnerproxy-blog-post-r1.json'])
     })
 
