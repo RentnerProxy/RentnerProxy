@@ -73,8 +73,12 @@ export async function publishReleaseBlog(
     await client.uploadAsset(markerName, Buffer.from(JSON.stringify(marker, null, 4) + '\n'))
 }
 
-async function gh(arguments_: string[]): Promise<Uint8Array> {
-    const child = Bun.spawn(['gh', ...arguments_], { stdout: 'pipe', stderr: 'pipe' })
+export async function ghBlogCommand(arguments_: string[]): Promise<Uint8Array> {
+    const child = Bun.spawn(['gh', ...arguments_], {
+        stdout: 'pipe',
+        stderr: 'pipe',
+        env: { ...process.env, GH_HOST: 'github.com' },
+    })
     const [status, output] = await Promise.all([
         child.exited,
         new Response(child.stdout).arrayBuffer(),
@@ -101,47 +105,34 @@ function parseAsset(value: unknown): BlogAsset {
     return { id: record.id, name: record.name }
 }
 
-async function json(arguments_: string[]): Promise<unknown> {
-    return JSON.parse(new TextDecoder().decode(await gh(arguments_))) as unknown
+export async function ghBlogJson(arguments_: string[]): Promise<unknown> {
+    return JSON.parse(new TextDecoder().decode(await ghBlogCommand(arguments_))) as unknown
 }
 
-async function main(): Promise<void> {
-    const env = process.env
-    if (!env.RUNNER_TEMP || env.GITHUB_REPOSITORY !== 'RentnerProxy/platform')
-        throw new Error('Official release runner is required')
-    const directory = resolve(env.RUNNER_TEMP, 'rentnerproxy-release')
-    const post = await prepareReleaseBlog(resolve('source'), directory, env.RELEASE_TAG ?? '')
-    if (!post) {
-        process.stdout.write('No authored release blog content; blog publication skipped.\n')
-        return
-    }
-    if (
-        String(post.releaseId) !== env.RELEASE_ID ||
-        post.revision !== env.RELEASE_REVISION ||
-        post.publishedAt !== env.RELEASE_PUBLISHED_AT ||
-        post.channel !== env.RELEASE_CHANNEL ||
-        post.image.repository !== env.RELEASE_IMAGE ||
-        post.image.digest !== env.RELEASE_DIGEST ||
-        post.image.platforms.join(',') !== env.RELEASE_PLATFORMS
-    )
-        throw new Error('Blog readiness differs from the release pipeline identity')
+export function createGitHubBlogClient(
+    post: ReleaseBlogPost,
+    directory: string,
+    prerelease: boolean,
+    verifyAdditionalIdentity?: () => Promise<void>,
+): BlogPublicationClient {
     const endpoint = `repos/RentnerProxy/platform/releases/${post.releaseId}`
     const client: BlogPublicationClient = {
         async verifyIdentity() {
-            const release = blogRecord(await json(['api', endpoint]))
+            const release = blogRecord(await ghBlogJson(['api', endpoint]))
             if (
                 release.id !== post.releaseId ||
                 release.tag_name !== post.tag ||
                 release.draft !== false ||
-                String(release.prerelease) !== env.RELEASE_PRERELEASE ||
+                release.prerelease !== prerelease ||
                 release.published_at !== post.publishedAt
             )
                 throw new Error('Release metadata changed before blog publication')
+            await verifyAdditionalIdentity?.()
             // A syntactically valid baseline is not evidence that the claimed release source exists.
             for (const benchmark of post.benchmarks ?? []) {
                 const baseline = blogRecord(
                     // oxlint-disable-next-line no-await-in-loop -- Bound GitHub process concurrency while verifying each baseline.
-                    await json([
+                    await ghBlogJson([
                         'api',
                         `repos/RentnerProxy/platform/commits/${encodeURIComponent(`refs/tags/${benchmark.baseline.tag}`)}`,
                     ]),
@@ -153,7 +144,7 @@ async function main(): Promise<void> {
             }
         },
         async listAssets() {
-            const values = await json([
+            const values = await ghBlogJson([
                 'api',
                 `${endpoint}/assets?per_page=100`,
                 '--paginate',
@@ -176,7 +167,7 @@ async function main(): Promise<void> {
             return assets
         },
         readAsset(value) {
-            return gh([
+            return ghBlogCommand([
                 'api',
                 `repos/RentnerProxy/platform/releases/assets/${value.id}`,
                 '-H',
@@ -186,13 +177,20 @@ async function main(): Promise<void> {
         async uploadAsset(name, bytes) {
             const path = resolve(directory, name)
             await writeFile(path, bytes)
-            await gh(['release', 'upload', post.tag, path, '--repo', 'RentnerProxy/platform'])
+            await ghBlogCommand([
+                'release',
+                'upload',
+                post.tag,
+                path,
+                '--repo',
+                'RentnerProxy/platform',
+            ])
             const uploaded = (await client.listAssets()).find((value) => value.name === name)
             if (!uploaded) throw new Error('Uploaded blog asset is unavailable')
             return uploaded
         },
         async deleteAsset(value) {
-            await gh([
+            await ghBlogCommand([
                 'api',
                 '--method',
                 'DELETE',
@@ -200,6 +198,32 @@ async function main(): Promise<void> {
             ])
         },
     }
+    return client
+}
+
+async function main(): Promise<void> {
+    const env = process.env
+    if (!env.RUNNER_TEMP || env.GITHUB_REPOSITORY !== 'RentnerProxy/platform')
+        throw new Error('Official release runner is required')
+    const directory = resolve(env.RUNNER_TEMP, 'rentnerproxy-release')
+    const post = await prepareReleaseBlog(resolve('source'), directory, env.RELEASE_TAG ?? '')
+    if (!post) {
+        process.stdout.write('No authored release blog content; blog publication skipped.\n')
+        return
+    }
+    if (
+        String(post.releaseId) !== env.RELEASE_ID ||
+        post.revision !== env.RELEASE_REVISION ||
+        post.publishedAt !== env.RELEASE_PUBLISHED_AT ||
+        post.channel !== env.RELEASE_CHANNEL ||
+        post.image.repository !== env.RELEASE_IMAGE ||
+        post.image.digest !== env.RELEASE_DIGEST ||
+        post.image.platforms.join(',') !== env.RELEASE_PLATFORMS
+    )
+        throw new Error('Blog readiness differs from the release pipeline identity')
+    if (env.RELEASE_PRERELEASE !== 'true' && env.RELEASE_PRERELEASE !== 'false')
+        throw new Error('Original release prerelease state is required')
+    const client = createGitHubBlogClient(post, directory, env.RELEASE_PRERELEASE === 'true')
     await publishReleaseBlog(post, client)
 }
 
