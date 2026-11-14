@@ -316,12 +316,7 @@
                     ]
                 }
             ],
-            "topics": [
-                "Performance",
-                "PostgreSQL 18.7",
-                "Große Backups",
-                "Sicherer Wiederanlauf"
-            ]
+            "topics": ["Performance", "PostgreSQL 18.7", "Große Backups", "Sicherer Wiederanlauf"]
         },
         "en": {
             "title": "RentnerProxy Beta 3.2: performance and security with PostgreSQL 18.7",
@@ -638,12 +633,7 @@
                     ]
                 }
             ],
-            "topics": [
-                "Performance",
-                "PostgreSQL 18.7",
-                "Large backups",
-                "Safer recovery"
-            ]
+            "topics": ["Performance", "PostgreSQL 18.7", "Large backups", "Safer recovery"]
         },
         "es": {
             "title": "RentnerProxy Beta 3.2: rendimiento y seguridad con PostgreSQL 18.7",
@@ -960,12 +950,7 @@
                     ]
                 }
             ],
-            "topics": [
-                "Rendimiento",
-                "PostgreSQL 18.7",
-                "Copias grandes",
-                "Recuperación segura"
-            ]
+            "topics": ["Rendimiento", "PostgreSQL 18.7", "Copias grandes", "Recuperación segura"]
         },
         "zh": {
             "title": "RentnerProxy Beta 3.2：性能与安全更新，内置 PostgreSQL 18.7",
@@ -1282,12 +1267,7 @@
                     ]
                 }
             ],
-            "topics": [
-                "性能",
-                "PostgreSQL 18.7",
-                "大型备份",
-                "更可靠的恢复"
-            ]
+            "topics": ["性能", "PostgreSQL 18.7", "大型备份", "更可靠的恢复"]
         }
     }
 }
