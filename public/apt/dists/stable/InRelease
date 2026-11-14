@@ -7,8 +7,8 @@ Suite: stable
 Codename: stable
 Architectures: amd64 arm64
 Components: main
-Valid-Until: Mon, 14 Dec 2026 12:58:00 GMT
-Date: Mon, 09 Nov 2026 12:58:01 +0000
+Valid-Until: Sat, 19 Dec 2026 16:40:03 GMT
+Date: Sat, 14 Nov 2026 16:40:05 +0000
 MD5Sum:
  d41d8cd98f00b204e9800998ecf8427e                0 main/binary-amd64/Packages
  7029066c27ac6f5ef18d660d5741979a               20 main/binary-amd64/Packages.gz
@@ -31,17 +31,17 @@ SHA512:
  7e8e93f4a89ce7fae011403e14a1d53544c6e6f6b6010d61129dc27937806d2b03802610d7999eab33a4c36b0f9e001d9d76001b8354087634c1aa9c740c536f               20 main/binary-arm64/Packages.gz
 -----BEGIN PGP SIGNATURE-----
 
-iQIzBAEBCgAdFiEEHDH7A2IKyeXyTyzwjhqMvhtoLLsFAmrxw1kACgkQjhqMvhto
-LLvdmw//a6bR45nwH9BtBVyQ5pQgBZa7RBBD3CchsKSxyFMoXk/eywZhzyg03Rv8
-tvmSBZIWPw2Uzs/APzbQSBfxQ7coidy5DpYO0gQFv4Yc6vtpIw5lAwKvvIgKXkM+
-tbhLwBCLhV5fxNluz5PfOykSCb+wIqeyU0LP5L2ieWBbdrUk1Nvgymy7b0/Y8RY+
-8GxqxqhZZpHSZ/emsWs4dCyT84XDDpk16MjlHm91UG9fgGJdFK4oszOGlaTA3JoP
-nZXLpjQYs8VjJQHGQxDZqQ8KDB7BPG45kTNeZpDrHMAXCi19Va7Lj/46+PIB9u6G
-9oswr44CEmzijR58YI1NlSIQD6/OJgagzCFO1Gt87dihHsh+F5hcKPrvUBK32bd8
-t3hBSXD59QFvf2/SsyAWuTfVRuD8ATYwsqXUjHZGHfogdJ+mlXlblA8+f9G/rQID
-OxpRR1xjOiFEBHygsyHcdEWnlZfcmq1dDQArbZek1letFQkHcdzh8xfmjWwgsVGv
-wuIW40praR+4KE8bpO1DsHKRk8zx4O52Ykl5JCjmdxjs9/NzlYnL8VDI8El1WEd5
-KTD3QHTCCobavmVtQgixQxnrwR3lA2m/Tz2cU0Vf1fSsfwcI09OeTc1LOqsykSL3
-n++LoQ0CTnM+i44lL+UYm4zETOjSynyrYeXV0SN4fTrG6BAy+wc=
-=n9pu
+iQIzBAEBCgAdFiEEHDH7A2IKyeXyTyzwjhqMvhtoLLsFAmr4juUACgkQjhqMvhto
+LLtTxQ/+ImQMXk4232wBZusmQZZpH0ZsJ5yI5ld/eeliMLPVzufbxa3laqzXpMKL
+rZODd+cIymP/XDQUTbgKpEfxUlL/bVxGa/JJFXrZgXyJRUbulAtccMVegmsSn4Hj
+OOadBj2NjHKkklkFRJ30BHloG53jy61pjE5fRn19g8MSC2K0nBjDFY3Kn4xAP+hL
+mUOFUwV2URyWHS6IFBDKFWqTnqYYPya0BDMWSRMFVWX6uP5jh5IeqDBQCFHdpqsq
+jjZD7F+QIJI8Lw86da1A5PMQ+LfjmkZCRJomP7YCQ8E9Mr/rkExqmC/eCZsJdgRh
+d/kEHS/ciSa6rnqzUijPk8oObMe0Sw6LzuMVpBAm2R064krYunp77AQoE/lUW5go
+Kn4wsjTMl6VQEhLjPejZ2y/YVAI7cCKy3EomjnzelJ54IfXqa97zmGiQe1p0fEii
+izEjzIRJlSy8FPa2C5B1IpsjwMqrvtHe2rzgC/SNn0E3vFd3VpbmVZN0NzP3PnhU
+rgfs1PeHNcPNnDcFHNU7kpX/v12ciDa3gawieDCHdDa0/gD+7R5nMYLvok2tR4Vg
+z6Lr+xzCYa/DOQ/qJ68GM410g0/o1PlOQMzRMOUHTCPfrv2OosHwfg06sKzhVpAi
+CfbrG3sVF4DCtuqp4/Ulwnevd6bzKOdldpPeclX69kyI7y3HLPY=
+=OLAD
 -----END PGP SIGNATURE-----
