@@ -69,7 +69,7 @@ export async function verifyDurableCertificateJob(options: JobSmokeOptions): Pro
             'POSTGRES_USER=rentnerproxy_smoke',
             '--env',
             'POSTGRES_DB=rentnerproxy_smoke',
-            'mirror.gcr.io/library/postgres:18.6@sha256:3a4264520e121176619f54ff867d12774bc81e95e7b84db58d63bccdb6144b81',
+            'mirror.gcr.io/library/postgres:18.7@sha256:9f4fd4aa918f52ae3d6f3b687f1de90d8f867cd4d520021545a9a50c120eae3b',
         ])
         const binding = await command(['docker', 'port', container, '5432/tcp'])
         assert.match(binding, /^127\.0\.0\.1:\d+$/u)
