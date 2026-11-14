@@ -1,0 +1,215 @@
+import { createHash } from 'node:crypto'
+import { writeFile } from 'node:fs/promises'
+import { resolve } from 'node:path'
+import {
+    blogBytes,
+    blogReady,
+    blogRecord,
+    blogRevision,
+    prepareReleaseBlog,
+} from './generate-release-blog.ts'
+import type {
+    BlogAsset,
+    BlogPublicationClient,
+    ReleaseBlogPost,
+} from './Types/release-blog.types.ts'
+
+const markerName = 'rentnerproxy-blog-ready.json'
+
+/** A marker is the commit point; immutable content must be readable before it is uploaded. */
+export async function publishReleaseBlog(
+    post: ReleaseBlogPost,
+    client: BlogPublicationClient,
+    now = new Date().toISOString(),
+): Promise<void> {
+    const bytes = blogBytes(post)
+    const marker = blogReady(post, bytes, now)
+    await client.verifyIdentity()
+    const assets = await client.listAssets()
+    for (const existing of assets) {
+        const match = /^rentnerproxy-blog-post-r([1-9][0-9]*)\.json$/.exec(existing.name)
+        if (match && blogRevision(Number(match[1])) > post.contentRevision)
+            throw new Error('Blog content revision is older than an immutable published post')
+    }
+    const existingMarker = assets.find((asset) => asset.name === markerName)
+    if (existingMarker) {
+        const previous = blogRecord(
+            JSON.parse(new TextDecoder().decode(await client.readAsset(existingMarker))) as unknown,
+        )
+        if (
+            previous.schemaVersion !== 1 ||
+            previous.releaseId !== post.releaseId ||
+            previous.tag !== post.tag ||
+            previous.revision !== post.revision ||
+            previous.publishedAt !== post.publishedAt
+        )
+            throw new Error('Existing blog marker has a conflicting release identity')
+        const previousRevision = blogRevision(previous.contentRevision)
+        if (
+            previousRevision > post.contentRevision ||
+            (previousRevision === post.contentRevision &&
+                (previous.postSha256 !== marker.postSha256 ||
+                    previous.postAsset !== marker.postAsset))
+        )
+            throw new Error('Blog content revisions cannot regress or change in place')
+    }
+    const existingPost = assets.find((asset) => asset.name === marker.postAsset)
+    const published = existingPost ?? (await client.uploadAsset(marker.postAsset, bytes))
+    const uploadedBytes = await client.readAsset(published)
+    if (createHash('sha256').update(uploadedBytes).digest('hex') !== marker.postSha256)
+        throw new Error('Immutable blog asset differs from the authored content')
+    if (existingMarker) {
+        const previous = blogRecord(
+            JSON.parse(new TextDecoder().decode(await client.readAsset(existingMarker))) as unknown,
+        )
+        if (
+            previous.contentRevision === marker.contentRevision &&
+            previous.postSha256 === marker.postSha256
+        )
+            return
+    }
+    await client.verifyIdentity()
+    if (existingMarker) await client.deleteAsset(existingMarker)
+    await client.uploadAsset(markerName, Buffer.from(JSON.stringify(marker, null, 4) + '\n'))
+}
+
+async function gh(arguments_: string[]): Promise<Uint8Array> {
+    const child = Bun.spawn(['gh', ...arguments_], { stdout: 'pipe', stderr: 'pipe' })
+    const [status, output] = await Promise.all([
+        child.exited,
+        new Response(child.stdout).arrayBuffer(),
+        new Response(child.stderr).text(),
+    ])
+    if (status !== 0) throw new Error('GitHub blog publication command failed')
+    if (output.byteLength > 1_048_576) throw new Error('GitHub blog response exceeds one MiB')
+    return new Uint8Array(output)
+}
+
+function parseAsset(value: unknown): BlogAsset {
+    const record = blogRecord(value)
+    if (
+        typeof record.id !== 'number' ||
+        !Number.isSafeInteger(record.id) ||
+        record.id < 1 ||
+        typeof record.name !== 'string' ||
+        typeof record.size !== 'number' ||
+        record.size < 1 ||
+        record.size > 1_048_576 ||
+        record.state !== 'uploaded'
+    )
+        throw new Error('Invalid uploaded blog asset')
+    return { id: record.id, name: record.name }
+}
+
+async function json(arguments_: string[]): Promise<unknown> {
+    return JSON.parse(new TextDecoder().decode(await gh(arguments_))) as unknown
+}
+
+async function main(): Promise<void> {
+    const env = process.env
+    if (!env.RUNNER_TEMP || env.GITHUB_REPOSITORY !== 'RentnerProxy/platform')
+        throw new Error('Official release runner is required')
+    const directory = resolve(env.RUNNER_TEMP, 'rentnerproxy-release')
+    const post = await prepareReleaseBlog(resolve('source'), directory, env.RELEASE_TAG ?? '')
+    if (!post) {
+        process.stdout.write('No authored release blog content; blog publication skipped.\n')
+        return
+    }
+    if (
+        String(post.releaseId) !== env.RELEASE_ID ||
+        post.revision !== env.RELEASE_REVISION ||
+        post.publishedAt !== env.RELEASE_PUBLISHED_AT ||
+        post.channel !== env.RELEASE_CHANNEL ||
+        post.image.repository !== env.RELEASE_IMAGE ||
+        post.image.digest !== env.RELEASE_DIGEST ||
+        post.image.platforms.join(',') !== env.RELEASE_PLATFORMS
+    )
+        throw new Error('Blog readiness differs from the release pipeline identity')
+    const endpoint = `repos/RentnerProxy/platform/releases/${post.releaseId}`
+    const client: BlogPublicationClient = {
+        async verifyIdentity() {
+            const release = blogRecord(await json(['api', endpoint]))
+            if (
+                release.id !== post.releaseId ||
+                release.tag_name !== post.tag ||
+                release.draft !== false ||
+                String(release.prerelease) !== env.RELEASE_PRERELEASE ||
+                release.published_at !== post.publishedAt
+            )
+                throw new Error('Release metadata changed before blog publication')
+            // A syntactically valid baseline is not evidence that the claimed release source exists.
+            for (const benchmark of post.benchmarks ?? []) {
+                const baseline = blogRecord(
+                    // oxlint-disable-next-line no-await-in-loop -- Bound GitHub process concurrency while verifying each baseline.
+                    await json([
+                        'api',
+                        `repos/RentnerProxy/platform/commits/${encodeURIComponent(`refs/tags/${benchmark.baseline.tag}`)}`,
+                    ]),
+                )
+                if (baseline.sha !== benchmark.baseline.revision)
+                    throw new Error(
+                        'Benchmark baseline tag does not resolve to the claimed revision',
+                    )
+            }
+        },
+        async listAssets() {
+            const values = await json([
+                'api',
+                `${endpoint}/assets?per_page=100`,
+                '--paginate',
+                '--slurp',
+            ])
+            if (!Array.isArray(values) || !values.every(Array.isArray))
+                throw new Error('Invalid blog asset listing')
+            const candidates: unknown[] = values.flat()
+            const relevant = candidates.filter((value) => {
+                const record = blogRecord(value)
+                return (
+                    record.name === markerName ||
+                    (typeof record.name === 'string' &&
+                        /^rentnerproxy-blog-post-r[1-9][0-9]*\.json$/.test(record.name))
+                )
+            })
+            const assets = relevant.map(parseAsset)
+            if (new Set(assets.map((value) => value.name)).size !== assets.length)
+                throw new Error('Duplicate blog assets')
+            return assets
+        },
+        readAsset(value) {
+            return gh([
+                'api',
+                `repos/RentnerProxy/platform/releases/assets/${value.id}`,
+                '-H',
+                'Accept: application/octet-stream',
+            ])
+        },
+        async uploadAsset(name, bytes) {
+            const path = resolve(directory, name)
+            await writeFile(path, bytes)
+            await gh(['release', 'upload', post.tag, path, '--repo', 'RentnerProxy/platform'])
+            const uploaded = (await client.listAssets()).find((value) => value.name === name)
+            if (!uploaded) throw new Error('Uploaded blog asset is unavailable')
+            return uploaded
+        },
+        async deleteAsset(value) {
+            await gh([
+                'api',
+                '--method',
+                'DELETE',
+                `repos/RentnerProxy/platform/releases/assets/${value.id}`,
+            ])
+        },
+    }
+    await publishReleaseBlog(post, client)
+}
+
+if (import.meta.main) {
+    try {
+        await main()
+    } catch (error) {
+        process.stderr.write(
+            `Release blog publication failed: ${error instanceof Error ? error.message : 'unknown error'}\n`,
+        )
+        process.exitCode = 1
+    }
+}

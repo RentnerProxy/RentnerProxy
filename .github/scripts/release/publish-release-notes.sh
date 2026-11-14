@@ -35,3 +35,6 @@ gh release edit "$RELEASE_TAG" \
     echo "::error::Updating the GitHub release body failed."
     exit 1
 }
+
+# Optional authored articles become discoverable only after every delivery and notes gate.
+bun --no-env-file "$script_directory/publish-release-blog.ts"
