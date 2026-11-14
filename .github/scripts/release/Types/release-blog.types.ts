@@ -51,6 +51,8 @@ export interface ReleaseBlogReady {
 export interface BlogAsset {
     id: number
     name: string
+    state?: 'starter' | 'uploading' | 'uploaded'
+    size?: number
 }
 
 export interface BlogPublicationClient {

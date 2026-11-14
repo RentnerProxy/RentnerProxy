@@ -8,7 +8,7 @@ import {
     buildReleaseBlog,
     prepareReleaseBlog,
 } from '../../../../../.github/scripts/release/generate-release-blog.ts'
-import { publishReleaseBlog } from '../../../../../.github/scripts/release/publish-release-blog.ts'
+import { parseBlogAsset, publishReleaseBlog } from '../../../../../.github/scripts/release/publish-release-blog.ts'
 import type {
     BlogAsset,
     BlogPublicationClient,
@@ -300,6 +300,56 @@ describe('release blog contract', () => {
 })
 
 describe('blog publication commit marker', () => {
+    test.each(['rentnerproxy-blog-post-r1.json', 'rentnerproxy-blog-ready.json'])(
+        'recovers an incomplete exact publication asset after verifying identity: %s', async (name) => {
+            for (const metadata of [{ state: 'starter', size: 0 }, { state: 'starter', size: 12 }, { state: 'uploaded', size: 0 }] as const) {
+                const state = fixture()
+                state.files.set(name, { asset: parseBlogAsset({ id: 99, name, ...metadata }), bytes: Buffer.alloc(metadata.size) })
+                // oxlint-disable-next-line no-await-in-loop -- Complete each isolated retry lifecycle before the next fixture.
+                await publishReleaseBlog(buildReleaseBlog(readiness, source()), state.client)
+                const deletion = state.events.indexOf(`delete:${name}`)
+                expect(deletion).toBeGreaterThan(0)
+                expect(state.events[deletion - 1]).toBe('identity')
+                expect(state.events.indexOf(`upload:${name}`)).toBeGreaterThan(deletion)
+                expect(state.events.at(-1)).toBe('upload:rentnerproxy-blog-ready.json')
+                expect(state.events.indexOf('read:rentnerproxy-blog-post-r1.json')).toBeLessThan(state.events.length - 1)
+            }
+        },
+    )
+
+    test.each(['identity', 'uploading', 'completed', 'replaced'])(
+        'never deletes incomplete assets without stable metadata and fresh identity: %s', async (mode) => {
+            const state = fixture()
+            const name = 'rentnerproxy-blog-post-r1.json'
+            const asset = parseBlogAsset({ id: 99, name, size: 0, state: mode === 'uploading' ? 'uploading' : 'starter' })
+            state.files.set(name, { asset, bytes: Buffer.alloc(0) })
+            if (mode === 'identity') {
+                let checks = 0
+                state.client.verifyIdentity = async () => {
+                    state.events.push('identity')
+                    if (++checks === 2) throw new Error('identity changed')
+                }
+            }
+            if (mode === 'completed' || mode === 'replaced') {
+                let lists = 0
+                state.client.listAssets = async () => {
+                    lists += 1
+                    return [{ ...asset, ...(lists === 1 ? {} : mode === 'completed' ? { state: 'uploaded' as const, size: 100 } : { id: 100 }) }]
+                }
+            }
+            await expect(publishReleaseBlog(buildReleaseBlog(readiness, source()), state.client)).rejects.toThrow()
+            expect(state.events.some((event) => event.startsWith('delete:') || event.startsWith('upload:'))).toBeFalse()
+        },
+    )
+
+    test.each([
+        { state: 'other', size: 0 }, { state: 'starter', size: -1 },
+        { state: 'uploaded', size: 0.5 }, { state: 'uploaded', size: Number.NaN },
+        { state: 'starter', size: 1_048_577 },
+    ])('rejects malformed partial metadata without guessing recovery: %j', (metadata) => {
+        expect(() => parseBlogAsset({ id: 1, name: 'rentnerproxy-blog-post-r1.json', ...metadata })).toThrow('metadata')
+    })
+
     test('publishes immutable bytes, verifies them, then commits marker; retry preserves marker', async () => {
         const state = fixture()
         const post = buildReleaseBlog(readiness, source())

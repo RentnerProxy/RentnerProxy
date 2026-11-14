@@ -69,6 +69,8 @@ jobs:
         timeout-minutes: 5
         permissions:
             contents: write
+        outputs:
+            committed_blog_digest: ${{ steps.status.outputs.committed_blog_digest }}
         steps:
             - name: Check out trusted release automation
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -83,6 +85,7 @@ jobs:
                   bun-version: ${{ env.BUN_VERSION }}
 
             - name: Publish validated building status
+              id: status
               env:
                   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
                   RELEASE_CHANNEL: ${{ inputs.channel }}
@@ -91,6 +94,7 @@ jobs:
                   RELEASE_PRERELEASE: ${{ inputs.prerelease }}
                   RELEASE_PUBLISHED_AT: ${{ inputs.published_at }}
                   RELEASE_TAG: ${{ inputs.release_tag }}
+                  RELEASE_REVISION: ${{ inputs.expected_revision }}
               shell: bash
               run: bash automation/.github/scripts/release/publish-building-release.sh
 
@@ -103,6 +107,7 @@ jobs:
             actions: read
             contents: read
         outputs:
+            committed_blog_digest: ${{ needs.building.outputs.committed_blog_digest }}
             channel_tag: ${{ steps.release.outputs.channel_tag }}
             changelog_filename: ${{ steps.release.outputs.changelog_filename }}
             image: ${{ steps.release.outputs.image }}
@@ -192,6 +197,7 @@ jobs:
             description: Modern self-hosted reverse proxy manager powered by Caddy.
             cache_scope: release-${{ inputs.channel }}
             validate_distribution: true
+            expected_digest: ${{ needs.prepare.outputs.committed_blog_digest }}
 
     sign-distribution:
         needs: [prepare, build]

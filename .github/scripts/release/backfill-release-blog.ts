@@ -8,6 +8,7 @@ import {
     ghBlogJson,
     publishReleaseBlog,
 } from './publish-release-blog.ts'
+import { renderReleaseNotes } from '../lib/release-notes.ts'
 import type { ReleaseBlogPost } from './Types/release-blog.types.ts'
 
 export function parseBackfillArguments(arguments_: readonly string[]): {
@@ -105,6 +106,26 @@ export async function prepareBackfillReleaseBlog(
         post.revision !== commit.sha
     )
         throw new Error('Readiness, published release and peeled tag identities differ')
+    // The canonical final header binds the body to this channel, tag and publication date.
+    // Readiness alone is insufficient: it is uploaded before the final notes edit can fail.
+    const finalNotes = renderReleaseNotes({
+        repository: 'RentnerProxy/platform',
+        tagName: post.tag,
+        channel: post.channel,
+        publishedAt: post.publishedAt,
+        image: post.image.repository,
+        bannerRevision: post.revision,
+        issues: [],
+        config: { excludedLabels: [], highlightLabels: [], categories: [] },
+        initialRelease: false,
+    }).body.split('\n')
+    const actualNotes =
+        typeof release.body === 'string' ? release.body.replaceAll('\r\n', '\n').split('\n') : []
+    if (actualNotes[2] !== finalNotes[2] || actualNotes[4] !== finalNotes[4])
+        throw new Error(
+            'Backfill requires completed final release notes for the published identity',
+        )
+    uploaded(`RentnerProxy-${tag}-CHANGELOG.md`)
     uploaded('INSTALL.txt')
     uploaded(`RentnerProxy-${tag}-verification.tar.gz`)
     let packageRevision: string | undefined

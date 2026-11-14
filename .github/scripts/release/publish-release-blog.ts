@@ -25,11 +25,33 @@ export async function publishReleaseBlog(
     const bytes = blogBytes(post)
     const marker = blogReady(post, bytes, now)
     await client.verifyIdentity()
-    const assets = await client.listAssets()
+    let assets = await client.listAssets()
     for (const existing of assets) {
         const match = /^rentnerproxy-blog-post-r([1-9][0-9]*)\.json$/.exec(existing.name)
         if (match && blogRevision(Number(match[1])) > post.contentRevision)
             throw new Error('Blog content revision is older than an immutable published post')
+    }
+    // Only recover this publication's names; another revision may belong to a concurrent publisher.
+    for (const name of [marker.postAsset, markerName]) {
+        const partial = assets.find((asset) => asset.name === name)
+        if (partial?.state === 'uploading') throw new Error('Blog asset upload is still active')
+        if (partial && (partial.state === 'starter' || partial.size === 0)) {
+            // A second observation avoids deleting an upload that has completed since the listing.
+            // oxlint-disable-next-line no-await-in-loop -- Recover at most this post and its marker, in order.
+            const current = (await client.listAssets()).find((asset) => asset.name === name)
+            if (
+                !current ||
+                current.id !== partial.id ||
+                current.state !== partial.state ||
+                current.size !== partial.size
+            )
+                throw new Error('Partial blog asset changed during recovery; retry publication')
+            // oxlint-disable-next-line no-await-in-loop -- Every destructive recovery step requires a fresh identity check.
+            await client.verifyIdentity()
+            // oxlint-disable-next-line no-await-in-loop -- Delete only the exact unchanged incomplete asset after verification.
+            await client.deleteAsset(current)
+            assets = assets.filter((asset) => asset.id !== current.id)
+        }
     }
     const existingMarker = assets.find((asset) => asset.name === markerName)
     if (existingMarker) {
@@ -89,7 +111,7 @@ export async function ghBlogCommand(arguments_: string[]): Promise<Uint8Array> {
     return new Uint8Array(output)
 }
 
-function parseAsset(value: unknown): BlogAsset {
+export function parseBlogAsset(value: unknown): BlogAsset {
     const record = blogRecord(value)
     if (
         typeof record.id !== 'number' ||
@@ -97,12 +119,13 @@ function parseAsset(value: unknown): BlogAsset {
         record.id < 1 ||
         typeof record.name !== 'string' ||
         typeof record.size !== 'number' ||
-        record.size < 1 ||
+        !Number.isSafeInteger(record.size) ||
+        record.size < 0 ||
         record.size > 1_048_576 ||
-        record.state !== 'uploaded'
+        (record.state !== 'uploaded' && record.state !== 'starter' && record.state !== 'uploading')
     )
-        throw new Error('Invalid uploaded blog asset')
-    return { id: record.id, name: record.name }
+        throw new Error('Invalid blog asset metadata')
+    return { id: record.id, name: record.name, state: record.state, size: record.size }
 }
 
 export async function ghBlogJson(arguments_: string[]): Promise<unknown> {
@@ -161,7 +184,7 @@ export function createGitHubBlogClient(
                         /^rentnerproxy-blog-post-r[1-9][0-9]*\.json$/.test(record.name))
                 )
             })
-            const assets = relevant.map(parseAsset)
+            const assets = relevant.map(parseBlogAsset)
             if (new Set(assets.map((value) => value.name)).size !== assets.length)
                 throw new Error('Duplicate blog assets')
             return assets
@@ -186,7 +209,8 @@ export function createGitHubBlogClient(
                 'RentnerProxy/platform',
             ])
             const uploaded = (await client.listAssets()).find((value) => value.name === name)
-            if (!uploaded) throw new Error('Uploaded blog asset is unavailable')
+            if (!uploaded || uploaded.state !== 'uploaded' || !uploaded.size)
+                throw new Error('Uploaded blog asset is unavailable or incomplete')
             return uploaded
         },
         async deleteAsset(value) {
